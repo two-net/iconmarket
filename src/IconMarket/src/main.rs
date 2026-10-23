@@ -28,11 +28,11 @@ fn main() -> ExitCode {
 
     // Load and validate the config before logging exists, so problems go to stderr
     let path = config::path_from_args(std::env::args_os());
-    let config = match config::load(&path).and_then(|config| {
-        config::validate(&config)?;
-        Ok(config)
-    }) {
-        Ok(config) => config,
+    let config::Loaded {
+        config,
+        unknown_keys,
+    } = match config::load(&path) {
+        Ok(loaded) => loaded,
         Err(e) => {
             eprintln!("icon-market: {e:#}");
             return ExitCode::FAILURE;
@@ -47,6 +47,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    for key in &unknown_keys {
+        tracing::warn!(key = %key, "unknown config key, ignored");
+    }
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,

@@ -1,14 +1,178 @@
-# IconMarket configuration: the only source of configuration (SRS §6).
+# IconMarket configuration: the only source of configuration, credentials included (SRS §6).
 #
 # Copy this file to iconmarket.toml in the working directory, or pass another path as
 # the first command-line argument. The real file holds credentials in plain text, so
 # keep it out of version control and readable only by the service account.
 #
-# Only the keys the app skeleton reads so far are listed here; see SRS §6.2 for the rest.
+# Every key is listed here with its default. Keys marked "Required" have none; any other
+# key may be left out. An empty string is the same as leaving a key out. Unknown keys
+# are reported as warnings at startup. Changes take effect on restart.
 
 [app]
+# Name shown in messages
+name = "IconMarket"
+# Required. Public HTTPS base URL for the webhook and image links
+baseUrl = "https://iconmarket.example.com"
 # HTTP listen port
 listenPort = 8080
+# Business time zone, as an IANA name
+timeZone = "Asia/Bangkok"
+# The bot's polite particle: ค่ะ or ครับ
+politeParticle = "ค่ะ"
+
+[village]
+# Required
+name = "หมู่บ้านไอคอน"
+# Offered as Quick Replies, e.g. ["ซอย 1", "ซอย 2", "หมู่ 5"]
+zones = []
+# Code required to register; empty turns it off
+joinCode = ""
+# Contact text shown in help
+adminContact = ""
+
+[line]
+# Required. Verifies webhook signatures
+channelSecret = "change-me"
+# Required. Messaging API access token
+channelAccessToken = "change-me"
+# Group for the daily digest: C followed by 32 hex digits. Type #groupid in the group
+# to get it. Required when notification.groupDigest is true
+villageGroupId = ""
+
+[line.richMenu]
+# Create or update rich menus at startup
+autoProvision = true
+
+[ai]
+# Master switch. When true, provider, model and apiKey are required
+enabled = true
+# claude, gemini, gpt, grok or mock
+provider = "claude"
+# Model name at that provider
+model = "change-me"
+# Not needed for mock
+apiKey = "change-me"
+# Endpoint override; empty uses the provider's default
+baseUrl = ""
+# Per request
+timeoutSeconds = 20
+maxOutputTokens = 1024
+# 0 to 2
+temperature = 0.3
+# Conversation turns sent as context
+historyTurns = 10
+# Log prompts and responses
+logContent = false
+
+[ai.features]
+# Free-text understanding (FR-AI-01)
+assistant = true
+# Listing assistant (FR-PROD-02)
+listing = true
+# AI moderation (FR-PROD-09)
+moderation = true
+# Slip reading (FR-PAY-06)
+slipReading = false
+# Voice messages (FR-AI-15)
+voice = false
+# Visual search (FR-SRCH-10)
+visualSearch = false
+
+[ai.limits]
+perUserDailyCalls = 50
+globalDailyCalls = 2000
+
+[ai.fallback]
+# Secondary provider, tried when the primary fails or times out (FR-AIP-06); empty
+# turns it off. When set, model and apiKey are required (apiKey not for mock)
+provider = ""
+model = ""
+apiKey = ""
+
+[database]
+# Required. PostgreSQL server
+host = "localhost"
+port = 5432
+# Required
+name = "iconmarket"
+# Required. Needs rights to create and alter objects in its schema (MIG-08)
+user = "iconmarket"
+# Required
+password = "change-me"
+# disable, allow, prefer, require, verify-ca or verify-full
+sslMode = "prefer"
+# Connection pool size
+maxConnections = 10
+
+[shop]
+# Admin approval for new shops
+requireApproval = true
+
+[order]
+# Auto-expire unanswered orders
+pendingTimeoutMinutes = 60
+
+[payment]
+# Allowed payment methods: cash, promptpay
+methods = ["cash", "promptpay"]
+
+[notification]
+newOrderToSeller = true
+orderStatusToBuyer = true
+adminAlerts = true
+# Daily summary (FR-NOT-06), sent at dailySummaryTime (HH:mm)
+dailySummary = false
+dailySummaryTime = "20:00"
+# Village group digest (FR-NOT-07), posted at groupDigestTime (HH:mm)
+groupDigest = false
+groupDigestTime = "07:00"
+
+[image]
+maxUploadMB = 10
+# Longest side after processing
+maxDimensionPx = 1024
+maxPerProduct = 3
+# Lifetime of slip-image links
+slipLinkHours = 24
+
+[session]
+# Guided-flow inactivity timeout
+timeoutMinutes = 15
+# Lifetime of confirmation buttons
+pendingActionMinutes = 60
+
+[limits]
+# Per-user rate limit
+messagesPerUserPerMinute = 20
+
+[catalog]
+# Seeded on first start only
+defaultCategories = [
+    "อาหาร",
+    "ขนม/ของหวาน",
+    "เครื่องดื่ม",
+    "ผัก/ผลไม้",
+    "เนื้อสัตว์/ไข่",
+    "ของใช้ในบ้าน",
+    "ต้นไม้/การเกษตร",
+    "งานฝีมือ",
+    "บริการ",
+    "อื่นๆ",
+]
+# Keyword moderation
+prohibitedKeywords = []
+
+[privacy]
+# Required. Change it to require re-consent
+noticeVersion = "1"
+# Required. Notice shown before consent
+noticeText = "change-me"
+# Optional link to the full notice
+noticeUrl = ""
+
+[admin]
+# Required, at least one. Admin LINE user IDs: U followed by 32 hex digits
+lineUserIds = ["U00000000000000000000000000000000"]
 
 [logging]
 # debug, info, warn or error
@@ -16,14 +180,11 @@ level = "info"
 # Log file path; empty means standard output
 file = ""
 
-[database]
-host = "localhost"
-port = 5432
-name = "iconmarket"
-# Needs rights to create and alter objects in its schema (MIG-08)
-user = "iconmarket"
-password = "change-me"
-# PostgreSQL SSL mode: disable, allow, prefer, require, verify-ca or verify-full
-sslMode = "prefer"
-# Connection pool size
-maxConnections = 10
+[retention]
+webhookEventDays = 14
+aiMessageDays = 30
+aiCallLogDays = 90
+pushLogDays = 90
+slipDays = 90
+deletedImageDays = 30
+auditLogDays = 365

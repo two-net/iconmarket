@@ -6,6 +6,10 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8.9"
+# No `clock`: its `Local` reads TZ and /etc/localtime, and config comes only from the file (CFG-02)
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+# Compiles the tz database in, so `app.timeZone` is checked without reading zoneinfo files
+chrono-tz = "0.10.4"
 serde = { version = "1.0.229", features = ["derive"] }
 # No `macros`: `query!` reads DATABASE_URL at build time, and config comes only from the file (CFG-02)
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls-ring-webpki"] }
@@ -17,8 +21,10 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 # No `ansi` (it reads NO_COLOR) and no `env-filter` (it reads RUST_LOG): config comes only from the file (CFG-02)
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "smallvec", "std", "tracing-log"] }
+url = "2.5.8"
 
 [dev-dependencies]
 serde_json = "1.0.154"
+tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
