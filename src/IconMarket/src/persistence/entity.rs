@@ -1,5 +1,6 @@
-//! The entity models of SRS §5.1, one module per table. They are the single source of truth
-//! for the schema (MIG-01); change the schema by changing them.
+//! The entity models of SRS §5.1, and the schema versions applied (MIG-09), one module per
+//! table. They are the single source of truth for the schema (MIG-01); change the schema by
+//! changing them.
 //!
 //! The data rules (§5.2) are applied in the models:
 //!
@@ -39,6 +40,7 @@ pub mod product;
 pub mod push_log;
 pub mod rating;
 pub mod report;
+pub mod schema_version;
 pub mod session;
 pub mod shop;
 pub mod user;

@@ -24,10 +24,34 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     info!("connected to the database");
     persistence::check_encoding(&db).await?;
 
-    persistence::migrate(&db)
+    let migration = persistence::migrate(&db)
         .await
         .context("auto-migration failed")?;
-    persistence::seed(&db).await.context("seeding failed")?;
+    for object in &migration.added {
+        info!(object = %object, "created in the database schema");
+    }
+    for column in &migration.relaxed {
+        warn!(
+            column = %column,
+            "column kept for a removed model property, now nullable"
+        );
+    }
+    info!(
+        snapshot = %migration.snapshot,
+        added = migration.added.len(),
+        relaxed = migration.relaxed.len(),
+        "database schema is up to date"
+    );
+
+    let seeded = persistence::seed(&db, &config.catalog, &config.admin)
+        .await
+        .context("seeding failed")?;
+    info!(
+        categories = seeded.categories,
+        admins_granted = seeded.granted,
+        admins_revoked = seeded.revoked,
+        "seed data applied"
+    );
 
     let line = line::Client::new(&config.line)?;
 

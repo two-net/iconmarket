@@ -19,10 +19,14 @@ getrandom = "0.4.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
 # The LINE client's TLS: ring with the compiled-in roots, as sqlx's `tls-rustls-ring-webpki`
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
-# Code-first ORM (CON-04): the entity models generate the schema (MIG-01). Its TLS comes from sqlx
-sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "runtime-tokio", "sqlx-postgres", "with-chrono", "with-json", "with-rust_decimal", "with-uuid"] }
+# Code-first ORM (CON-04): the entity models generate the schema (MIG-01). Its TLS comes from sqlx.
+# `schema-sync` brings the schema up to date at startup (MIG-02); it is experimental and not
+# strictly additive, so `persistence::migrate` guards it (MIG-03)
+sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "runtime-tokio", "schema-sync", "sqlx-postgres", "with-chrono", "with-json", "with-rust_decimal", "with-uuid"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Fingerprints the schema the models generate (MIG-09)
+sha2 = { version = "0.11.1", default-features = false }
 # No `macros`: `query!` reads DATABASE_URL at build time, and config comes only from the file (CFG-02)
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls-ring-webpki"] }
 tokio = { version = "1.54.1", features = ["full"] }

@@ -95,7 +95,12 @@ host = "localhost"
 port = 5432
 # Required
 name = "iconmarket"
-# Required. Needs rights to create and alter objects in its schema (MIG-08)
+# Required. Needs rights to create and alter objects in its schema (MIG-08), as the schema
+# updates itself at every startup. Since PostgreSQL 15 only the database owner may create
+# in `public`, so make this user the owner:
+#   CREATE DATABASE iconmarket OWNER iconmarket;
+# or grant it on an existing database:
+#   GRANT CREATE ON SCHEMA public TO iconmarket;
 user = "iconmarket"
 # Required
 password = "change-me"

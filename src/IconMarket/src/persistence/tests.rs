@@ -1,5 +1,5 @@
-//! The models against the data rules of SRS §5.2. The `async` tests each start a throwaway
-//! PostgreSQL, so they need Docker.
+//! The models against the data rules of SRS §5.2, and auto-migration and seeding (§5.3). The
+//! `async` tests each start a throwaway PostgreSQL, so they need Docker.
 
 use std::fmt::Debug;
 
@@ -9,7 +9,8 @@ use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{
     ActiveEnum, ActiveModelBehavior, ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr,
-    EntityTrait, IdenStatic, IntoActiveModel, Iterable, QueryFilter, RuntimeErr, SqlErr,
+    EntityTrait, IdenStatic, IntoActiveModel, Iterable, QueryFilter, QueryOrder, RuntimeErr,
+    SqlErr,
 };
 use serde_json::json;
 use sqlx::postgres::PgSslMode;
@@ -18,12 +19,13 @@ use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ContainerRequest, ImageExt};
 
 use super::entity::*;
+use super::seed::Seeded;
 use super::*;
-use crate::config::Secret;
+use crate::config::{AdminConfig, CatalogConfig, Secret};
 use crate::thai::Money;
 
-/// The entities of §5.1, by table name.
-const TABLES: [&str; 20] = [
+/// The entities of §5.1 and the schema versions (MIG-09), by table name.
+const TABLES: [&str; 21] = [
     "ai_call_logs",
     "ai_messages",
     "audit_logs",
@@ -40,6 +42,7 @@ const TABLES: [&str; 20] = [
     "push_logs",
     "ratings",
     "reports",
+    "schema_versions",
     "sessions",
     "shops",
     "users",
@@ -157,6 +160,7 @@ fn personal_data_is_marked() {
         unmarked::<push_log::Entity>(push_log::Entity::FIELDS),
         unmarked::<rating::Entity>(&[]),
         unmarked::<report::Entity>(&[]),
+        unmarked::<schema_version::Entity>(&[]),
         unmarked::<session::Entity>(&[]),
         unmarked::<shop::Entity>(shop::Entity::FIELDS),
         unmarked::<user::Entity>(user::Entity::FIELDS),
@@ -180,9 +184,8 @@ fn personal_data_is_marked() {
 /// A fresh database holding the schema, and the container serving it.
 async fn database() -> (ContainerAsync<Postgres>, DatabaseConnection) {
     let (container, pool) = start(Postgres::default().into()).await;
-    let db = orm(pool);
-    schema().apply(&db).await.unwrap();
-    (container, db)
+    migrate(&pool).await.unwrap();
+    (container, orm(pool))
 }
 
 /// An empty database, and the container serving it.
@@ -201,6 +204,17 @@ async fn start(image: ContainerRequest<Postgres>) -> (ContainerAsync<Postgres>, 
     };
     let pool = connect(&config).await.unwrap();
     (container, pool)
+}
+
+/// The tables in the database, by name.
+async fn tables(pool: &PgPool) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT table_name::text FROM information_schema.tables
+         WHERE table_schema = 'public' ORDER BY table_name",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }
 
 /// 22 ต.ค. 2569 14:30 in Bangkok, with microseconds as PostgreSQL keeps them.
@@ -345,14 +359,7 @@ async fn the_schema_has_every_table_with_exact_money_and_zoned_times() {
     let (_container, db) = database().await;
     let pool = db.get_postgres_connection_pool();
 
-    let tables: Vec<String> = sqlx::query_scalar(
-        "SELECT table_name::text FROM information_schema.tables
-         WHERE table_schema = 'public' ORDER BY table_name",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap();
-    assert_eq!(tables, TABLES);
+    assert_eq!(tables(pool).await, TABLES);
 
     // DR-01: money is numeric(12, 2), and nothing else is numeric
     let numeric: Vec<(String, String, i32, i32)> = sqlx::query_as(
@@ -909,5 +916,331 @@ async fn a_database_without_utf8_is_refused() {
     assert_eq!(
         err.to_string(),
         "the database encoding is SQL_ASCII, but Thai text needs UTF8 (DR-09)"
+    );
+}
+
+/// Everything about the schema that a migration could change, with object IDs so that
+/// dropping and recreating something shows too.
+async fn definition(pool: &PgPool) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT format('table %s %s', relname, oid)
+         FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'
+         UNION ALL
+         SELECT format('column %s.%s %s %s %s', c.relname, a.attname,
+             format_type(a.atttypid, a.atttypmod), a.attnotnull, pg_get_expr(d.adbin, d.adrelid))
+         FROM pg_attribute a
+         JOIN pg_class c ON c.oid = a.attrelid
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+         WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
+             AND a.attnum > 0 AND NOT a.attisdropped
+         UNION ALL
+         SELECT format('constraint %s %s %s %s', conrelid::regclass, conname, oid,
+             pg_get_constraintdef(oid))
+         FROM pg_constraint WHERE connamespace = 'public'::regnamespace
+         UNION ALL
+         SELECT format('index %s %s', indexrelid, pg_get_indexdef(indexrelid))
+         FROM pg_index JOIN pg_class ON pg_class.oid = indexrelid
+         WHERE relnamespace = 'public'::regnamespace
+         ORDER BY 1",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// The recorded model snapshots and the app versions that applied them, oldest first.
+async fn versions(pool: &PgPool) -> Vec<(String, String)> {
+    sqlx::query_as("SELECT snapshot, app_version FROM schema_versions ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+/// AC-08, MIG-04, MIG-09
+#[tokio::test]
+async fn restarting_without_model_changes_changes_nothing() {
+    let (_container, pool) = start(Postgres::default().into()).await;
+    let first = migrate(&pool).await.unwrap();
+    // A new table's columns, keys and indexes come with it
+    let created: Vec<_> = TABLES
+        .iter()
+        .map(|table| format!("table {table}"))
+        .collect();
+    assert_eq!(first.added, created);
+    assert!(first.relaxed.is_empty());
+    let before = definition(&pool).await;
+
+    let again = migrate(&pool).await.unwrap();
+    assert!(again.added.is_empty(), "{:?}", again.added);
+    assert!(again.relaxed.is_empty(), "{:?}", again.relaxed);
+    assert_eq!(definition(&pool).await, before);
+
+    // The snapshot is recorded once
+    assert_eq!(first.snapshot.len(), 64);
+    assert_eq!(again.snapshot, first.snapshot);
+    let app_version = env!("CARGO_PKG_VERSION").to_owned();
+    assert_eq!(versions(&pool).await, [(first.snapshot, app_version)]);
+}
+
+/// MIG-09
+#[tokio::test]
+async fn each_new_model_snapshot_is_recorded() {
+    let (_container, pool) = start(Postgres::default().into()).await;
+    let applied = migrate(&pool).await.unwrap();
+    // As if an earlier release had applied other models
+    sqlx::query("UPDATE schema_versions SET snapshot = 'earlier'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    migrate(&pool).await.unwrap();
+    let snapshots: Vec<_> = versions(&pool)
+        .await
+        .into_iter()
+        .map(|(snapshot, _)| snapshot)
+        .collect();
+    assert_eq!(snapshots, ["earlier".to_owned(), applied.snapshot]);
+}
+
+/// `categories` as an earlier release defined it, with a property since removed.
+mod earlier_category {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "categories")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        #[sea_orm(unique)]
+        pub name: String,
+        pub sort_order: i32,
+        pub is_active: bool,
+        pub icon: String,
+    }
+
+    #[derive(Clone, Copy, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// `counters` as an earlier release defined it, with a unique key since removed.
+mod earlier_counter {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "counters")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub key: String,
+        #[sea_orm(unique)]
+        pub value: i64,
+    }
+
+    #[derive(Clone, Copy, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// A database holding only `entity`'s table, as an earlier release created it.
+async fn earlier(entity: impl EntityTrait) -> (ContainerAsync<Postgres>, PgPool) {
+    let (container, pool) = start(Postgres::default().into()).await;
+    Schema::new(DbBackend::Postgres)
+        .builder()
+        .register(entity)
+        .apply(&orm(pool.clone()))
+        .await
+        .unwrap();
+    (container, pool)
+}
+
+/// MIG-03
+#[tokio::test]
+async fn a_removed_property_keeps_its_column_and_data() {
+    let (_container, pool) = earlier(earlier_category::Entity).await;
+    let db = orm(pool.clone());
+    earlier_category::ActiveModel {
+        name: Set("อาหาร".to_owned()),
+        sort_order: Set(1),
+        is_active: Set(true),
+        icon: Set("🍜".to_owned()),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+
+    let migration = migrate(&pool).await.unwrap();
+    assert_eq!(migration.relaxed, ["categories.icon"]);
+    assert!(
+        !migration
+            .added
+            .iter()
+            .any(|added| added.contains("categories")),
+        "{:?}",
+        migration.added
+    );
+
+    // The models insert without it, and what it held is kept
+    new_category("ขนม/ของหวาน").insert(&db).await.unwrap();
+    let icons: Vec<Option<String>> = sqlx::query_scalar("SELECT icon FROM categories ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(icons, [Some("🍜".to_owned()), None]);
+
+    assert!(migrate(&pool).await.unwrap().relaxed.is_empty());
+}
+
+/// MIG-03
+#[tokio::test]
+async fn a_migration_that_would_drop_anything_changes_nothing() {
+    let (_container, pool) = earlier(earlier_counter::Entity).await;
+    let before = definition(&pool).await;
+
+    let err = migrate(&pool).await.unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "the models would drop or rename constraint counters.counters_value_key, \
+         index counters.counters_value_key, but auto-migration only adds (MIG-03)"
+    );
+    // Rolled back, with the tables created before the check
+    assert_eq!(definition(&pool).await, before);
+    assert_eq!(tables(&pool).await, ["counters"]);
+}
+
+/// MIG-07
+#[tokio::test]
+async fn instances_starting_together_migrate_one_at_a_time() {
+    let (_container, pool) = start(Postgres::default().into()).await;
+    // Both connect first, so neither is done before the other starts
+    let connections = [pool.acquire().await.unwrap(), pool.acquire().await.unwrap()];
+    drop(connections);
+    let (a, b) = tokio::join!(migrate(&pool), migrate(&pool));
+    let mut added = [a.unwrap().added.len(), b.unwrap().added.len()];
+    added.sort_unstable();
+    assert_eq!(added, [0, TABLES.len()]);
+    assert_eq!(versions(&pool).await.len(), 1);
+}
+
+fn catalog(default_categories: &[&str]) -> CatalogConfig {
+    CatalogConfig {
+        default_categories: default_categories
+            .iter()
+            .map(|&name| name.to_owned())
+            .collect(),
+        prohibited_keywords: Vec::new(),
+    }
+}
+
+fn admins(line_user_ids: &[&str]) -> AdminConfig {
+    AdminConfig {
+        line_user_ids: line_user_ids.iter().map(|&id| id.to_owned()).collect(),
+    }
+}
+
+/// Every category as (name, sort order, active), in the order created.
+async fn categories(db: &DatabaseConnection) -> Vec<(String, i32, bool)> {
+    category::Entity::find()
+        .order_by_asc(category::Column::Id)
+        .all(db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|category| (category.name, category.sort_order, category.is_active))
+        .collect()
+}
+
+/// MIG-05
+#[tokio::test]
+async fn default_categories_are_seeded_only_while_there_are_none() {
+    let (_container, db) = database().await;
+    let pool = db.get_postgres_connection_pool();
+    let admins = admins(&["U-admin"]);
+
+    let defaults = catalog(&["อาหาร", "เครื่องดื่ม", "อาหาร", "อื่นๆ"]);
+    let seeded = seed(pool, &defaults, &admins).await.unwrap();
+    assert_eq!(seeded.categories, 3);
+    let seeded = [
+        ("อาหาร".to_owned(), 1, true),
+        ("เครื่องดื่ม".to_owned(), 2, true),
+        ("อื่นๆ".to_owned(), 3, true),
+    ];
+    assert_eq!(categories(&db).await, seeded);
+
+    // Admins manage them from then on, even deactivating every one
+    category::Entity::update_many()
+        .col_expr(category::Column::IsActive, Expr::value(false))
+        .exec(&db)
+        .await
+        .unwrap();
+    let again = seed(pool, &catalog(&["ผัก/ผลไม้"]), &admins).await.unwrap();
+    assert_eq!(again.categories, 0);
+    let deactivated = seeded.map(|(name, sort_order, _)| (name, sort_order, false));
+    assert_eq!(categories(&db).await, deactivated);
+}
+
+/// FR-ADM-01, MIG-05
+#[tokio::test]
+async fn the_admin_role_follows_the_config() {
+    let (_container, db) = database().await;
+    let pool = db.get_postgres_connection_pool();
+    let listed = new_user("U-listed").insert(&db).await.unwrap();
+    let unlisted = user::ActiveModel {
+        is_admin: Set(true),
+        ..new_user("U-unlisted")
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+    let deleted = user::ActiveModel {
+        line_user_id: Set(None),
+        is_admin: Set(true),
+        status: Set(user::Status::Deleted),
+        ..new_user("")
+    }
+    .insert(&db)
+    .await
+    .unwrap();
+    let buyer = new_user("U-buyer").insert(&db).await.unwrap();
+    // U-new hasn't followed the OA, so has no row yet; they get the role when they do
+    let config = admins(&["U-listed", "U-new"]);
+
+    let seeded = seed(pool, &catalog(&[]), &config).await.unwrap();
+    assert_eq!(
+        seeded,
+        Seeded {
+            categories: 0,
+            granted: 1,
+            revoked: 2,
+        }
+    );
+    let users = user::Entity::find()
+        .order_by_asc(user::Column::Id)
+        .all(&db)
+        .await
+        .unwrap();
+    let roles: Vec<_> = users.iter().map(|user| (user.id, user.is_admin)).collect();
+    assert_eq!(
+        roles,
+        [
+            (listed.id, true),
+            (unlisted.id, false),
+            (deleted.id, false),
+            (buyer.id, false),
+        ]
+    );
+    let stamped: Vec<_> = users.iter().map(|user| user.updated_at != at()).collect();
+    assert_eq!(stamped, [true, true, true, false]);
+
+    let again = seed(pool, &catalog(&[]), &config).await.unwrap();
+    assert_eq!(
+        again,
+        Seeded {
+            categories: 0,
+            granted: 0,
+            revoked: 0,
+        }
     );
 }

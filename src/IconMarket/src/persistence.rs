@@ -1,11 +1,20 @@
 //! Persistence (SRS §2.1): the PostgreSQL connection pool, the code-first entity models
-//! (§5.1), auto-migration and seeding. Migration and seeding arrive with #7.
+//! (§5.1), auto-migration and seeding (§5.3).
 //!
 //! The ORM is SeaORM. The models in [`entity`] are the single source of truth for the schema
-//! (CON-04, MIG-01): [`schema`] generates every table, key, index and constraint from them.
+//! (CON-04, MIG-01): [`schema`] generates every table, key, index and constraint from them,
+//! and [`migrate`] applies it at every startup (MIG-02).
+//!
+//! Auto-migration only adds (MIG-03), so a model change must be additive too. A column added
+//! to an existing table must be nullable or have a `default_value`, or migrating a table that
+//! has rows fails. A removed property leaves its column in place, made nullable. A model change
+//! that would drop or rename anything else stops startup instead; such a change needs a
+//! deliberately reviewed clean-up release.
 
 pub mod entity;
+mod migration;
 mod money;
+mod seed;
 #[cfg(test)]
 mod tests;
 
@@ -14,13 +23,15 @@ use std::time::Duration;
 use anyhow::{Context, ensure};
 use sea_orm::prelude::Uuid;
 use sea_orm::schema::SchemaBuilder;
-use sea_orm::{DatabaseConnection, DbBackend, Schema, SqlxPostgresConnector};
+use sea_orm::{DatabaseConnection, DbBackend, EntityTrait, Schema, SqlxPostgresConnector};
 use sqlx::ConnectOptions;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use tracing::debug;
 
 use crate::config::DatabaseConfig;
+
+pub use migration::migrate;
+pub use seed::seed;
 
 /// How long `/health` waits for the database before reporting it down.
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -64,10 +75,6 @@ fn connect_options(config: &DatabaseConfig) -> PgConnectOptions {
 }
 
 /// The ORM over `pool`, so every query is parameterized (NFR-SEC-07).
-#[allow(
-    dead_code,
-    reason = "the flows that query through the ORM are built by later issues"
-)]
 pub fn orm(pool: PgPool) -> DatabaseConnection {
     SqlxPostgresConnector::from_sqlx_postgres_pool(pool)
 }
@@ -92,37 +99,50 @@ pub async fn ping(db: &PgPool) -> bool {
     matches!(tokio::time::timeout(PING_TIMEOUT, query).await, Ok(Ok(_)))
 }
 
-/// Every table of §5.1, with its keys, indexes and constraints, as the entity models define it.
-#[allow(
-    dead_code,
-    reason = "auto-migration applies it from #7; only tests do so far"
-)]
+/// Every table of §5.1 and the schema versions (MIG-09), with their keys, indexes and
+/// constraints, as the entity models define them.
 pub fn schema() -> SchemaBuilder {
+    add_entities(Schema::new(DbBackend::Postgres).builder())
+}
+
+/// Something built from every entity model by [`add_entities`].
+trait FromEntities {
+    fn add<E: EntityTrait>(self, entity: E) -> Self;
+}
+
+impl FromEntities for SchemaBuilder {
+    fn add<E: EntityTrait>(self, entity: E) -> Self {
+        self.register(entity)
+    }
+}
+
+/// Adds every entity model to `models`: the one list of them.
+fn add_entities<T: FromEntities>(models: T) -> T {
     use entity::*;
 
-    // Registration order doesn't matter: tables are created after those they reference
-    Schema::new(DbBackend::Postgres)
-        .builder()
-        .register(user::Entity)
-        .register(shop::Entity)
-        .register(category::Entity)
-        .register(product::Entity)
-        .register(image::Entity)
-        .register(cart_item::Entity)
-        .register(order::Entity)
-        .register(order_item::Entity)
-        .register(order_event::Entity)
-        .register(payment_slip::Entity)
-        .register(rating::Entity)
-        .register(report::Entity)
-        .register(session::Entity)
-        .register(pending_action::Entity)
-        .register(ai_message::Entity)
-        .register(ai_call_log::Entity)
-        .register(webhook_event::Entity)
-        .register(push_log::Entity)
-        .register(audit_log::Entity)
-        .register(counter::Entity)
+    // Order doesn't matter: tables are created after those they reference
+    models
+        .add(user::Entity)
+        .add(shop::Entity)
+        .add(category::Entity)
+        .add(product::Entity)
+        .add(image::Entity)
+        .add(cart_item::Entity)
+        .add(order::Entity)
+        .add(order_item::Entity)
+        .add(order_event::Entity)
+        .add(payment_slip::Entity)
+        .add(rating::Entity)
+        .add(report::Entity)
+        .add(session::Entity)
+        .add(pending_action::Entity)
+        .add(ai_message::Entity)
+        .add(ai_call_log::Entity)
+        .add(webhook_event::Entity)
+        .add(push_log::Entity)
+        .add(audit_log::Entity)
+        .add(counter::Entity)
+        .add(schema_version::Entity)
 }
 
 /// A new ID for anything reachable by a public link or carried in postback data: 128 bits
@@ -135,16 +155,4 @@ pub fn random_id() -> Uuid {
     let mut bytes = [0; 16];
     getrandom::fill(&mut bytes).expect("the OS random source is available");
     Uuid::from_bytes(bytes)
-}
-
-/// Brings the schema up to date with the entity models (MIG-02).
-pub async fn migrate(_db: &PgPool) -> anyhow::Result<()> {
-    debug!("auto-migration not implemented yet (#7)");
-    Ok(())
-}
-
-/// Seeds the default categories and syncs admin roles from the config (MIG-05, FR-ADM-01).
-pub async fn seed(_db: &PgPool) -> anyhow::Result<()> {
-    debug!("seeding and admin sync not implemented yet (#7)");
-    Ok(())
 }
