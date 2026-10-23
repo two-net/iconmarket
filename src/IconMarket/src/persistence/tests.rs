@@ -23,8 +23,8 @@ use super::*;
 use crate::config::{AdminConfig, CatalogConfig};
 use crate::thai::Money;
 
-/// The entities of §5.1 and the schema versions (MIG-09), by table name.
-const TABLES: [&str; 21] = [
+/// The entities of §5.1, the schema versions (MIG-09) and the jobs (FR-JOB-03), by table name.
+const TABLES: [&str; 22] = [
     "ai_call_logs",
     "ai_messages",
     "audit_logs",
@@ -32,6 +32,7 @@ const TABLES: [&str; 21] = [
     "categories",
     "counters",
     "images",
+    "jobs",
     "order_events",
     "order_items",
     "orders",
@@ -150,6 +151,7 @@ fn personal_data_is_marked() {
         unmarked::<category::Entity>(&[]),
         unmarked::<counter::Entity>(&[]),
         unmarked::<image::Entity>(image::Entity::FIELDS),
+        unmarked::<job::Entity>(&[]),
         unmarked::<order::Entity>(order::Entity::FIELDS),
         unmarked::<order_event::Entity>(&[]),
         unmarked::<order_item::Entity>(&[]),
@@ -697,6 +699,17 @@ async fn every_attribute_can_be_stored() {
         counter::Model {
             key: "order:20261022".to_owned(),
             value: 7,
+        },
+    )
+    .await;
+    assert_stored::<job::Entity>(
+        &db,
+        job::Model {
+            name: "delete-expired".to_owned(),
+            schedule: "daily 03:00 Asia/Bangkok".to_owned(),
+            due_at: at,
+            last_run_at: Some(at),
+            last_error: Some("ฐานข้อมูลไม่ตอบ".to_owned()),
         },
     )
     .await;

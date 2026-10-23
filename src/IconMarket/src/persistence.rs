@@ -101,8 +101,8 @@ pub async fn ping(db: &PgPool) -> bool {
     matches!(tokio::time::timeout(PING_TIMEOUT, query).await, Ok(Ok(_)))
 }
 
-/// Every table of §5.1 and the schema versions (MIG-09), with their keys, indexes and
-/// constraints, as the entity models define them.
+/// Every table of §5.1, the schema versions (MIG-09) and the jobs (FR-JOB-03), with their
+/// keys, indexes and constraints, as the entity models define them.
 pub fn schema() -> SchemaBuilder {
     add_entities(Schema::new(DbBackend::Postgres).builder())
 }
@@ -144,6 +144,7 @@ fn add_entities<T: FromEntities>(models: T) -> T {
         .add(push_log::Entity)
         .add(audit_log::Entity)
         .add(counter::Entity)
+        .add(job::Entity)
         .add(schema_version::Entity)
 }
 
