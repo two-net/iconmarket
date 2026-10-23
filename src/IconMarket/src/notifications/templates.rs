@@ -2,8 +2,8 @@
 //! (NFR-MNT-03). Text is polite, short and plain, in the configured voice (FR-UI-08), and
 //! every error says what to do next without technical words (NFR-USE-03).
 //!
-//! Each flow adds its messages and labels here. Card layouts join them once the LINE
-//! message types exist (#6).
+//! Each flow adds its messages, labels and card layouts here. Cards are built from the LINE
+//! message types in [`line::flex`](crate::line::flex).
 
 #![allow(
     dead_code,
@@ -14,6 +14,10 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
 use crate::config::{AppConfig, PoliteParticle};
+use crate::line::flex::{
+    Bubble, BubbleSize, Button, ButtonStyle, Carousel, FlexBox, FlexContainer, Justify,
+};
+use crate::line::{Action, limits};
 use crate::thai::{self, NumberError};
 
 /// Builds messages in the configured voice and time zone.
@@ -82,6 +86,67 @@ impl Templates {
     }
 }
 
+/// Page `number` (from 0) of `items` as a carousel (FR-LINE-11, FR-SRCH-03): a `card` for
+/// each item on the page and, when items remain, a "ดูเพิ่มเติม" bubble whose button sends
+/// the postback `more(next_page)`. `per_page` is capped so that bubble always fits.
+pub fn carousel_page<T>(
+    items: &[T],
+    number: usize,
+    per_page: usize,
+    card: impl Fn(&T) -> Bubble,
+    more: impl FnOnce(usize) -> String,
+) -> FlexContainer {
+    let per_page = per_page.clamp(1, limits::BUBBLES_PER_CAROUSEL - 1);
+    let page = limits::page(items, number, per_page);
+    let mut bubbles: Vec<Bubble> = page.items.iter().map(card).collect();
+    if let Some(next) = page.next {
+        // A carousel's bubbles must all be the same size
+        let size = bubbles.first().and_then(|bubble| bubble.size);
+        bubbles.push(more_bubble(
+            size,
+            Action::postback(labels::MORE.clone(), more(next)),
+        ));
+    }
+    Carousel::new(bubbles).into()
+}
+
+/// The last bubble of a carousel page: one button for the next page.
+fn more_bubble(size: Option<BubbleSize>, more: Action) -> Bubble {
+    let button = Button {
+        style: Some(ButtonStyle::Link),
+        ..Button::new(more)
+    };
+    let body = FlexBox {
+        justify_content: Some(Justify::Center),
+        ..FlexBox::vertical([button.into()])
+    };
+    Bubble {
+        size,
+        body: Some(body),
+        ..Bubble::default()
+    }
+}
+
+/// Page `number` (from 0) of `items` as Quick Reply buttons (FR-LINE-11): a `button` for each
+/// item on the page and, when items remain, "ดูเพิ่มเติม" sending the postback
+/// `more(next_page)`. `per_page` is capped so that button fits; leave room for the flow's
+/// own buttons, such as cancel (FR-UI-04).
+pub fn quick_reply_page<T>(
+    items: &[T],
+    number: usize,
+    per_page: usize,
+    button: impl Fn(&T) -> Action,
+    more: impl FnOnce(usize) -> String,
+) -> Vec<Action> {
+    let per_page = per_page.clamp(1, limits::QUICK_REPLY_ITEMS - 1);
+    let page = limits::page(items, number, per_page);
+    let mut actions: Vec<Action> = page.items.iter().map(button).collect();
+    if let Some(next) = page.next {
+        actions.push(Action::postback(labels::MORE.clone(), more(next)));
+    }
+    actions
+}
+
 /// Declares fixed labels and lists them all in `ALL`, so the length test covers every one.
 macro_rules! labels {
     ($($(#[$doc:meta])* $name:ident = $text:literal,)*) => {
@@ -119,6 +184,8 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
+    use crate::line::Message;
+    use crate::line::flex::{Component, Text};
     use crate::thai::Label;
 
     const ERRORS: [NumberError; 4] = [
@@ -180,6 +247,109 @@ mod tests {
         }
         assert!(t.something_went_wrong().ends_with("ค่ะ"));
         assert!(t.number_problem(NumberError::TooLarge).ends_with("นะคะ"));
+    }
+
+    /// A card for product `number`, sized like search's
+    fn card(number: &u32) -> Bubble {
+        Bubble {
+            size: Some(BubbleSize::Kilo),
+            body: Some(FlexBox::vertical([
+                Text::new(format!("สินค้า {number}")).into()
+            ])),
+            ..Bubble::default()
+        }
+    }
+
+    /// The bubbles of a carousel page, and the postback data of its "more" bubble if any
+    fn carousel(page: FlexContainer) -> (Vec<Bubble>, Option<String>) {
+        let FlexContainer::Carousel(carousel) = page else {
+            panic!("not a carousel");
+        };
+        let mut bubbles = carousel.contents;
+        let more = bubbles.last().and_then(|bubble| match &bubble.body {
+            Some(body) => match body.contents.as_slice() {
+                [Component::Button(button)] => match &button.action {
+                    Action::Postback { label, data, .. } if *label == labels::MORE => {
+                        Some(data.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            None => None,
+        });
+        if more.is_some() {
+            bubbles.pop();
+        }
+        (bubbles, more)
+    }
+
+    /// AC (#6): a list longer than a carousel holds is split into pages with "ดูเพิ่มเติม".
+    #[test]
+    fn long_lists_are_paged_with_a_more_bubble() {
+        let products: Vec<u32> = (1..=30).collect();
+        let page = |number| {
+            carousel_page(&products, number, 11, card, |next| {
+                format!("search:page={next}")
+            })
+        };
+
+        let pages: Vec<_> = (0..3).map(page).collect();
+        for page in &pages {
+            let message = Message::flex("สินค้า", page.clone());
+            limits::check(&[message]).unwrap();
+        }
+        let pages: Vec<_> = pages.into_iter().map(carousel).collect();
+        assert_eq!(pages[0].0.len(), 11);
+        assert_eq!(pages[0].1.as_deref(), Some("search:page=1"));
+        assert_eq!(pages[1].0.len(), 11);
+        assert_eq!(pages[1].1.as_deref(), Some("search:page=2"));
+        assert_eq!(pages[2].0.len(), 8);
+        assert_eq!(pages[2].1, None);
+
+        let shown: Vec<_> = pages.iter().flat_map(|(bubbles, _)| bubbles).collect();
+        let expected: Vec<_> = products.iter().map(card).collect();
+        assert_eq!(
+            shown,
+            expected.iter().collect::<Vec<_>>(),
+            "every item once, in order"
+        );
+    }
+
+    #[test]
+    fn the_more_bubble_matches_the_cards_and_fits() {
+        let products: Vec<u32> = (1..=30).collect();
+        // More than a carousel holds is capped, leaving room for "ดูเพิ่มเติม"
+        let FlexContainer::Carousel(page) = carousel_page(&products, 0, 50, card, |_| "m".into())
+        else {
+            panic!("not a carousel");
+        };
+        assert_eq!(page.contents.len(), limits::BUBBLES_PER_CAROUSEL);
+        assert!(
+            page.contents
+                .iter()
+                .all(|bubble| bubble.size == Some(BubbleSize::Kilo))
+        );
+
+        // A list that fits needs no "ดูเพิ่มเติม"
+        let (bubbles, more) = carousel(carousel_page(&products[..10], 0, 10, card, |_| "m".into()));
+        assert_eq!((bubbles.len(), more), (10, None));
+    }
+
+    #[test]
+    fn long_quick_reply_lists_are_paged() {
+        let zones: Vec<String> = (1..=20).map(|i| format!("ซอย {i}")).collect();
+        let button = |zone: &String| Action::postback(Label::fit(zone.as_str()), zone.as_str());
+        let first = quick_reply_page(&zones, 0, 99, button, |next| format!("zone:page={next}"));
+        assert_eq!(first.len(), limits::QUICK_REPLY_ITEMS);
+        assert_eq!(
+            first.last(),
+            Some(&Action::postback(labels::MORE.clone(), "zone:page=1"))
+        );
+
+        let second = quick_reply_page(&zones, 1, 99, button, |next| format!("zone:page={next}"));
+        assert_eq!(second.len(), 8);
+        assert!(second.iter().all(|action| action.label() != &labels::MORE));
     }
 
     #[test]

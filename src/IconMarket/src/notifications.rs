@@ -5,8 +5,10 @@ pub mod templates;
 
 use tracing::debug;
 
+use crate::line;
+
 /// Creates or updates the rich menus for each role (FR-UI-11).
-pub async fn provision_rich_menus() -> anyhow::Result<()> {
+pub async fn provision_rich_menus(_line: &line::Client) -> anyhow::Result<()> {
     debug!("rich-menu provisioning not implemented yet (#17)");
     Ok(())
 }

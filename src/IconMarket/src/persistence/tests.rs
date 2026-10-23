@@ -411,6 +411,7 @@ async fn every_attribute_can_be_stored() {
             line_user_id: Some("U0123456789abcdef0123456789abcdef".to_owned()),
             display_name: Some("ป้าแดง 🥚".to_owned()),
             picture_url: Some("https://profile.line-scdn.net/0h".to_owned()),
+            profile_refreshed_at: Some(at),
             is_admin: true,
             is_following: true,
             status: user::Status::Suspended,

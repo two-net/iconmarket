@@ -14,6 +14,9 @@ pub struct Model {
     pub line_user_id: Option<String>,
     pub display_name: Option<String>,
     pub picture_url: Option<String>,
+    /// When the display name and picture were last fetched from LINE, so they are refreshed
+    /// at most once a day (FR-LINE-10)
+    pub profile_refreshed_at: Option<DateTimeUtc>,
     /// Synced from `admin.lineUserIds` (FR-ADM-01). The other roles aren't stored: every user
     /// is a buyer, and the owner of an `APPROVED` shop is a seller.
     pub is_admin: bool,

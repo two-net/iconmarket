@@ -2,6 +2,8 @@
 
 use std::borrow::Cow;
 
+use serde::{Serialize, Serializer};
+
 /// A button or Quick Reply label of at most [`Label::MAX_CHARS`] characters.
 ///
 /// Characters are Unicode scalar values, so Thai vowel and tone marks count: `ที่` is 3.
@@ -21,27 +23,37 @@ impl Label {
         Self(Cow::Borrowed(text))
     }
 
-    /// A label built at run time (a zone, a category, `ใส่ 2 แผง`), shortened to fit with
-    /// a trailing `…` when too long. The cut keeps each Thai consonant together with its
-    /// vowels and tone marks.
+    /// A label built at run time (a zone, a category, `ใส่ 2 แผง`), [shortened](shorten) to
+    /// fit when too long.
     pub fn fit(text: impl Into<String>) -> Self {
-        let text = text.into();
-        let chars: Vec<char> = text.chars().collect();
-        if chars.len() <= Self::MAX_CHARS {
-            return Self(Cow::Owned(text));
-        }
-        // Room for the ellipsis, then back off to the start of a syllable
-        let mut cut = Self::MAX_CHARS - 1;
-        while cut > 0 && (belongs_to_previous(chars[cut]) || belongs_to_next(chars[cut - 1])) {
-            cut -= 1;
-        }
-        let kept: String = chars[..cut].iter().collect();
-        Self(Cow::Owned(format!("{}…", kept.trim_end())))
+        Self(Cow::Owned(shorten(text.into(), Self::MAX_CHARS)))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+impl Serialize for Label {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// `text` cut to at most `max_chars` characters with a trailing `…` when too long. The cut
+/// keeps each Thai consonant together with its vowels and tone marks.
+pub fn shorten(text: String, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text;
+    }
+    // Room for the ellipsis, then back off to the start of a syllable
+    let mut cut = max_chars.saturating_sub(1);
+    while cut > 0 && (belongs_to_previous(chars[cut]) || belongs_to_next(chars[cut - 1])) {
+        cut -= 1;
+    }
+    let kept: String = chars[..cut].iter().collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// Thai signs written above, below or after the consonant they follow: ั ำ ิ ี ึ ื ุ ู ฺ and
@@ -121,5 +133,19 @@ mod tests {
     fn plain_text_is_cut_at_nineteen() {
         let label = Label::fit("a".repeat(30));
         assert_eq!(label.as_str(), format!("{}…", "a".repeat(19)));
+    }
+
+    #[test]
+    fn any_length_can_be_shortened() {
+        assert_eq!(shorten("ร้านป้าแดง".to_owned(), 10), "ร้านป้าแดง");
+        // The 6th character is the tone mark of ป้
+        assert_eq!(shorten("ร้านป้าแดง".to_owned(), 6), "ร้าน…");
+        assert_eq!(shorten("abc".to_owned(), 1), "…");
+    }
+
+    #[test]
+    fn labels_serialize_as_their_text() {
+        let json = serde_json::to_string(&Label::from_static("ยกเลิก")).unwrap();
+        assert_eq!(json, r#""ยกเลิก""#);
     }
 }

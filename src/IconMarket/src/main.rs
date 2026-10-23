@@ -8,6 +8,7 @@ mod catalog;
 mod config;
 mod dispatcher;
 mod http;
+mod line;
 mod logging;
 mod notifications;
 mod orders;

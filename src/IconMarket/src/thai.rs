@@ -14,7 +14,7 @@ mod money;
 mod number;
 
 pub use date::{format_date, format_date_time};
-pub use label::Label;
+pub use label::{Label, shorten};
 pub use money::Money;
 #[allow(
     unused_imports,

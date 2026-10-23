@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::http::{self, AppState};
-use crate::{notifications, persistence, scheduler, shutdown};
+use crate::{line, notifications, persistence, scheduler, shutdown};
 
 /// Runs the steps after config loading and validation, which `main` has already done.
 ///
@@ -29,8 +29,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .context("auto-migration failed")?;
     persistence::seed(&db).await.context("seeding failed")?;
 
+    let line = line::Client::new(&config.line)?;
+
     // A rich-menu failure is logged and startup continues
-    if let Err(e) = notifications::provision_rich_menus().await {
+    if let Err(e) = notifications::provision_rich_menus(&line).await {
         warn!(
             error = format!("{e:#}"),
             "rich-menu provisioning failed, continuing"
