@@ -16,6 +16,7 @@ mod persistence;
 mod scheduler;
 mod shutdown;
 mod startup;
+mod thai;
 mod users;
 mod webhook;
 

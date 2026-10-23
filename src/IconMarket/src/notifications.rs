@@ -1,6 +1,8 @@
 //! Notifications (SRS §2.1): message templates, reply and push sending, and quota-aware
 //! batching (#15). Rich menus are provisioned here at startup (#17).
 
+pub mod templates;
+
 use tracing::debug;
 
 /// Creates or updates the rich menus for each role (FR-UI-11).
