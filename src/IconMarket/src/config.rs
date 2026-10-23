@@ -141,6 +141,15 @@ impl AiProvider {
         ("grok", Self::Grok),
         ("mock", Self::Mock),
     ];
+
+    /// As written in the config file
+    pub fn name(self) -> &'static str {
+        Self::CHOICES
+            .iter()
+            .find(|(_, provider)| *provider == self)
+            .map(|(name, _)| *name)
+            .expect("every provider is one of the choices")
+    }
 }
 
 #[derive(Debug)]

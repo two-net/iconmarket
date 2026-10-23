@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::http::{self, AppState};
-use crate::{line, notifications, persistence, scheduler, shutdown, webhook};
+use crate::{ai, line, notifications, persistence, scheduler, shutdown, webhook};
 
 /// Runs the steps after config loading and validation, which `main` has already done.
 ///
@@ -52,6 +52,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         admins_revoked = seeded.revoked,
         "seed data applied"
     );
+
+    // Turns off, with a warning, the AI features the model can't serve (FR-AIP-04). The
+    // dispatcher (#14) takes it over.
+    let _ai = ai::Gateway::new(&config.ai, config.app.time_zone, db.clone());
 
     let line = line::Client::new(&config.line)?;
 

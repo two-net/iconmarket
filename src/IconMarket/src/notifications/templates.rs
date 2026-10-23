@@ -17,7 +17,7 @@ use crate::config::{AppConfig, PoliteParticle};
 use crate::line::flex::{
     Bubble, BubbleSize, Button, ButtonStyle, Carousel, FlexBox, FlexContainer, Justify,
 };
-use crate::line::{Action, limits};
+use crate::line::{Action, Message, QuickReply, limits};
 use crate::thai::{self, NumberError};
 
 /// Builds messages in the configured voice and time zone.
@@ -66,6 +66,24 @@ impl Templates {
         format!("ขอโทษ{kha} ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้ง หรือพิมพ์ \"{menu}\" เพื่อเริ่มใหม่{kha}")
     }
 
+    /// A daily AI limit is reached (FR-AI-09): the assistant rests until tomorrow, and the
+    /// menus still work.
+    pub fn ai_resting(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ตอนนี้ผู้ช่วยขอพักก่อนนะ{kha_question} พรุ่งนี้กลับมาถามใหม่ได้ ระหว่างนี้เลือกจากเมนูด้านล่างได้เลย{kha}"
+        );
+        Message::text(text).with_quick_reply(menus())
+    }
+
+    /// The AI failed, timed out or kept answering badly (FR-AI-05, FR-AI-10).
+    pub fn ai_unavailable(&self) -> Message {
+        let kha = self.kha();
+        let text =
+            format!("ขอโทษ{kha} ผู้ช่วยตอบไม่ได้ในตอนนี้ ลองใหม่อีกครั้ง หรือเลือกจากเมนูด้านล่างได้เลย{kha}");
+        Message::text(text).with_quick_reply(menus())
+    }
+
     /// Why a typed number was not accepted, and how to type it.
     pub fn number_problem(&self, error: NumberError) -> String {
         let (kha, kha_question) = (self.kha(), self.kha_question());
@@ -84,6 +102,14 @@ impl Templates {
             }
         }
     }
+}
+
+/// Where to carry on when the assistant can't help: the main menu (FR-UI-05) and help
+/// (FR-HELP-01), as if typed.
+fn menus() -> QuickReply {
+    QuickReply::new(
+        [&labels::MENU, &labels::HELP].map(|label| Action::message(label.clone(), label.as_str())),
+    )
 }
 
 /// Page `number` (from 0) of `items` as a carousel (FR-LINE-11, FR-SRCH-03): a `card` for
@@ -184,7 +210,7 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
-    use crate::line::Message;
+    use crate::line::Body;
     use crate::line::flex::{Component, Text};
     use crate::thai::Label;
 
@@ -202,9 +228,20 @@ mod tests {
         }
     }
 
+    fn text(message: &Message) -> &str {
+        match &message.body {
+            Body::Text { text } => text,
+            body => panic!("not text: {body:?}"),
+        }
+    }
+
     /// Every message text, for checks that apply to all of them.
     fn all_texts(t: &Templates) -> Vec<String> {
-        let mut texts = vec![t.something_went_wrong()];
+        let mut texts = vec![
+            t.something_went_wrong(),
+            text(&t.ai_resting()).to_owned(),
+            text(&t.ai_unavailable()).to_owned(),
+        ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts
     }
@@ -247,6 +284,26 @@ mod tests {
         }
         assert!(t.something_went_wrong().ends_with("ค่ะ"));
         assert!(t.number_problem(NumberError::TooLarge).ends_with("นะคะ"));
+    }
+
+    /// FR-AI-09, FR-AI-10: when the assistant can't help, the user is offered the menus.
+    #[test]
+    fn ai_fallbacks_offer_the_menus() {
+        let t = templates(PoliteParticle::Kha);
+        assert!(text(&t.ai_resting()).contains("พัก"));
+        assert!(text(&t.ai_unavailable()).starts_with("ขอโทษค่ะ"));
+        for message in [t.ai_resting(), t.ai_unavailable()] {
+            let quick_reply = message.quick_reply.as_ref().expect("a Quick Reply");
+            let actions: Vec<_> = quick_reply.items.iter().map(|item| &item.action).collect();
+            assert_eq!(
+                actions,
+                [
+                    &Action::message(labels::MENU.clone(), "เมนู"),
+                    &Action::message(labels::HELP.clone(), "ช่วยเหลือ"),
+                ]
+            );
+            limits::check(&[message]).unwrap();
+        }
     }
 
     /// A card for product `number`, sized like search's
