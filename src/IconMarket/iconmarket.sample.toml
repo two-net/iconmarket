@@ -1,0 +1,29 @@
+# IconMarket configuration: the only source of configuration (SRS §6).
+#
+# Copy this file to iconmarket.toml in the working directory, or pass another path as
+# the first command-line argument. The real file holds credentials in plain text, so
+# keep it out of version control and readable only by the service account.
+#
+# Only the keys the app skeleton reads so far are listed here; see SRS §6.2 for the rest.
+
+[app]
+# HTTP listen port
+listenPort = 8080
+
+[logging]
+# debug, info, warn or error
+level = "info"
+# Log file path; empty means standard output
+file = ""
+
+[database]
+host = "localhost"
+port = 5432
+name = "iconmarket"
+# Needs rights to create and alter objects in its schema (MIG-08)
+user = "iconmarket"
+password = "change-me"
+# PostgreSQL SSL mode: disable, allow, prefer, require, verify-ca or verify-full
+sslMode = "prefer"
+# Connection pool size
+maxConnections = 10

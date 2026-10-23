@@ -1,1 +1,3 @@
 /target
+# Holds credentials (CFG-09); iconmarket.sample.toml is the committed template
+/iconmarket.toml

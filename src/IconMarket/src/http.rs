@@ -1,0 +1,150 @@
+//! The HTTP surface: the endpoints of SRS §3.4 plus the landing page at `/`.
+//! Any other path or method gets 404.
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::{get, get_service};
+use axum::{Json, Router};
+use serde::Serialize;
+use sqlx::PgPool;
+use tower_http::services::ServeFile;
+
+use crate::{catalog, persistence, webhook};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: PgPool,
+}
+
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get_service(ServeFile::new("static/index.html")))
+        .route("/health", get(health))
+        .merge(webhook::router())
+        .merge(catalog::router())
+        .fallback(not_found)
+        // Only covers routes added before it, so it stays last
+        .method_not_allowed_fallback(not_found)
+        .with_state(state)
+}
+
+async fn not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+#[derive(Serialize)]
+struct Health {
+    status: &'static str,
+    version: &'static str,
+    database: &'static str,
+}
+
+/// Liveness and readiness (NFR-MNT-04). Public, so it reveals nothing beyond up or down.
+async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>) {
+    let version = env!("CARGO_PKG_VERSION");
+    if persistence::ping(&state.db).await {
+        (
+            StatusCode::OK,
+            Json(Health {
+                status: "ok",
+                version,
+                database: "up",
+            }),
+        )
+    } else {
+        let health = Health {
+            status: "unavailable",
+            version,
+            database: "down",
+        };
+        (StatusCode::SERVICE_UNAVAILABLE, Json(health))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::{Method, Request, header};
+    use axum::response::Response;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use tower::ServiceExt;
+
+    use super::*;
+
+    fn app() -> Router {
+        // Nothing listens on port 1, so the database is always down
+        let options = PgConnectOptions::new_without_pgpass()
+            .host("127.0.0.1")
+            .port(1);
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy_with(options);
+        router(AppState { db })
+    }
+
+    async fn send(method: Method, uri: &str) -> Response {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        app().oneshot(request).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn landing_page_is_served_at_root() {
+        let response = send(Method::GET, "/").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+    }
+
+    #[tokio::test]
+    async fn anything_else_is_not_found() {
+        for (method, uri) in [
+            (Method::GET, "/index.html"),
+            (Method::POST, "/"),
+            (Method::GET, "/foo"),
+            (Method::GET, "/health/"),
+            (Method::POST, "/health"),
+            (Method::GET, "/webhook/line"),
+            (Method::POST, "/img/p/abc"),
+            (Method::GET, "/img/p"),
+        ] {
+            let status = send(method.clone(), uri).await.status();
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn endpoints_owned_by_later_issues_are_stubs() {
+        for (method, uri) in [
+            (Method::POST, "/webhook/line"),
+            (Method::GET, "/img/p/abc"),
+            (Method::GET, "/img/s/abc"),
+        ] {
+            let status = send(method.clone(), uri).await.status();
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn health_is_unavailable_without_the_database() {
+        let response = send(Method::GET, "/health").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "status": "unavailable",
+                "version": env!("CARGO_PKG_VERSION"),
+                "database": "down",
+            })
+        );
+    }
+}
