@@ -322,6 +322,11 @@ impl Secret {
     pub fn expose(&self) -> &str {
         &self.0
     }
+
+    #[cfg(test)]
+    pub fn new(value: &str) -> Self {
+        Self(value.to_owned())
+    }
 }
 
 impl fmt::Debug for Secret {

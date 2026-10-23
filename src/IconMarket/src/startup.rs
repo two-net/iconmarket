@@ -22,6 +22,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .await
         .context("cannot connect to the database")?;
     info!("connected to the database");
+    persistence::check_encoding(&db).await?;
 
     persistence::migrate(&db)
         .await

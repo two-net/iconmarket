@@ -1,8 +1,20 @@
-//! Persistence (SRS §2.1): the PostgreSQL connection pool, auto-migration and seeding.
-//! Entity models arrive with #5, migration and seeding with #7.
+//! Persistence (SRS §2.1): the PostgreSQL connection pool, the code-first entity models
+//! (§5.1), auto-migration and seeding. Migration and seeding arrive with #7.
+//!
+//! The ORM is SeaORM. The models in [`entity`] are the single source of truth for the schema
+//! (CON-04, MIG-01): [`schema`] generates every table, key, index and constraint from them.
+
+pub mod entity;
+mod money;
+#[cfg(test)]
+mod tests;
 
 use std::time::Duration;
 
+use anyhow::{Context, ensure};
+use sea_orm::prelude::Uuid;
+use sea_orm::schema::SchemaBuilder;
+use sea_orm::{DatabaseConnection, DbBackend, Schema, SqlxPostgresConnector};
 use sqlx::ConnectOptions;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -51,10 +63,78 @@ fn connect_options(config: &DatabaseConfig) -> PgConnectOptions {
         .disable_statement_logging()
 }
 
+/// The ORM over `pool`, so every query is parameterized (NFR-SEC-07).
+#[allow(
+    dead_code,
+    reason = "the flows that query through the ORM are built by later issues"
+)]
+pub fn orm(pool: PgPool) -> DatabaseConnection {
+    SqlxPostgresConnector::from_sqlx_postgres_pool(pool)
+}
+
+/// Fails unless the database stores text as UTF-8, so Thai is kept and compared without loss
+/// (DR-09).
+pub async fn check_encoding(db: &PgPool) -> anyhow::Result<()> {
+    let encoding: String = sqlx::query_scalar("SHOW server_encoding")
+        .fetch_one(db)
+        .await
+        .context("cannot read the database encoding")?;
+    ensure!(
+        encoding == "UTF8",
+        "the database encoding is {encoding}, but Thai text needs UTF8 (DR-09)"
+    );
+    Ok(())
+}
+
 /// Whether the database answers within [`PING_TIMEOUT`].
 pub async fn ping(db: &PgPool) -> bool {
     let query = sqlx::query("SELECT 1").execute(db);
     matches!(tokio::time::timeout(PING_TIMEOUT, query).await, Ok(Ok(_)))
+}
+
+/// Every table of §5.1, with its keys, indexes and constraints, as the entity models define it.
+#[allow(
+    dead_code,
+    reason = "auto-migration applies it from #7; only tests do so far"
+)]
+pub fn schema() -> SchemaBuilder {
+    use entity::*;
+
+    // Registration order doesn't matter: tables are created after those they reference
+    Schema::new(DbBackend::Postgres)
+        .builder()
+        .register(user::Entity)
+        .register(shop::Entity)
+        .register(category::Entity)
+        .register(product::Entity)
+        .register(image::Entity)
+        .register(cart_item::Entity)
+        .register(order::Entity)
+        .register(order_item::Entity)
+        .register(order_event::Entity)
+        .register(payment_slip::Entity)
+        .register(rating::Entity)
+        .register(report::Entity)
+        .register(session::Entity)
+        .register(pending_action::Entity)
+        .register(ai_message::Entity)
+        .register(ai_call_log::Entity)
+        .register(webhook_event::Entity)
+        .register(push_log::Entity)
+        .register(audit_log::Entity)
+        .register(counter::Entity)
+}
+
+/// A new ID for anything reachable by a public link or carried in postback data: 128 bits
+/// from the OS random source (NFR-SEC-04). A v4 UUID would have only 122 random bits.
+#[allow(
+    dead_code,
+    reason = "images and pending actions are created by later issues"
+)]
+pub fn random_id() -> Uuid {
+    let mut bytes = [0; 16];
+    getrandom::fill(&mut bytes).expect("the OS random source is available");
+    Uuid::from_bytes(bytes)
 }
 
 /// Brings the schema up to date with the entity models (MIG-02).

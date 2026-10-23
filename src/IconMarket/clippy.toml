@@ -1,0 +1,3 @@
+disallowed-types = [
+    { path = "chrono::Local", reason = "reads TZ and /etc/localtime; config comes only from the file (CFG-02)" },
+]
