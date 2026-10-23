@@ -52,10 +52,6 @@ where
 
 /// The span a webhook event is processed in. Record the internal user ID, never the LINE
 /// user ID, once it is known: `span.record("user_id", id)`.
-#[allow(
-    dead_code,
-    reason = "used by the webhook receiver and dispatcher (#8, #14)"
-)]
 pub fn event_span(correlation_id: &str) -> Span {
     tracing::info_span!("event", correlation_id, user_id = tracing::field::Empty)
 }

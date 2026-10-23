@@ -14,6 +14,7 @@ use crate::{catalog, persistence, webhook};
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    pub webhook: webhook::Verifier,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -63,25 +64,20 @@ async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use axum::body::Body;
     use axum::http::{Method, Request, header};
     use axum::response::Response;
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use tower::ServiceExt;
 
     use super::*;
+    use crate::config::Secret;
+    use crate::persistence::testing;
 
     fn app() -> Router {
-        // Nothing listens on port 1, so the database is always down
-        let options = PgConnectOptions::new_without_pgpass()
-            .host("127.0.0.1")
-            .port(1);
-        let db = PgPoolOptions::new()
-            .acquire_timeout(Duration::from_secs(1))
-            .connect_lazy_with(options);
-        router(AppState { db })
+        router(AppState {
+            db: testing::unreachable(),
+            webhook: webhook::Verifier::new(&Secret::new("channel-secret")),
+        })
     }
 
     async fn send(method: Method, uri: &str) -> Response {
@@ -119,11 +115,7 @@ mod tests {
 
     #[tokio::test]
     async fn endpoints_owned_by_later_issues_are_stubs() {
-        for (method, uri) in [
-            (Method::POST, "/webhook/line"),
-            (Method::GET, "/img/p/abc"),
-            (Method::GET, "/img/s/abc"),
-        ] {
+        for (method, uri) in [(Method::GET, "/img/p/abc"), (Method::GET, "/img/s/abc")] {
             let status = send(method.clone(), uri).await.status();
             assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {uri}");
         }

@@ -13,15 +13,14 @@ use sea_orm::{
     SqlErr,
 };
 use serde_json::json;
-use sqlx::postgres::PgSslMode;
 use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ContainerRequest, ImageExt};
+use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 
 use super::entity::*;
 use super::seed::Seeded;
+use super::testing::start;
 use super::*;
-use crate::config::{AdminConfig, CatalogConfig, Secret};
+use crate::config::{AdminConfig, CatalogConfig};
 use crate::thai::Money;
 
 /// The entities of §5.1 and the schema versions (MIG-09), by table name.
@@ -183,27 +182,8 @@ fn personal_data_is_marked() {
 
 /// A fresh database holding the schema, and the container serving it.
 async fn database() -> (ContainerAsync<Postgres>, DatabaseConnection) {
-    let (container, pool) = start(Postgres::default().into()).await;
-    migrate(&pool).await.unwrap();
+    let (container, pool) = testing::migrated().await;
     (container, orm(pool))
-}
-
-/// An empty database, and the container serving it.
-async fn start(image: ContainerRequest<Postgres>) -> (ContainerAsync<Postgres>, PgPool) {
-    let container = image.with_tag("18").start().await.expect(
-        "cannot start PostgreSQL; is Docker running at DOCKER_HOST or /var/run/docker.sock?",
-    );
-    let config = DatabaseConfig {
-        host: container.get_host().await.unwrap().to_string(),
-        port: container.get_host_port_ipv4(5432).await.unwrap(),
-        name: "postgres".to_owned(),
-        user: "postgres".to_owned(),
-        password: Secret::new("postgres"),
-        ssl_mode: PgSslMode::Disable,
-        max_connections: 2,
-    };
-    let pool = connect(&config).await.unwrap();
-    (container, pool)
 }
 
 /// The tables in the database, by name.

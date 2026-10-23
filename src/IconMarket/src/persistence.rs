@@ -16,6 +16,8 @@ mod migration;
 mod money;
 mod seed;
 #[cfg(test)]
+pub mod testing;
+#[cfg(test)]
 mod tests;
 
 use std::time::Duration;

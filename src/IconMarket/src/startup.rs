@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::http::{self, AppState};
-use crate::{line, notifications, persistence, scheduler, shutdown};
+use crate::{line, notifications, persistence, scheduler, shutdown, webhook};
 
 /// Runs the steps after config loading and validation, which `main` has already done.
 ///
@@ -71,7 +71,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
         .await
         .with_context(|| format!("cannot listen on port {port}"))?;
-    let app = http::router(AppState { db: db.clone() });
+    let app = http::router(AppState {
+        db: db.clone(),
+        webhook: webhook::Verifier::new(&config.line.channel_secret),
+    });
     let mut server = tokio::spawn(
         axum::serve(listener, app)
             .with_graceful_shutdown(stop.clone().cancelled_owned())
