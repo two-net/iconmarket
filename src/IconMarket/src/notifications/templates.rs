@@ -13,6 +13,7 @@
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
+use crate::catalog::images::Rejected;
 use crate::config::{AppConfig, PoliteParticle};
 use crate::line::flex::{
     Bubble, BubbleSize, Button, ButtonStyle, Carousel, FlexBox, FlexContainer, Justify,
@@ -99,6 +100,28 @@ impl Templates {
             }
             NumberError::TooLarge => {
                 format!("ขอโทษ{kha} ตัวเลขนี้มากเกินไป ลองตรวจดูแล้วพิมพ์ใหม่อีกครั้งนะ{kha_question}")
+            }
+        }
+    }
+
+    /// Why a photo was not kept, and what to send instead (FR-PROD-04).
+    pub fn image_rejected(&self, rejected: Rejected) -> String {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        match rejected {
+            Rejected::TooLarge { max_mb } => format!(
+                "ขอโทษ{kha} รูปนี้ใหญ่เกิน {max_mb} เมกะไบต์ ลองส่งรูปที่เล็กลง หรือแคปหน้าจอรูปนั้นแล้วส่งแทนได้เลย{kha}"
+            ),
+            Rejected::NotJpegOrPng => {
+                format!("ขอโทษ{kha} ไฟล์นี้ไม่ใช่รูปภาพ ส่งเป็นรูปถ่ายจากกล้องหรืออัลบั้มได้เลย{kha}")
+            }
+            Rejected::Unreadable => {
+                format!("ขอโทษ{kha} เปิดรูปนี้ไม่ได้ ลองถ่ายใหม่หรือเลือกรูปอื่นแล้วส่งอีกครั้งนะ{kha_question}")
+            }
+            Rejected::Full { max } => format!(
+                "ขอโทษ{kha} สินค้าหนึ่งชิ้นมีรูปได้ไม่เกิน {max} รูป ถ้าอยากใช้รูปนี้ เปลี่ยนรูปเดิมได้ที่ \"สินค้าของฉัน\"{kha}"
+            ),
+            Rejected::Unavailable => {
+                format!("ขอโทษ{kha} รับรูปไม่สำเร็จ ส่งรูปเดิมอีกครั้งได้เลย{kha}")
             }
         }
     }
@@ -221,6 +244,14 @@ mod tests {
         NumberError::TooLarge,
     ];
 
+    const REJECTIONS: [Rejected; 5] = [
+        Rejected::TooLarge { max_mb: 10 },
+        Rejected::NotJpegOrPng,
+        Rejected::Unreadable,
+        Rejected::Full { max: 3 },
+        Rejected::Unavailable,
+    ];
+
     fn templates(particle: PoliteParticle) -> Templates {
         Templates {
             particle,
@@ -243,6 +274,7 @@ mod tests {
             text(&t.ai_unavailable()).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
+        texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
         texts
     }
 
@@ -303,6 +335,25 @@ mod tests {
                 ]
             );
             limits::check(&[message]).unwrap();
+        }
+    }
+
+    /// FR-PROD-04: a refused photo comes with the limit it broke and what to send instead.
+    #[test]
+    fn refused_photos_are_explained_with_their_limit() {
+        let t = templates(PoliteParticle::Kha);
+        assert!(
+            t.image_rejected(Rejected::TooLarge { max_mb: 10 })
+                .contains("ใหญ่เกิน 10 เมกะไบต์")
+        );
+        assert!(
+            t.image_rejected(Rejected::Full { max: 3 })
+                .contains("ไม่เกิน 3 รูป")
+        );
+        for rejected in REJECTIONS {
+            let text = t.image_rejected(rejected);
+            assert!(text.starts_with("ขอโทษค่ะ"), "{text}");
+            limits::check(&[Message::text(text)]).unwrap();
         }
     }
 

@@ -150,10 +150,7 @@ fn add_entities<T: FromEntities>(models: T) -> T {
 
 /// A new ID for anything reachable by a public link or carried in postback data: 128 bits
 /// from the OS random source (NFR-SEC-04). A v4 UUID would have only 122 random bits.
-#[allow(
-    dead_code,
-    reason = "images and pending actions are created by later issues"
-)]
+#[allow(dead_code, reason = "pending actions are created by later issues")]
 pub fn random_id() -> Uuid {
     let mut bytes = [0; 16];
     getrandom::fill(&mut bytes).expect("the OS random source is available");

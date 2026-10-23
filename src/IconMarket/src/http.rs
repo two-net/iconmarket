@@ -113,11 +113,28 @@ mod tests {
         }
     }
 
+    /// A malformed ID or token is refused without asking the database.
     #[tokio::test]
-    async fn endpoints_owned_by_later_issues_are_stubs() {
-        for (method, uri) in [(Method::GET, "/img/p/abc"), (Method::GET, "/img/s/abc")] {
-            let status = send(method.clone(), uri).await.status();
-            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {uri}");
+    async fn image_links_need_a_well_formed_id() {
+        for uri in [
+            "/img/p/abc",
+            "/img/s/abc",
+            "/img/p/0123456789abcdef0123456789abcdeg",
+            "/img/s/..%2F..%2Fhealth",
+        ] {
+            let status = send(Method::GET, uri).await.status();
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn image_links_are_unavailable_without_the_database() {
+        for uri in [
+            "/img/p/0123456789abcdef0123456789abcdef",
+            "/img/s/01234567-89ab-cdef-0123-456789abcdef",
+        ] {
+            let status = send(Method::GET, uri).await.status();
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
         }
     }
 

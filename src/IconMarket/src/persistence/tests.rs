@@ -3,9 +3,7 @@
 
 use std::fmt::Debug;
 
-use chrono::{TimeDelta, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
-use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{
     ActiveEnum, ActiveModelBehavior, ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr,
@@ -18,7 +16,9 @@ use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 
 use super::entity::*;
 use super::seed::Seeded;
-use super::testing::start;
+use super::testing::{
+    Market, at, market, new_category, new_order, new_product, new_shop, new_user, start,
+};
 use super::*;
 use crate::config::{AdminConfig, CatalogConfig};
 use crate::thai::Money;
@@ -197,113 +197,6 @@ async fn tables(pool: &PgPool) -> Vec<String> {
     .fetch_all(pool)
     .await
     .unwrap()
-}
-
-/// 22 ต.ค. 2569 14:30 in Bangkok, with microseconds as PostgreSQL keeps them.
-fn at() -> DateTimeUtc {
-    Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap() + TimeDelta::microseconds(123_456)
-}
-
-fn new_user(line_user_id: &str) -> user::ActiveModel {
-    user::ActiveModel {
-        line_user_id: Set(Some(line_user_id.to_owned())),
-        is_admin: Set(false),
-        is_following: Set(true),
-        status: Set(user::Status::Active),
-        created_at: Set(at()),
-        updated_at: Set(at()),
-        ..Default::default()
-    }
-}
-
-fn new_shop(owner_id: i64) -> shop::ActiveModel {
-    shop::ActiveModel {
-        owner_id: Set(owner_id),
-        name: Set("ร้านป้าแดง".to_owned()),
-        description: Set("ไข่ไก่ ผักสวนครัว".to_owned()),
-        status: Set(shop::Status::Approved),
-        is_open: Set(true),
-        offers_pickup: Set(true),
-        offers_delivery: Set(true),
-        delivery_fee: Set(Money::from_baht(10)),
-        show_phone: Set(true),
-        created_at: Set(at()),
-        updated_at: Set(at()),
-        ..Default::default()
-    }
-}
-
-fn new_category(name: &str) -> category::ActiveModel {
-    category::ActiveModel {
-        name: Set(name.to_owned()),
-        sort_order: Set(1),
-        is_active: Set(true),
-        ..Default::default()
-    }
-}
-
-fn new_product(
-    shop_id: i64,
-    category_id: i64,
-    name: &str,
-    stock: Option<i32>,
-) -> product::ActiveModel {
-    product::ActiveModel {
-        shop_id: Set(shop_id),
-        category_id: Set(category_id),
-        name: Set(name.to_owned()),
-        price: Set(Money::from_baht(110)),
-        unit: Set("แผง".to_owned()),
-        stock: Set(stock),
-        status: Set(product::Status::Active),
-        created_at: Set(at()),
-        updated_at: Set(at()),
-        ..Default::default()
-    }
-}
-
-fn new_order(buyer_id: i64, shop_id: i64, number: &str, checkout_key: Uuid) -> order::ActiveModel {
-    order::ActiveModel {
-        order_number: Set(number.to_owned()),
-        checkout_key: Set(checkout_key),
-        buyer_id: Set(buyer_id),
-        shop_id: Set(shop_id),
-        status: Set(order::Status::Pending),
-        fulfillment: Set(order::Fulfillment::Pickup),
-        subtotal: Set(Money::from_baht(220)),
-        delivery_fee: Set(Money::ZERO),
-        total: Set(Money::from_baht(220)),
-        payment_method: Set(order::PaymentMethod::Cash),
-        payment_status: Set(order::PaymentStatus::Unpaid),
-        created_at: Set(at()),
-        updated_at: Set(at()),
-        ..Default::default()
-    }
-}
-
-/// A buyer, and a seller's shop with one product in stock.
-struct Market {
-    buyer: user::Model,
-    shop: shop::Model,
-    category: category::Model,
-    product: product::Model,
-}
-
-async fn market(db: &DatabaseConnection) -> Market {
-    let buyer = new_user("U-buyer").insert(db).await.unwrap();
-    let seller = new_user("U-seller").insert(db).await.unwrap();
-    let shop = new_shop(seller.id).insert(db).await.unwrap();
-    let category = new_category("ไข่/นม").insert(db).await.unwrap();
-    let product = new_product(shop.id, category.id, "ไข่ไก่เบอร์ 2", Some(8))
-        .insert(db)
-        .await
-        .unwrap();
-    Market {
-        buyer,
-        shop,
-        category,
-        product,
-    }
 }
 
 #[track_caller]

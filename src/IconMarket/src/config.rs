@@ -225,7 +225,8 @@ pub struct NotificationConfig {
     pub group_digest_time: NaiveTime,
 }
 
-#[derive(Debug)]
+/// Cheap to clone, for image processing on the blocking pool.
+#[derive(Debug, Clone)]
 pub struct ImageConfig {
     pub max_upload_mb: u32,
     pub max_dimension_px: u32,

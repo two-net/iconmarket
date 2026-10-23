@@ -18,6 +18,9 @@ getrandom = "0.4.3"
 # Webhook signatures: HMAC-SHA256 of the body with the channel secret, compared in constant time
 # (FR-LINE-02)
 hmac = "0.13.0"
+# Decodes uploads and re-encodes them as JPEG without metadata (FR-PROD-04, NFR-SEC-06). Only the
+# two formats accepted, and no rayon: processing runs on the blocking pool, two at a time
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 # Outbound HTTPS to the LINE API. No default features: `system-proxy` reads the OS proxy settings
 # and the default verifier reads SSL_CERT_FILE; TLS comes from the `rustls` config below and the
 # client calls `no_proxy`, so config comes only from the file (CFG-02)
