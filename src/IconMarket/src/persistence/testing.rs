@@ -17,6 +17,12 @@ pub async fn start(image: ContainerRequest<Postgres>) -> (ContainerAsync<Postgre
     let container = image.with_tag("18").start().await.expect(
         "cannot start PostgreSQL; is Docker running at DOCKER_HOST or /var/run/docker.sock?",
     );
+    let pool = pool(&container).await;
+    (container, pool)
+}
+
+/// Another pool on the database `container` serves, as a second instance of the app has.
+pub async fn pool(container: &ContainerAsync<Postgres>) -> PgPool {
     let config = DatabaseConfig {
         host: container.get_host().await.unwrap().to_string(),
         port: container.get_host_port_ipv4(5432).await.unwrap(),
@@ -26,8 +32,7 @@ pub async fn start(image: ContainerRequest<Postgres>) -> (ContainerAsync<Postgre
         ssl_mode: PgSslMode::Disable,
         max_connections: 2,
     };
-    let pool = connect(&config).await.unwrap();
-    (container, pool)
+    connect(&config).await.unwrap()
 }
 
 /// A fresh database holding the schema, and the container serving it.

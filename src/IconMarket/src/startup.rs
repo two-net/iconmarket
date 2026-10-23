@@ -69,7 +69,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     let stop = CancellationToken::new();
     let jobs = TaskTracker::new();
-    scheduler::start(&jobs, stop.clone());
+    scheduler::start(&jobs, stop.clone(), db.clone(), config.app.time_zone).await;
 
     let port = config.app.listen_port;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
