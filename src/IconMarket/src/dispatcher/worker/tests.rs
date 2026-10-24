@@ -3,6 +3,7 @@
 //! NFR-REL-03), the rate limit (NFR-SEC-05) and routing end to end (FR-UI-12). Each test
 //! starts a throwaway PostgreSQL, so they need Docker.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,14 +22,18 @@ use tokio_util::task::TaskTracker;
 
 use super::*;
 use crate::config::{self, Config};
+use crate::dispatcher::Turn;
 use crate::dispatcher::menu::Tab;
 use crate::line::testing::{Answer, Fake, PUSH, REPLY};
+use crate::line::{Action, QuickReply};
+use crate::notifications::templates::labels;
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{join_attempt, push_log, session, user};
 use crate::persistence::{orm, testing};
-use crate::users::access::Denied;
-use crate::users::onboarding;
+use crate::thai::Label;
+use crate::users::access::{Actor, Denied};
+use crate::users::{onboarding, profile};
 
 const ALICE: &str = "Ua1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const BOB: &str = "Ub2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
@@ -771,6 +776,96 @@ async fn bumping_the_notice_version_asks_again() {
         .unwrap()
         .unwrap();
     assert_eq!(user.consent_version.as_deref(), Some("2"));
+}
+
+/// AC (FR-ONB-04, FR-ONB-05): an onboarded user sees "ข้อมูลของฉัน", corrects their phone, an
+/// invalid number being refused with guidance, and shares their location; each time the card
+/// shows what is now held. A user not yet onboarded gets the privacy notice instead.
+#[tokio::test]
+async fn my_data_is_shown_and_corrected_end_to_end() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let shared = json!({
+        "id": "a6",
+        "type": "location",
+        "latitude": 13.75,
+        "longitude": 100.5,
+        "address": "หมู่บ้านไอคอน",
+    });
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "my_data"),
+            tapped("a2", ALICE, "my_data.edit?part=phone"),
+            said("a3", ALICE, "12345"),
+            said("a4", ALICE, "081-234-5678"),
+            tapped("a5", ALICE, "my_data.edit?part=location"),
+            sent("a6", ALICE, shared),
+            tapped("b1", BOB, "my_data"),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 7).await;
+    running.stop().await;
+
+    let config = config(20);
+    let user = s.user(ALICE).await;
+    assert_eq!(user.phone.as_deref(), Some("0812345678"));
+    assert_eq!((user.latitude, user.longitude), (Some(13.75), Some(100.5)));
+    // "ข้อมูลของฉัน" as it is now, which the last reply ends with
+    let txn = s.db.begin().await.unwrap();
+    let actor = Actor::load(&txn, alice).await.unwrap().unwrap();
+    let turn = Turn::new(&txn, t, &config.session, actor, Utc::now())
+        .await
+        .unwrap();
+    let card = profile::show(&turn, &config, &turn.actor.user)
+        .await
+        .unwrap();
+    assert_eq!(turn.flow, None, "the flow is over");
+    drop(turn);
+    txn.rollback().await.unwrap();
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    let says = |label: &Label| Action::message(label.clone(), label.as_str());
+    let prompt = |ask: Message, choices: Vec<Action>| {
+        let ask = ask.with_quick_reply(QuickReply::new(choices));
+        templates::with_cancel(ask)
+    };
+    let skip = says(&labels::SKIP);
+    let share = Action::Location {
+        label: labels::SHARE_LOCATION.clone(),
+    };
+    // The card, before the phone was given
+    let before = reply("a1");
+    assert_eq!(before[0]["altText"], "ข้อมูลของฉัน");
+    assert!(!before.to_string().contains("081-234-5678"));
+    assert_eq!(
+        reply("a2"),
+        json!([prompt(t.ask_phone(None), vec![skip.clone()])])
+    );
+    assert_eq!(
+        reply("a3"),
+        json!([prompt(t.phone_invalid(false), vec![skip.clone()])])
+    );
+    let saved = reply("a4");
+    assert_eq!(saved[0], json!(t.phone_saved(Some("081-234-5678"))));
+    assert_eq!(saved[1]["altText"], "ข้อมูลของฉัน");
+    assert!(saved[1].to_string().contains("เบอร์โทร"));
+    assert!(saved[1].to_string().contains("081-234-5678"));
+    assert_eq!(
+        reply("a5"),
+        json!([prompt(t.ask_location(false), vec![share, skip])])
+    );
+    assert_eq!(
+        reply("a6"),
+        json!([t.location_saved(true), card[0].clone()])
+    );
+    // Bob hasn't consented yet
+    assert_eq!(reply("b1"), json!([s.notice(&config, false)]));
+    assert_eq!(replies.len(), 7);
 }
 
 /// NFR-REL-05: once stopped, the worker takes no more events.

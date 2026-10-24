@@ -53,10 +53,7 @@ use crate::notifications::{Kind, Outbox, To};
 use crate::persistence::entity::{pending_action, session};
 use crate::users::access::Actor;
 
-#[allow(
-    unused_imports,
-    reason = "the flows that take input are built by later issues"
-)]
+pub use event::Location;
 pub use route::Input;
 pub use worker::{Context, Wakeup, start};
 

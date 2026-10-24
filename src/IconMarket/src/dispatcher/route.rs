@@ -23,12 +23,13 @@ use sea_orm::{DatabaseTransaction, DbErr};
 use tracing::{Span, debug, info, warn};
 
 use super::event::{Content, Event, Kind, Location, Source};
+use super::flow::{self, Flow};
 use super::limit::{self, Verdict};
 use super::menu::{self, Item};
 use super::pending;
 use super::postback::Postback;
 use super::worker::Context;
-use super::{Finished, Turn, flow};
+use super::{Finished, Turn};
 use crate::ai::Feature;
 use crate::line::Message;
 use crate::notifications::Queued;
@@ -36,8 +37,9 @@ use crate::notifications::templates::labels;
 use crate::payments;
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
+use crate::users::address::{self, AddressFlow};
 use crate::users::onboarding::{self, Said};
-use crate::users::{self, roles};
+use crate::users::{self, profile, roles};
 
 /// Typed by the operator to get their own LINE user ID, for `admin.lineUserIds` (FR-ONB-08)
 const MY_ID: &str = "#myid";
@@ -45,6 +47,10 @@ const MY_ID: &str = "#myid";
 const GROUP_ID: &str = "#groupid";
 /// What the actions of onboarding's buttons start with (FR-ONB-02)
 const ONBOARDING: &str = "onboarding.";
+/// What the actions of the buttons of "ข้อมูลของฉัน" start with (FR-ONB-05)
+const MY_DATA: &str = "my_data.";
+/// What the actions of the address flow's buttons start with (FR-ONB-04)
+const ADDRESS: &str = "address.";
 
 /// The answer to an event, sent once its transaction commits.
 #[derive(Clone, Debug, PartialEq)]
@@ -377,7 +383,7 @@ async fn route(
     };
     let mut step = decide(&input, state);
     if step == Step::Flow {
-        if let Some(messages) = answer_flow(turn, &input).await? {
+        if let Some(messages) = answer_flow(context, turn, &input).await? {
             return Ok(messages);
         }
         step = decide(
@@ -436,20 +442,29 @@ fn step_name(step: &Step) -> &'static str {
 ///
 /// Each flow adds its arm, as its issue builds it: the address (#20), shop applications and
 /// settings (#23, #24), products (#25, #26) and checkout (#32).
-#[allow(
-    clippy::match_single_binding,
-    reason = "the flows are added by later issues"
-)]
-async fn answer_flow(turn: &mut Turn<'_>, input: &Input) -> Result<Option<Vec<Message>>, DbErr> {
-    let Some(name) = turn.flow.as_ref().map(|flow| flow.flow().to_owned()) else {
+async fn answer_flow(
+    context: &Context,
+    turn: &mut Turn<'_>,
+    input: &Input,
+) -> Result<Option<Vec<Message>>, DbErr> {
+    let Some(stored) = turn.flow.clone() else {
         return Ok(None);
     };
-    match name.as_str() {
-        _ => {
+    let config = &context.config;
+    let answered = match stored.flow() {
+        AddressFlow::NAME => match stored.read::<AddressFlow>() {
+            Some(session) => Some(address::answer(turn, config, session, input).await),
+            None => None,
+        },
+        _ => None,
+    };
+    match answered {
+        Some(answered) => answered,
+        None => {
             debug!(
-                flow = name,
+                flow = stored.flow(),
                 input = input.kind(),
-                "no such flow in this release; ended"
+                "no such flow in this release, or a draft it can't read; ended"
             );
             turn.expire_flow().await?;
             Ok(None)
@@ -470,6 +485,12 @@ async fn tapped(
         menu::SWITCH_TAB => return Ok(Vec::new()),
         action if action.starts_with(ONBOARDING) => {
             return onboarding::tapped(turn, &context.config, postback).await;
+        }
+        action if action == profile::SHOW || action.starts_with(MY_DATA) => {
+            return profile::tapped(turn, &context.config, postback).await;
+        }
+        action if action.starts_with(ADDRESS) => {
+            return address::tapped(turn, &context.config, postback).await;
         }
         _ => {}
     }

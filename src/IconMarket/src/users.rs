@@ -2,15 +2,18 @@
 //! deletion. Built by #12, #19, #20 and #36.
 //!
 //! [`roles`] holds who is a buyer, seller and admin, [`access`] the one authorization check
-//! every action goes through, and [`onboarding`] what a user does before anything else.
+//! every action goes through, [`onboarding`] what a user does before anything else,
+//! [`address`] the address asked for when first needed, and [`profile`] "ข้อมูลของฉัน".
 
 #![allow(
     dead_code,
-    reason = "profile and account handling are built by #20 and #36"
+    reason = "account deletion is built by #36; shop applications (#23) and checkout (#32) first ask for the address"
 )]
 
 pub mod access;
+pub mod address;
 pub mod onboarding;
+pub mod profile;
 pub mod roles;
 #[cfg(test)]
 mod tests;

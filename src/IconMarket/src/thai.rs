@@ -1,5 +1,6 @@
 //! Thai text in and out (CON-11), shared by every flow: numbers typed with Arabic or Thai
-//! digits, money in baht, dates in the Buddhist Era and labels that fit LINE's buttons.
+//! digits, phone numbers, money in baht, dates in the Buddhist Era and labels that fit LINE's
+//! buttons.
 //!
 //! No wording lives here; the message templates (`notifications::templates`) hold it.
 
@@ -12,6 +13,7 @@ mod date;
 mod label;
 mod money;
 mod number;
+mod phone;
 
 pub use date::{format_date, format_date_time, local_instant};
 pub use label::{Label, shorten};
@@ -21,3 +23,4 @@ pub use money::Money;
     reason = "the flows that read numbers are built by later issues"
 )]
 pub use number::{NumberError, arabic_digits, parse_money, parse_whole};
+pub use phone::{format_phone, parse_phone};
