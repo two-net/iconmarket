@@ -313,7 +313,7 @@ impl From<LogLevel> for LevelFilter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct RetentionConfig {
     pub webhook_event_days: u32,
     pub ai_message_days: u32,

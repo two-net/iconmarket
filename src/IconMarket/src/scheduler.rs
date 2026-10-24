@@ -30,8 +30,9 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{Instrument, debug, info, info_span, warn};
 
+use crate::config::RetentionConfig;
 use crate::persistence::{self, entity::job};
-use crate::{dispatcher, line, notifications, thai};
+use crate::{dispatcher, line, notifications, retention, thai};
 
 /// How soon a failed run is tried again, unless the job is due sooner anyway.
 const RETRY_AFTER: TimeDelta = TimeDelta::minutes(1);
@@ -40,9 +41,12 @@ const RETRY_AFTER: TimeDelta = TimeDelta::minutes(1);
 /// instance rescheduled, or the system clock being changed.
 const MAX_WAIT: TimeDelta = TimeDelta::minutes(1);
 
-/// A background job (FR-JOB-02). The others are added by their issues: retention (#16),
-/// pending-order expiry (#33), and the summary and digest (#47, #48). The webhook inbox,
-/// processed continuously, has a worker of its own in the dispatcher.
+/// When retention is applied each day: at night (FR-JOB-02), in the business time zone.
+const RETENTION_AT: NaiveTime = NaiveTime::from_hms_opt(3, 0, 0).expect("a valid time");
+
+/// A background job (FR-JOB-02). The others are added by their issues: pending-order expiry
+/// (#33), and the summary and digest (#47, #48). The webhook inbox, processed continuously,
+/// has a worker of its own in the dispatcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Job {
     /// Deletes expired sessions and pending actions (§5.4)
@@ -50,16 +54,19 @@ pub enum Job {
     /// Sends the pushes left to send: failed tries, and those a crash or shutdown cut off
     /// (FR-LINE-12, FR-NOT-05)
     RetryPushes,
+    /// Deletes what has been kept for as long as §5.4 allows (NFR-PRIV-06)
+    ApplyRetention,
 }
 
 impl Job {
-    const ALL: [Self; 2] = [Self::DeleteExpired, Self::RetryPushes];
+    const ALL: [Self; 3] = [Self::DeleteExpired, Self::RetryPushes, Self::ApplyRetention];
 
     /// Its key in `jobs` and in log lines.
     pub fn name(self) -> &'static str {
         match self {
             Self::DeleteExpired => "delete-expired",
             Self::RetryPushes => "retry-pushes",
+            Self::ApplyRetention => "apply-retention",
         }
     }
 
@@ -67,6 +74,7 @@ impl Job {
         match self {
             Self::DeleteExpired => Schedule::Every(TimeDelta::minutes(15)),
             Self::RetryPushes => Schedule::Every(TimeDelta::minutes(1)),
+            Self::ApplyRetention => Schedule::Daily(RETENTION_AT),
         }
     }
 
@@ -92,6 +100,23 @@ impl Job {
                     );
                 }
             }
+            Self::ApplyRetention => {
+                let deleted = retention::apply(&context.db, &context.retention, Utc::now()).await?;
+                if deleted == retention::Deleted::default() {
+                    debug!("retention applied, nothing to delete");
+                } else {
+                    info!(
+                        webhook_events = deleted.webhook_events,
+                        ai_messages = deleted.ai_messages,
+                        ai_call_logs = deleted.ai_call_logs,
+                        push_logs = deleted.push_logs,
+                        slip_images = deleted.slip_images,
+                        deleted_owner_images = deleted.deleted_owner_images,
+                        audit_logs = deleted.audit_logs,
+                        "retention applied"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -104,6 +129,7 @@ struct Context {
     line: line::Client,
     /// The business time zone (`app.timeZone`), which daily schedules are in
     time_zone: Tz,
+    retention: RetentionConfig,
 }
 
 /// When a job runs.
@@ -113,10 +139,6 @@ pub enum Schedule {
     Every(TimeDelta),
     /// Daily at this time in the business time zone. A day the app was down for is not made up
     /// for: an overdue run happens once.
-    #[allow(
-        dead_code,
-        reason = "the retention, summary and digest jobs are built by #16, #47 and #48"
-    )]
     Daily(NaiveTime),
 }
 
@@ -165,11 +187,13 @@ pub async fn start(
     db: PgPool,
     line: line::Client,
     time_zone: Tz,
+    retention: RetentionConfig,
 ) {
     let context = Context {
         db: persistence::orm(db),
         line,
         time_zone,
+        retention,
     };
     for job in Job::ALL {
         let (name, now) = (job.name(), Utc::now());

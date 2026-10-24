@@ -84,6 +84,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         db.clone(),
         line.clone(),
         config.app.time_zone,
+        config.retention,
     )
     .await;
     // The dispatcher keeps what it needs of the config, the rest of which is read by now

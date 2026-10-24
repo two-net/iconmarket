@@ -14,6 +14,7 @@ mod notifications;
 mod orders;
 mod payments;
 mod persistence;
+mod retention;
 mod scheduler;
 mod shutdown;
 mod startup;
