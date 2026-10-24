@@ -952,8 +952,10 @@ async fn a_second_application_is_refused() {
     let shown = s.taps(a, "my_shop").await;
     assert_eq!(
         quick_replies(&shown[1]),
-        ["เพิ่มสินค้า", "สินค้าของฉัน", "ตั้งค่าร้าน"]
+        ["ปิดร้าน", "เพิ่มสินค้า", "สินค้าของฉัน", "ตั้งค่าร้าน", "ดูหน้าร้าน"]
     );
+    assert!(text(&shown[1]).contains("ตอนนี้ร้านเปิดอยู่"));
+    assert_eq!(card_texts(&shown[0])[2..4], ["สถานะร้าน", "เปิดอยู่"]);
     assert_eq!(s.flow(a).await, None);
 
     // Another user's application, outrun by a shop made meanwhile

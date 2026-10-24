@@ -81,6 +81,7 @@ fn a_full_page_of_applications_fits() {
         delivery_fee: shops::MAX_DELIVERY_FEE,
         minimum_order: Some(Money::from_satang(9_999_999)),
         promptpay: PromptPay::Given(true),
+        running: None,
         applicant: Some(Applicant {
             display_name: Some(&display_name),
             at: t0(),

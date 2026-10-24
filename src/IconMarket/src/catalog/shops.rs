@@ -1,12 +1,14 @@
-//! Shops (FR-SHOP): applying to open one ("เปิดร้าน"), and "ร้านของฉัน". Built by #23 and #24.
+//! Shops (FR-SHOP): applying to open one ("เปิดร้าน"), and "ร้านของฉัน". Built by #23 and #24;
+//! running one, "เปิด/ปิดร้าน" and "ตั้งค่าร้าน", is [`settings`].
 //!
 //! A shop's status (FR-SHOP-10) is `PENDING` from its application until an admin approves it
 //! or turns it down ("อนุมัติร้าน", [`approvals`]), or `APPROVED` at once while
 //! `shop.requireApproval` is off (FR-SHOP-03). Turned down, it is `REJECTED`, and its owner may
 //! apply again, which makes the same shop `PENDING` once more: a user owns at most one shop
 //! (FR-SHOP-02). Only an `APPROVED` shop sells: its owner manages it ([`authorize`]), buyers see
-//! its products (#28) and it takes orders (#32). A `SUSPENDED` one (#31) is hidden and takes no
-//! new orders, though its open orders go on; `CLOSED` is for good (#36).
+//! its products (#28) and, while it is open, it [takes orders](takes_orders) (#32). A
+//! `SUSPENDED` one (#31) is hidden and takes no new orders, though its open orders go on;
+//! `CLOSED` is for good (#36).
 //!
 //! The application is a [flow](ShopFlow), which asks for the address first if the user has
 //! none (FR-ONB-04). Its last step is a summary, whose buttons send the application or correct
@@ -15,19 +17,22 @@
 //! arrives (FR-LINE-09) and kept as a [draft](Owner::Draft) of the user's until then. What the
 //! user types is never logged (NFR-PRIV-05).
 
+pub mod settings;
 #[cfg(test)]
 mod tests;
 
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::Uuid;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, QuerySelect, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QuerySelect,
+    TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{info, warn};
 use url::Url;
 
+use super::browse;
 use super::images::{self, Owner, Rejected};
 use crate::admin::approvals;
 use crate::admin::audit::{self, Entry, Target};
@@ -37,7 +42,9 @@ use crate::dispatcher::menu::{self, Item};
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Location, Turn};
 use crate::line::{self, Action, Message, QuickReply};
-use crate::notifications::templates::{self, Applicant, PromptPay, ShopCard, labels};
+use crate::notifications::templates::{
+    self, Applicant, PromptPay, Running, ShopCard, ShopFront, labels,
+};
 use crate::notifications::{Kind, To};
 use crate::payments;
 use crate::persistence::entity::{shop, user};
@@ -64,6 +71,8 @@ pub const PICKUP_ADDRESS_CHARS: usize = 200;
 pub const MAX_DELIVERY_FEE: Money = Money::from_baht(1_000);
 /// As much as a product may cost (FR-PROD-03)
 pub const MAX_MINIMUM_ORDER: Money = Money::from_baht(100_000);
+/// Room for *ทุกวัน 06:00–10:00, ปิดวันจันทร์* and the like (FR-SHOP-07)
+pub const OPENING_HOURS_CHARS: usize = 50;
 
 /// The application being filled in (FR-SHOP-01). A part left `None` once its step is past
 /// means "none": no photo, no minimum order.
@@ -79,6 +88,9 @@ pub struct ShopFlow {
     delivery_fee: Money,
     minimum_order: Option<Money>,
     promptpay_id: Option<String>,
+    /// Set only in "ตั้งค่าร้าน"; missing from drafts saved before it was added
+    #[serde(default)]
+    opening_hours: Option<String>,
     /// Whether every part has been given, so that each answer leads back to the summary
     editing: bool,
     /// How many answers were taken, so that a summary's buttons act only on what it showed
@@ -143,8 +155,9 @@ impl Fulfillment {
     }
 }
 
-/// The steps, in the order a first application asks them. Each but the summary is also a part
-/// the summary can correct.
+/// The steps, in the order a first application asks them. Each but the summary and the opening
+/// hours is also a part the summary can correct; all but the summary are parts of
+/// "ตั้งค่าร้าน" ([`settings`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Step {
     Name,
@@ -159,6 +172,8 @@ pub enum Step {
     MinimumOrder,
     /// Only while `payment.methods` has PromptPay
     PromptPay,
+    /// Only in "ตั้งค่าร้าน" (FR-SHOP-07)
+    OpeningHours,
     Summary,
 }
 
@@ -195,6 +210,7 @@ impl Step {
             Self::DeliveryFee => "delivery_fee",
             Self::MinimumOrder => "minimum_order",
             Self::PromptPay => "promptpay",
+            Self::OpeningHours => "opening_hours",
             Self::Summary => "summary",
         }
     }
@@ -211,6 +227,7 @@ impl Step {
             Self::DeliveryFee => &labels::DELIVERY_FEE,
             Self::MinimumOrder => &labels::MINIMUM_ORDER,
             Self::PromptPay => &labels::PROMPTPAY,
+            Self::OpeningHours => &labels::OPENING_HOURS,
             Self::Summary => &labels::EDIT,
         }
     }
@@ -234,13 +251,15 @@ impl ShopFlow {
             delivery_fee: Money::ZERO,
             minimum_order: None,
             promptpay_id: None,
+            opening_hours: None,
             editing: false,
             revision: 0,
         }
     }
 
-    /// Applying again with what turned-down `shop` had, its photo `photo`, to correct.
-    fn again(shop: &shop::Model, photo: Option<Uuid>) -> Self {
+    /// What `shop` has, its photo `photo`, to correct: applying again once turned down, or in
+    /// "ตั้งค่าร้าน".
+    fn from_shop(shop: &shop::Model, photo: Option<Uuid>) -> Self {
         let pickup_location =
             shop.pickup_latitude
                 .zip(shop.pickup_longitude)
@@ -259,6 +278,7 @@ impl ShopFlow {
             delivery_fee: shop.delivery_fee,
             minimum_order: shop.minimum_order,
             promptpay_id: shop.promptpay_id.clone(),
+            opening_hours: shop.opening_hours.clone(),
             editing: true,
             revision: 0,
         }
@@ -299,6 +319,7 @@ impl ShopFlow {
             Step::DeliveryFee => true,
             Step::MinimumOrder => self.minimum_order.is_some(),
             Step::PromptPay => self.promptpay_id.is_some(),
+            Step::OpeningHours => self.opening_hours.is_some(),
             Step::Summary => false,
         }
     }
@@ -328,7 +349,9 @@ fn after(config: &Config, draft: &ShopFlow, step: Step) -> Step {
             Step::Fulfillment if draft.delivers() => Step::DeliveryFee,
             Step::Fulfillment | Step::DeliveryFee => Step::MinimumOrder,
             Step::MinimumOrder if asks_promptpay(config) => Step::PromptPay,
-            Step::MinimumOrder | Step::PromptPay | Step::Summary => Step::Summary,
+            Step::MinimumOrder | Step::PromptPay | Step::OpeningHours | Step::Summary => {
+                Step::Summary
+            }
         }
     };
     match next {
@@ -425,7 +448,7 @@ async fn reapply(turn: &Turn<'_>, config: &Config) -> Result<Vec<Message>, DbErr
         return address::start(turn, config, Ask::All, Then::OpenShop).await;
     }
     let photo = images::first(turn.db, Owner::Shop(shop.id)).await?;
-    let draft = ShopFlow::again(shop, photo);
+    let draft = ShopFlow::from_shop(shop, photo);
     let step = draft.missing().unwrap_or(Step::Summary);
     let ask = prompt(turn, config, &turn.actor.user, &draft, step);
     flow::start(turn, Session { step, draft }, ask).await
@@ -476,11 +499,16 @@ async fn standing(
         shop::Status::Approved => {
             let item = |item: Item, label: &Label| item.postback().button(label.clone());
             let actions = vec![
+                settings::switch(shop.is_open),
                 item(Item::AddProduct, &labels::ADD_PRODUCT),
                 item(Item::MyProducts, &labels::MY_PRODUCTS),
                 item(Item::ShopSettings, &labels::SHOP_SETTINGS),
+                settings::front_button(),
             ];
-            vec![owners(), templates.my_shop(&shop.name, actions)]
+            vec![
+                owners(),
+                templates.my_shop(&shop.name, shop.is_open, actions),
+            ]
         }
         shop::Status::Suspended => vec![templates.denied(Denied::ShopSuspended)],
         shop::Status::Closed => vec![templates.denied(Denied::NotAllowed)],
@@ -503,50 +531,23 @@ pub async fn answer(
         return flow::answered(turn, done).await.map(Some);
     }
     let Session { step, mut draft } = session;
-    let kept = match input {
-        Input::Text(text) => {
-            draft.editing && draft.has(step) && labels::KEEP.as_str() == text.trim()
-        }
-        _ => false,
-    };
-    let taken = match (step, input) {
-        // Back to the summary, unchanged
-        _ if kept => Ok(()),
-        (Step::Summary, Input::Text(_)) => {
-            let ask = prompt(turn, config, &turn.actor.user, &draft, step);
-            return flow::answered(turn, Answer::<ShopFlow>::Again(ask))
-                .await
-                .map(Some);
-        }
-        (Step::Photo, Input::Image { message_id }) => {
-            photo(turn, config, line, &mut draft, message_id).await?
-        }
-        // LINE's address text for it isn't needed, so isn't kept (NFR-PRIV-04)
-        (
-            Step::PickupLocation,
-            &Input::Location(Location {
-                latitude,
-                longitude,
-                address: _,
-            }),
-        ) => {
-            draft.pickup_location = Some(Point {
-                latitude,
-                longitude,
-            });
-            Ok(())
-        }
-        (_, Input::Text(text)) => take(turn, &mut draft, step, text).await?,
-        _ => return Ok(None),
+    if let (Step::Summary, Input::Text(_)) = (step, input) {
+        let ask = prompt(turn, config, &turn.actor.user, &draft, step);
+        return flow::answered(turn, Answer::<ShopFlow>::Again(ask))
+            .await
+            .map(Some);
+    }
+    let Some(taken) = take_input(turn, config, line, &mut draft, step, input).await? else {
+        return Ok(None);
     };
     let user = &turn.actor.user;
     let messages = match taken {
-        Ok(()) => {
+        Ok(taken) => {
             draft.revision += 1;
-            let next = if kept {
-                draft.missing().unwrap_or(Step::Summary)
-            } else {
-                after(config, &draft, step)
+            let next = match taken {
+                // Back to the summary, unchanged
+                Taken::Kept => draft.missing().unwrap_or(Step::Summary),
+                Taken::Changed => after(config, &draft, step),
             };
             if next == Step::Summary {
                 draft.editing = true;
@@ -565,6 +566,55 @@ pub async fn answer(
         }
     };
     Ok(Some(messages))
+}
+
+/// What an answer that was taken did to the part asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Taken {
+    /// "ใช้ของเดิม": left as it was
+    Kept,
+    Changed,
+}
+
+/// Takes `input` as the answer to `step` into `draft`, for the application and "ตั้งค่าร้าน"
+/// alike: why it wasn't taken, if it wasn't; `None` when the step doesn't take this kind of
+/// input, such as a photo where a name is asked for.
+async fn take_input(
+    turn: &Turn<'_>,
+    config: &Config,
+    line: &line::Client,
+    draft: &mut ShopFlow,
+    step: Step,
+    input: &Input,
+) -> Result<Option<Result<Taken, Refused>>, DbErr> {
+    let taken = match (step, input) {
+        (_, Input::Text(text))
+            if draft.editing && draft.has(step) && labels::KEEP.as_str() == text.trim() =>
+        {
+            return Ok(Some(Ok(Taken::Kept)));
+        }
+        (Step::Photo, Input::Image { message_id }) => {
+            photo(turn, config, line, draft, message_id).await?
+        }
+        // LINE's address text for it isn't needed, so isn't kept (NFR-PRIV-04)
+        (
+            Step::PickupLocation,
+            &Input::Location(Location {
+                latitude,
+                longitude,
+                address: _,
+            }),
+        ) => {
+            draft.pickup_location = Some(Point {
+                latitude,
+                longitude,
+            });
+            Ok(())
+        }
+        (_, Input::Text(text)) => take(turn, draft, step, text).await?,
+        _ => return Ok(None),
+    };
+    Ok(Some(taken.map(|()| Taken::Changed)))
 }
 
 /// Why an answer wasn't taken; the step asks again.
@@ -711,6 +761,12 @@ async fn take(
             }
             None => Err(Refused::NotAPromptPayId),
         },
+        Step::OpeningHours if none => {
+            draft.opening_hours = None;
+            Ok(())
+        }
+        Step::OpeningHours => bounded(text, OPENING_HOURS_CHARS)
+            .map(|hours| draft.opening_hours = Some(hours.to_owned())),
         Step::Summary => Err(Refused::NotAChoice),
     };
     Ok(taken)
@@ -760,7 +816,7 @@ fn home_point(user: &user::Model) -> Option<Point> {
 /// "ข้าม" otherwise; `None` where the part can't be done without.
 fn none_label(draft: &ShopFlow, step: Step) -> Option<&'static Label> {
     let allowed = match step {
-        Step::Photo | Step::MinimumOrder | Step::PromptPay => true,
+        Step::Photo | Step::MinimumOrder | Step::PromptPay | Step::OpeningHours => true,
         Step::PickupAddress => !draft.editing || draft.pickup_location.is_some(),
         Step::PickupLocation => draft.pickup_address.is_some(),
         _ => false,
@@ -872,6 +928,11 @@ fn prompt(
             )
             .as_deref(),
         ),
+        Step::OpeningHours => templates.ask_opening_hours(
+            OPENING_HOURS_CHARS,
+            none.unwrap_or(&labels::SKIP),
+            current(draft.opening_hours.clone()).as_deref(),
+        ),
         Step::Summary => return summary(turn, config, draft),
     };
     with_choices(vec![ask], choices(user, draft, step))
@@ -900,7 +961,7 @@ fn choices(user: &user::Model, draft: &ShopFlow, step: Step) -> Vec<Action> {
     let message = |label: &Label| Action::message(label.clone(), label.as_str());
     let typed = |text: String| Action::message(Label::fit(text.as_str()), text);
     let mut choices = match step {
-        Step::Name | Step::Description | Step::Summary => Vec::new(),
+        Step::Name | Step::Description | Step::OpeningHours | Step::Summary => Vec::new(),
         Step::Photo => vec![
             Action::Camera {
                 label: labels::TAKE_PHOTO.clone(),
@@ -964,7 +1025,11 @@ fn with_choices(mut messages: Vec<Message>, choices: Vec<Action>) -> Vec<Message
 /// Sends the application (FR-SHOP-01, FR-SHOP-03): the user's shop, made or applied for again,
 /// `PENDING` for the admins, who are alerted, or `APPROVED` at once while `shop.requireApproval`
 /// is off. A user who has a shop other than a turned-down one can't apply (FR-SHOP-02).
-async fn submit(turn: &Turn<'_>, config: &Config, draft: ShopFlow) -> Result<Vec<Message>, DbErr> {
+async fn submit(
+    turn: &Turn<'_>,
+    config: &Config,
+    mut draft: ShopFlow,
+) -> Result<Vec<Message>, DbErr> {
     if let Some(step) = draft.missing() {
         let ask = prompt(turn, config, &turn.actor.user, &draft, step);
         return flow::answered(turn, Answer::Next(Session { step, draft }, ask)).await;
@@ -992,31 +1057,17 @@ async fn submit(turn: &Turn<'_>, config: &Config, draft: ShopFlow) -> Result<Vec
     } else {
         shop::Status::Approved
     };
-    let fulfillment = draft.fulfillment.expect("not missing");
-    let location = draft.pickup_location;
     let application = shop::ActiveModel {
-        name: Set(draft.name.clone().expect("not missing")),
-        description: Set(draft.description.clone().expect("not missing")),
         status: Set(status),
-        offers_pickup: Set(fulfillment.pickup()),
-        offers_delivery: Set(fulfillment.delivery()),
-        delivery_fee: Set(draft.delivery_fee),
-        minimum_order: Set(draft.minimum_order),
-        promptpay_id: Set(draft.promptpay_id.clone()),
-        phone: Set(draft.phone.clone()),
-        pickup_address: Set(draft.pickup_address.clone()),
-        pickup_latitude: Set(location.map(|point| point.latitude)),
-        pickup_longitude: Set(location.map(|point| point.longitude)),
         rejection_reason: Set(None),
         updated_at: Set(turn.now),
-        ..Default::default()
+        ..details(&draft)
     };
     let shop = match existing {
         None => {
             shop::ActiveModel {
                 owner_id: Set(user_id),
                 is_open: Set(true),
-                opening_hours: Set(None),
                 // Shown to buyers with an active order unless the seller says otherwise
                 // (FR-SHOP-08)
                 show_phone: Set(true),
@@ -1035,19 +1086,16 @@ async fn submit(turn: &Turn<'_>, config: &Config, draft: ShopFlow) -> Result<Vec
             .next()
             .ok_or_else(|| DbErr::RecordNotFound(format!("shop {}", rejected.id)))?,
     };
-    let keep = match draft.photo {
-        Some(Photo::New(id)) => {
-            if !images::adopt(&txn, id, user_id, Owner::Shop(shop.id)).await? {
-                // Swept, the flow having been idle too long: the shop stays as it was
-                txn.rollback().await?;
-                return photo_lost(turn, config, draft).await;
-            }
-            Some(id)
-        }
-        Some(Photo::Current(id)) => Some(id),
-        None => None,
-    };
-    images::keep_only(&txn, Owner::Shop(shop.id), keep).await?;
+    if !keep_photo(&txn, user_id, shop.id, draft.photo).await? {
+        // The shop stays as it was
+        txn.rollback().await?;
+        let ask = photo_lost(turn, config, &mut draft);
+        let session = Session {
+            step: Step::Photo,
+            draft,
+        };
+        return flow::answered(turn, Answer::Next(session, ask)).await;
+    }
     txn.commit().await?;
 
     // #27 moderates the name and description here, and may hold the shop (FR-PROD-09)
@@ -1077,21 +1125,59 @@ async fn submit(turn: &Turn<'_>, config: &Config, draft: ShopFlow) -> Result<Vec
     flow::answered(turn, Answer::<ShopFlow>::Done(messages)).await
 }
 
-/// The photo sent earlier is gone: asked for again before the application can be sent.
-async fn photo_lost(
-    turn: &Turn<'_>,
-    config: &Config,
-    mut draft: ShopFlow,
-) -> Result<Vec<Message>, DbErr> {
+/// What the shop's details become as `draft` has them, which has every part the shop can't do
+/// without: what an application sends, and what "ตั้งค่าร้าน" saves.
+fn details(draft: &ShopFlow) -> shop::ActiveModel {
+    let fulfillment = draft.fulfillment.expect("not missing");
+    let location = draft.pickup_location;
+    shop::ActiveModel {
+        name: Set(draft.name.clone().expect("not missing")),
+        description: Set(draft.description.clone().expect("not missing")),
+        opening_hours: Set(draft.opening_hours.clone()),
+        offers_pickup: Set(fulfillment.pickup()),
+        offers_delivery: Set(fulfillment.delivery()),
+        delivery_fee: Set(draft.delivery_fee),
+        minimum_order: Set(draft.minimum_order),
+        promptpay_id: Set(draft.promptpay_id.clone()),
+        phone: Set(draft.phone.clone()),
+        pickup_address: Set(draft.pickup_address.clone()),
+        pickup_latitude: Set(location.map(|point| point.latitude)),
+        pickup_longitude: Set(location.map(|point| point.longitude)),
+        ..Default::default()
+    }
+}
+
+/// Makes `photo` the only one of shop `shop_id`, adopting it from user `user_id`'s drafts if it
+/// was sent in the flow, or removes the shop's if there is none. `false`, changing nothing, if
+/// that draft is gone: swept, the flow having been idle too long.
+async fn keep_photo(
+    db: &impl ConnectionTrait,
+    user_id: i64,
+    shop_id: i64,
+    photo: Option<Photo>,
+) -> Result<bool, DbErr> {
+    let keep = match photo {
+        Some(Photo::New(id)) => {
+            if !images::adopt(db, id, user_id, Owner::Shop(shop_id)).await? {
+                return Ok(false);
+            }
+            Some(id)
+        }
+        Some(Photo::Current(id)) => Some(id),
+        None => None,
+    };
+    images::keep_only(db, Owner::Shop(shop_id), keep).await?;
+    Ok(true)
+}
+
+/// The photo sent earlier is gone: `draft` without it, and what asks for it again before the
+/// shop can be saved.
+fn photo_lost(turn: &Turn<'_>, config: &Config, draft: &mut ShopFlow) -> Vec<Message> {
     draft.photo = None;
     draft.revision += 1;
     let mut ask = vec![turn.templates.photo_lost()];
-    ask.extend(prompt(turn, config, &turn.actor.user, &draft, Step::Photo));
-    let session = Session {
-        step: Step::Photo,
-        draft,
-    };
-    flow::answered(turn, Answer::Next(session, ask)).await
+    ask.extend(prompt(turn, config, &turn.actor.user, draft, Step::Photo));
+    ask
 }
 
 /// The `/img/p` link of photo `id`, if there is one.
@@ -1099,8 +1185,15 @@ fn photo_url(config: &Config, id: Option<Uuid>) -> Option<Url> {
     id.map(|id| images::product_image_url(&config.app.base_url, id))
 }
 
-/// What `shop`'s card shows, with `photo` and `buttons`: to its owner, or, given who applied,
-/// to the admins, who see only whether it has a PromptPay ID (NFR-PRIV-04).
+/// Whether `shop` takes orders now: `APPROVED`, and open (FR-SHOP-05, FR-SHOP-10). Only then can
+/// its products go in a cart (#29) or be checked out (#32); closed, they stay visible.
+pub fn takes_orders(shop: &shop::Model) -> bool {
+    shop.status == shop::Status::Approved && shop.is_open
+}
+
+/// What `shop`'s card shows, with `photo` and `buttons`: to its owner, with how it is run once
+/// approved, or, given who applied, to the admins, who see only whether it has a PromptPay ID
+/// (NFR-PRIV-04).
 pub fn card<'a>(
     shop: &'a shop::Model,
     photo: Option<&'a Url>,
@@ -1112,6 +1205,12 @@ pub fn card<'a>(
     } else {
         PromptPay::Number(shop.promptpay_id.as_deref())
     };
+    let running =
+        (applicant.is_none() && shop.status == shop::Status::Approved).then_some(Running {
+            is_open: shop.is_open,
+            opening_hours: shop.opening_hours.as_deref(),
+            show_phone: shop.show_phone,
+        });
     ShopCard {
         name: &shop.name,
         description: &shop.description,
@@ -1124,8 +1223,27 @@ pub fn card<'a>(
         delivery_fee: shop.delivery_fee,
         minimum_order: shop.minimum_order,
         promptpay,
+        running,
         applicant,
         buttons,
+    }
+}
+
+/// `shop`'s card as buyers see it, with `photo` (FR-SHOP-09): its "ดูสินค้า" lists the shop's
+/// products (#28).
+pub fn front<'a>(shop: &'a shop::Model, photo: Option<&'a Url>) -> ShopFront<'a> {
+    let products = Postback::new(browse::SHOP).with_int(browse::SHOP_ID, shop.id);
+    ShopFront {
+        name: &shop.name,
+        description: &shop.description,
+        photo,
+        is_open: takes_orders(shop),
+        opening_hours: shop.opening_hours.as_deref(),
+        offers_pickup: shop.offers_pickup,
+        offers_delivery: shop.offers_delivery,
+        delivery_fee: shop.delivery_fee,
+        minimum_order: shop.minimum_order,
+        products: products.button(labels::VIEW_PRODUCTS.clone()),
     }
 }
 
@@ -1148,6 +1266,7 @@ fn draft_card<'a>(
         delivery_fee: draft.delivery_fee,
         minimum_order: draft.minimum_order,
         promptpay: PromptPay::Number(draft.promptpay_id.as_deref()),
+        running: None,
         applicant: None,
         buttons,
     }

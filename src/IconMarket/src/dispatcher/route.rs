@@ -34,6 +34,7 @@ use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::ai::Feature;
 use crate::catalog::browse;
+use crate::catalog::shops::settings::{self, SettingsFlow};
 use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
 use crate::notifications::Queued;
@@ -481,6 +482,12 @@ async fn answer_flow(
             Some(session) => Some(approvals::answer(turn, config, session, input).await),
             None => None,
         },
+        SettingsFlow::NAME => match stored.read::<SettingsFlow>() {
+            Some(session) => {
+                Some(settings::answer(turn, config, &context.line, session, input).await)
+            }
+            None => None,
+        },
         _ => None,
     };
     match answered {
@@ -526,11 +533,15 @@ async fn tapped(
         action if action.starts_with(APPROVALS) => {
             return approvals::tapped(turn, &context.config, postback).await;
         }
+        action if action.starts_with(settings::PREFIX) => {
+            return settings::tapped(turn, &context.config, postback).await;
+        }
         action if action.starts_with(help::PREFIX) => {
             return help::tapped(turn, &context.config, &context.ai, postback).await;
         }
         report::REPORT => return report::tapped(turn, postback).await,
         browse::CATEGORY => return Ok(not_built("browsing a category", 28, fallback(turn))),
+        browse::SHOP => return Ok(not_built("a shop's products", 28, fallback(turn))),
         users::DELETE_ACCOUNT => {
             return Ok(not_built("deleting the account", 36, fallback(turn)));
         }
@@ -557,12 +568,14 @@ async fn menu_item(
         ApproveShops => return approvals::tapped(turn, &context.config, postback).await,
         Categories => return categories::tapped(turn, postback).await,
         Help => return help::tapped(turn, &context.config, &context.ai, postback).await,
+        OpenClose | ShopSettings => {
+            return settings::tapped(turn, &context.config, postback).await;
+        }
         Search => 28,
         Cart => 29,
         MyOrders | ShopOrders => 34,
         AddProduct => 25,
         MyProducts => 26,
-        OpenClose | ShopSettings => 24,
         Sales => 39,
         ReviewQueue | Users => 31,
         Stats => 38,

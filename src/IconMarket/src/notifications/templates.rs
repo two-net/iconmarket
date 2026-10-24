@@ -15,6 +15,7 @@ use chrono_tz::Tz;
 use url::Url;
 
 use crate::catalog::images::Rejected;
+use crate::catalog::products::Availability;
 use crate::config::{AiProvider, AppConfig, PoliteParticle};
 use crate::dispatcher::menu::{Item, Tab};
 use crate::line::flex::{
@@ -797,6 +798,10 @@ impl Templates {
                     quoted(&labels::OPEN_CLOSE)
                 ));
                 lines.push(format!(
+                    "- {}: แก้ข้อมูลร้าน ใส่เวลาเปิดร้าน และเลือกว่าจะให้ผู้ซื้อเห็นเบอร์ร้านไหม",
+                    quoted(&labels::SHOP_SETTINGS)
+                ));
+                lines.push(format!(
                     "- {}: กดรับหรือปฏิเสธออเดอร์ใหม่ภายใน {} นาที ไม่อย่างนั้นออเดอร์จะหมดเวลา",
                     quoted(&labels::SHOP_ORDERS),
                     facts.pending_minutes
@@ -1316,15 +1321,115 @@ impl Templates {
         Message::text(text).with_quick_reply(QuickReply::new([again, menu]))
     }
 
-    /// "ร้านของฉัน" for the owner of approved shop `name`: `actions` manage it. Its card
-    /// comes first.
-    pub fn my_shop(&self, name: &str, actions: Vec<Action>) -> Message {
+    /// "ร้านของฉัน" for the owner of approved shop `name`, `open` or closed for now
+    /// (FR-SHOP-05): `actions` manage it. Its card comes first.
+    pub fn my_shop(&self, name: &str, open: bool, actions: Vec<Action>) -> Message {
         let kha = self.kha();
+        let now = if open {
+            "ตอนนี้ร้านเปิดอยู่"
+        } else {
+            "ตอนนี้ร้านปิดอยู่ ผู้ซื้อจึงยังสั่งไม่ได้"
+        };
         Message::text(format!(
-            "{}ของคุณได้รับอนุมัติแล้ว{kha} ดูแลร้านได้จากเมนูผู้ขาย เลือกด้านล่างได้เลย{kha}",
+            "{}ของคุณได้รับอนุมัติแล้ว{kha} {now} ดูแลร้านได้จากเมนูผู้ขาย เลือกด้านล่างได้เลย{kha}",
             shop_called(name)
         ))
         .with_quick_reply(QuickReply::new(actions))
+    }
+
+    /// Shop `name` is now `open` or closed (FR-SHOP-05); `changed` unless it already was.
+    /// `switch` turns it back. Closed, its products stay visible but can't be ordered, and its
+    /// orders go on.
+    pub fn shop_open_state(
+        &self,
+        name: &str,
+        open: bool,
+        changed: bool,
+        switch: Action,
+    ) -> Message {
+        let kha = self.kha();
+        let shop = shop_called(name);
+        let done = match (open, changed) {
+            (true, true) => format!("เปิด{shop}แล้ว{kha}"),
+            (true, false) => format!("{shop}เปิดอยู่แล้ว{kha}"),
+            (false, true) => format!("ปิด{shop}แล้ว{kha}"),
+            (false, false) => format!("{shop}ปิดอยู่แล้ว{kha}"),
+        };
+        let then = if open {
+            " ผู้ซื้อสั่งสินค้าได้ตามปกติ".to_owned()
+        } else {
+            format!(" ผู้ซื้อยังเห็นสินค้า แต่จะขึ้นว่า \"{CLOSED}\" และสั่งไม่ได้ ออเดอร์ที่มีอยู่ยังทำต่อตามปกติ")
+        };
+        let text = format!(
+            "{done}{then} ถ้าจะเปลี่ยน กด \"{}\" ได้เลย{kha}",
+            switch.label().as_str()
+        );
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(text).with_quick_reply(QuickReply::new([switch, menu]))
+    }
+
+    /// "ตั้งค่าร้าน" (FR-SHOP-06): asks what to change; `parts` are its buttons. The shop's card
+    /// comes first.
+    pub fn shop_settings(&self, parts: Vec<Action>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ต้องการแก้ส่วนไหนของร้าน{kha_question} เลือกด้านล่างได้เลย แก้แล้วบันทึกทันที{kha}"
+        ))
+        .with_quick_reply(QuickReply::new(parts))
+    }
+
+    /// A change in "ตั้งค่าร้าน" is saved. The shop's card follows.
+    pub fn shop_settings_saved(&self) -> Message {
+        Message::text(format!("บันทึกแล้ว{}", self.kha()))
+    }
+
+    /// A part of "ตั้งค่าร้าน" is left as it was. The shop's card follows.
+    pub fn shop_settings_unchanged(&self) -> Message {
+        Message::text(format!("ยังใช้ข้อมูลเดิมอยู่{}", self.kha()))
+    }
+
+    /// Asks for the opening hours shown on the shop's card, of at most `max_chars`
+    /// (FR-SHOP-07). `none` goes without, or removes those given.
+    pub fn ask_opening_hours(
+        &self,
+        max_chars: usize,
+        none: &Label,
+        current: Option<&str>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ร้านเปิดช่วงไหน{kha_question} พิมพ์มาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha} เช่น ทุกวัน 06:00–10:00 ลูกค้าจะเห็นที่หน้าร้าน ถ้าไม่ระบุ กด \"{}\" ได้เลย{kha}{}",
+            none.as_str(),
+            now(current)
+        ))
+    }
+
+    /// The shop's phone is now shown to buyers with an active order, or hidden from them
+    /// (FR-SHOP-08). The shop's card follows.
+    pub fn phone_visibility(&self, show: bool) -> Message {
+        let kha = self.kha();
+        Message::text(if show {
+            format!("แสดงเบอร์ร้านให้ผู้ซื้อแล้ว{kha} ผู้ซื้อที่มีออเดอร์กับร้านจะเห็นเบอร์นี้{kha}")
+        } else {
+            format!("ซ่อนเบอร์ร้านจากผู้ซื้อแล้ว{kha} ผู้ซื้อจะไม่เห็นเบอร์ร้านในออเดอร์{kha}")
+        })
+    }
+
+    /// The owner's shop as buyers see it (FR-SHOP-09): `front`, with `settings` and the menu
+    /// to carry on.
+    pub fn shop_front_preview(&self, front: &ShopFront<'_>, settings: Action) -> Vec<Message> {
+        let kha = self.kha();
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        vec![
+            Message::text(format!("ผู้ซื้อจะเห็นร้านของคุณแบบนี้{kha}")),
+            self.shop_front(front)
+                .with_quick_reply(QuickReply::new([settings, menu])),
+        ]
+    }
+
+    /// A shop's card as buyers see it (FR-SHOP-09).
+    pub fn shop_front(&self, front: &ShopFront<'_>) -> Message {
+        Message::flex(front.name, self.shop_front_bubble(front))
     }
 
     /// A button of an application that is no longer in progress: cancelled, expired or sent.
@@ -1493,14 +1598,36 @@ impl Templates {
             PromptPay::Given(true) => Some("มี".to_owned()),
             PromptPay::Given(false) => None,
         };
-        let mut rows = vec![
+        let fulfillment =
+            fulfillment_line(card.offers_pickup, card.offers_delivery, card.delivery_fee);
+        let mut rows = Vec::new();
+        if let Some(running) = &card.running {
+            let state = if running.is_open {
+                "เปิดอยู่"
+            } else {
+                "ปิดอยู่ (ผู้ซื้อสั่งไม่ได้)"
+            };
+            rows.push(row("สถานะร้าน", state));
+            rows.push(row("เวลาเปิด", running.opening_hours.unwrap_or(NOT_SET)));
+        }
+        rows.extend([
             row("ที่รับของ", card.pickup_address.unwrap_or(NONE)),
             row("ตำแหน่ง", location),
             row("เบอร์ร้าน", phone.as_deref().unwrap_or(NONE)),
-            row("การรับส่ง", &fulfillment_line(card)),
+        ]);
+        if let Some(running) = &card.running {
+            let shown = if running.show_phone {
+                "ผู้ซื้อที่มีออเดอร์เห็น"
+            } else {
+                "ซ่อนจากผู้ซื้อ"
+            };
+            rows.push(row("แสดงเบอร์", shown));
+        }
+        rows.extend([
+            row("การรับส่ง", &fulfillment),
             row("ยอดขั้นต่ำ", minimum.as_deref().unwrap_or(NONE)),
             row("พร้อมเพย์", promptpay.as_deref().unwrap_or(NONE)),
-        ];
+        ]);
         if let Some(applicant) = &card.applicant {
             rows.push(row("ผู้สมัคร", applicant.display_name.unwrap_or(NONE)));
             rows.push(row("ส่งเมื่อ", &self.date_time(applicant.at)));
@@ -1518,34 +1645,108 @@ impl Templates {
                 details.into(),
             ])
         };
-        let footer = (!card.buttons.is_empty()).then(|| {
-            let buttons = card.buttons.iter().enumerate().map(|(i, action)| {
-                let style = if i == 0 {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Secondary
-                };
-                let button = Button {
-                    style: Some(style),
-                    height: Some(ButtonHeight::Sm),
-                    ..Button::new(action.clone())
-                };
-                button.into()
-            });
-            FlexBox {
-                spacing: Some(Spacing::Sm),
-                ..FlexBox::vertical(buttons)
-            }
-        });
         Bubble {
             size: Some(BubbleSize::Mega),
             header,
             hero,
             body: Some(body),
-            footer,
+            footer: footer(&card.buttons),
             ..Bubble::default()
         }
     }
+
+    /// A shop's card as buyers see it (FR-SHOP-09): its photo, name, whether it is open, its
+    /// description and how it sells, with "ดูสินค้า" at the foot. Nothing that reaches its
+    /// owner: no address, location, phone or PromptPay ID (NFR-PRIV-04).
+    fn shop_front_bubble(&self, front: &ShopFront<'_>) -> Bubble {
+        let hero = front.photo.map(|url| {
+            Hero::Image(Image {
+                size: Some(Size::Full),
+                aspect_ratio: Some("20:13".to_owned()),
+                aspect_mode: Some(AspectMode::Cover),
+                ..Image::new(url)
+            })
+        });
+        let name = Text {
+            size: Some(Size::Lg),
+            weight: Some(Weight::Bold),
+            wrap: Some(true),
+            ..Text::new(front.name)
+        };
+        let (state, color) = if front.is_open {
+            ("เปิดอยู่", OPEN_COLOR)
+        } else {
+            (CLOSED, CLOSED_COLOR)
+        };
+        let state = Text {
+            size: Some(Size::Sm),
+            weight: Some(Weight::Bold),
+            color: Some(color.to_owned()),
+            ..Text::new(state)
+        };
+        let description = Text {
+            size: Some(Size::Sm),
+            wrap: Some(true),
+            ..Text::new(front.description)
+        };
+        let minimum = front.minimum_order.map(|minimum| minimum.to_string());
+        let fulfillment = fulfillment_line(
+            front.offers_pickup,
+            front.offers_delivery,
+            front.delivery_fee,
+        );
+        let mut rows = vec![
+            row("การรับส่ง", &fulfillment),
+            row("ยอดขั้นต่ำ", minimum.as_deref().unwrap_or(NONE)),
+        ];
+        if let Some(hours) = front.opening_hours {
+            rows.push(row("เวลาเปิด", hours));
+        }
+        let details = FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical(rows)
+        };
+        let body = FlexBox {
+            spacing: Some(Spacing::Md),
+            ..FlexBox::vertical([
+                name.into(),
+                state.into(),
+                description.into(),
+                Separator::default().into(),
+                details.into(),
+            ])
+        };
+        Bubble {
+            size: Some(BubbleSize::Mega),
+            hero,
+            body: Some(body),
+            footer: footer(std::slice::from_ref(&front.products)),
+            ..Bubble::default()
+        }
+    }
+}
+
+/// A card's `buttons` at its foot, the first one primary; `None` without any.
+fn footer(buttons: &[Action]) -> Option<FlexBox> {
+    (!buttons.is_empty()).then(|| {
+        let buttons = buttons.iter().enumerate().map(|(i, action)| {
+            let style = if i == 0 {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Secondary
+            };
+            let button = Button {
+                style: Some(style),
+                height: Some(ButtonHeight::Sm),
+                ..Button::new(action.clone())
+            };
+            button.into()
+        });
+        FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical(buttons)
+        }
+    })
 }
 
 /// Applications on a page of "อนุมัติร้าน". Their cards are the largest the market sends, so
@@ -1564,18 +1765,54 @@ pub fn shop_called(name: &str) -> String {
     }
 }
 
-/// How a shop's buyers get their orders, and what delivery costs.
-fn fulfillment_line(card: &ShopCard<'_>) -> String {
-    let fee = if card.delivery_fee == Money::ZERO {
+/// How a shop's buyers get their orders, picked up or delivered, and what delivery costs.
+fn fulfillment_line(pickup: bool, delivery: bool, fee: Money) -> String {
+    let fee = if fee == Money::ZERO {
         "ส่งฟรี".to_owned()
     } else {
-        format!("ค่าส่ง {}", card.delivery_fee)
+        format!("ค่าส่ง {fee}")
     };
-    match (card.offers_pickup, card.offers_delivery) {
+    match (pickup, delivery) {
         (true, true) => format!("รับเองหรือให้ร้านไปส่ง {fee}"),
         (false, true) => format!("ร้านไปส่ง {fee}"),
         _ => labels::PICKUP_ONLY.as_str().to_owned(),
     }
+}
+
+/// What a product's card says of whether it can be ordered (FR-SRCH-07): `เหลือ 5`, `สั่งได้`,
+/// `หมด` or `ร้านปิด`.
+pub fn availability(availability: Availability) -> String {
+    match availability {
+        Availability::Left(left) => format!("เหลือ {left}"),
+        Availability::Orderable => "สั่งได้".to_owned(),
+        Availability::SoldOut => "หมด".to_owned(),
+        Availability::ShopClosed => CLOSED.to_owned(),
+    }
+}
+
+/// What a closed shop and its products show (FR-SHOP-05)
+const CLOSED: &str = "ร้านปิด";
+/// The colours of whether a shop is open, on its card
+const OPEN_COLOR: &str = "#06C755";
+const CLOSED_COLOR: &str = "#D93025";
+
+/// A shop's card as buyers see it (FR-SHOP-09). #45 adds its rating, once ratings are on
+/// (FR-ORD-14).
+pub struct ShopFront<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    /// Its photo's `/img/p` link
+    pub photo: Option<&'a Url>,
+    /// Whether it takes orders now; closed, its products can't be ordered (FR-SHOP-05)
+    pub is_open: bool,
+    /// Free text such as *ทุกวัน 06:00–10:00* (FR-SHOP-07)
+    pub opening_hours: Option<&'a str>,
+    pub offers_pickup: bool,
+    pub offers_delivery: bool,
+    pub delivery_fee: Money,
+    pub minimum_order: Option<Money>,
+    /// "ดูสินค้า"
+    pub products: Action,
 }
 
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
@@ -1594,9 +1831,21 @@ pub struct ShopCard<'a> {
     pub delivery_fee: Money,
     pub minimum_order: Option<Money>,
     pub promptpay: PromptPay<'a>,
+    /// How an approved shop is run, for its owner; `None` for an application
+    pub running: Option<Running<'a>>,
     /// Who applied and when, for the admins
     pub applicant: Option<Applicant<'a>>,
     pub buttons: Vec<Action>,
+}
+
+/// How an approved shop is run, as its owner's card shows it.
+pub struct Running<'a> {
+    /// Open or closed for now (FR-SHOP-05)
+    pub is_open: bool,
+    /// FR-SHOP-07
+    pub opening_hours: Option<&'a str>,
+    /// Whether buyers with an active order see the phone (FR-SHOP-08)
+    pub show_phone: bool,
 }
 
 /// The PromptPay ID as a shop's card shows it.
@@ -1628,6 +1877,8 @@ fn admin_menus() -> QuickReply {
 const NOT_GIVEN: &str = "ยังไม่ได้ให้ไว้";
 /// What it shows for one that LINE didn't give
 const NONE: &str = "ไม่มี";
+/// What a shop's card shows for what its owner may set but hasn't
+const NOT_SET: &str = "ไม่ได้ระบุ";
 
 /// ` (ตอนนี้: …)`, after a prompt for a value being corrected.
 fn now(current: Option<&str>) -> String {
@@ -2284,6 +2535,20 @@ pub mod labels {
         MINIMUM_ORDER = "ยอดขั้นต่ำ",
         PROMPTPAY = "พร้อมเพย์",
 
+        // Running a shop (FR-SHOP-05 – FR-SHOP-09)
+        /// Closes the shop for now; its products stay visible (FR-SHOP-05)
+        CLOSE_SHOP = "ปิดร้าน",
+        REOPEN_SHOP = "เปิดร้าน",
+        /// A part of "ตั้งค่าร้าน" (FR-SHOP-07)
+        OPENING_HOURS = "เวลาเปิดร้าน",
+        /// Whether buyers with an active order see the shop's phone (FR-SHOP-08)
+        HIDE_PHONE = "ซ่อนเบอร์ร้าน",
+        SHOW_PHONE = "แสดงเบอร์ร้าน",
+        /// The owner's shop as buyers see it (FR-SHOP-09)
+        SHOP_FRONT = "ดูหน้าร้าน",
+        /// A shop's products, from its card (FR-SHOP-09)
+        VIEW_PRODUCTS = "ดูสินค้า",
+
         // Approving shops (FR-ADM-02)
         APPROVE = "อนุมัติ",
         REJECT = "ไม่อนุมัติ",
@@ -2432,7 +2697,20 @@ mod tests {
             .to_owned(),
             text(&t.application_rejected("ร้านป้าแดง", Some("ข้อมูลไม่ครบ"), apply_again())).to_owned(),
             text(&t.application_rejected("ร้านป้าแดง", None, apply_again())).to_owned(),
-            text(&t.my_shop("ร้านป้าแดง", Vec::new())).to_owned(),
+            text(&t.my_shop("ร้านป้าแดง", true, Vec::new())).to_owned(),
+            text(&t.my_shop("ร้านป้าแดง", false, Vec::new())).to_owned(),
+            text(&t.shop_open_state("ร้านป้าแดง", false, true, reopen())).to_owned(),
+            text(&t.shop_open_state("ร้านป้าแดง", false, false, reopen())).to_owned(),
+            text(&t.shop_open_state("ร้านป้าแดง", true, true, close())).to_owned(),
+            text(&t.shop_open_state("ร้านป้าแดง", true, false, close())).to_owned(),
+            text(&t.shop_settings(Vec::new())).to_owned(),
+            text(&t.shop_settings_saved()).to_owned(),
+            text(&t.shop_settings_unchanged()).to_owned(),
+            text(&t.ask_opening_hours(50, &labels::SKIP, None)).to_owned(),
+            text(&t.ask_opening_hours(50, &labels::REMOVE, Some("ทุกวัน 06:00–10:00"))).to_owned(),
+            text(&t.phone_visibility(true)).to_owned(),
+            text(&t.phone_visibility(false)).to_owned(),
+            text(&t.shop_front_preview(&shop_front(), close())[0]).to_owned(),
             text(&t.application_gone(apply_again())).to_owned(),
             text(&t.applications(&[], 0, |_| unreachable!())).to_owned(),
             text(&t.shop_approved("ร้านป้าแดง")).to_owned(),
@@ -2486,9 +2764,34 @@ mod tests {
             delivery_fee: Money::from_baht(10),
             minimum_order: None,
             promptpay: PromptPay::Number(None),
+            running: None,
             applicant: None,
             buttons: Vec::new(),
         }
+    }
+
+    /// Appendix A.5's shop, as buyers see it.
+    fn shop_front() -> ShopFront<'static> {
+        ShopFront {
+            name: "ร้านป้าแดง",
+            description: "ไข่ไก่ ผักสวนครัว",
+            photo: None,
+            is_open: true,
+            opening_hours: None,
+            offers_pickup: true,
+            offers_delivery: true,
+            delivery_fee: Money::from_baht(10),
+            minimum_order: None,
+            products: Action::postback(labels::VIEW_PRODUCTS.clone(), "browse.shop?shop=1"),
+        }
+    }
+
+    fn close() -> Action {
+        Action::postback(labels::CLOSE_SHOP.clone(), "shop.open?to=0")
+    }
+
+    fn reopen() -> Action {
+        Action::postback(labels::REOPEN_SHOP.clone(), "shop.open?to=1")
     }
 
     /// The texts of `card`'s body, its rows' labels and values among them.
@@ -2573,6 +2876,95 @@ mod tests {
         let texts = card_texts(&t.shop_bubble(&pickup, None));
         assert!(texts.contains(&"รับเองที่ร้าน".to_owned()));
         assert!(!texts.contains(&"มี".to_owned()));
+    }
+
+    /// FR-SHOP-05, FR-SHOP-07, FR-SHOP-08: the owner of an approved shop sees how it is run; an
+    /// application shows none of it.
+    #[test]
+    fn an_owners_card_shows_how_the_shop_is_run() {
+        let t = templates(PoliteParticle::Kha);
+        let running = ShopCard {
+            running: Some(Running {
+                is_open: false,
+                opening_hours: Some("ทุกวัน 06:00–10:00"),
+                show_phone: false,
+            }),
+            ..shop_card()
+        };
+        let texts = card_texts(&t.shop_bubble(&running, None));
+        let row = |label: &str| {
+            let at = texts.iter().position(|text| text == label).expect(label);
+            texts[at + 1].clone()
+        };
+        assert_eq!(row("สถานะร้าน"), "ปิดอยู่ (ผู้ซื้อสั่งไม่ได้)");
+        assert_eq!(row("เวลาเปิด"), "ทุกวัน 06:00–10:00");
+        assert_eq!(row("แสดงเบอร์"), "ซ่อนจากผู้ซื้อ");
+        let open = ShopCard {
+            running: Some(Running {
+                is_open: true,
+                opening_hours: None,
+                show_phone: true,
+            }),
+            ..shop_card()
+        };
+        let texts = card_texts(&t.shop_bubble(&open, None));
+        assert_eq!(texts[2..6], ["สถานะร้าน", "เปิดอยู่", "เวลาเปิด", "ไม่ได้ระบุ"]);
+        assert!(texts.contains(&"ผู้ซื้อที่มีออเดอร์เห็น".to_owned()));
+        let texts = card_texts(&t.shop_bubble(&shop_card(), None));
+        for label in ["สถานะร้าน", "เวลาเปิด", "แสดงเบอร์"]
+        {
+            assert!(!texts.contains(&label.to_owned()), "{label}");
+        }
+    }
+
+    /// FR-SRCH-07: a product's card says whether it can be ordered.
+    #[test]
+    fn availability_is_said_as_a_product_card_says_it() {
+        assert_eq!(availability(Availability::Left(5)), "เหลือ 5");
+        assert_eq!(availability(Availability::Orderable), "สั่งได้");
+        assert_eq!(availability(Availability::SoldOut), "หมด");
+        assert_eq!(availability(Availability::ShopClosed), "ร้านปิด");
+    }
+
+    /// FR-LINE-11: "ตั้งค่าร้าน" and the card buyers see fit, with the longest values a shop
+    /// takes.
+    #[test]
+    fn running_a_shop_fits() {
+        let t = templates(PoliteParticle::Khrap);
+        let (name, description, hours) = ("ข".repeat(50), "ข".repeat(300), "ข".repeat(50));
+        let photo = Url::parse("https://iconmarket.example.com/img/p/0123").unwrap();
+        let card = ShopCard {
+            name: &name,
+            description: &description,
+            photo: Some(&photo),
+            minimum_order: Some(Money::from_satang(9_999_999)),
+            running: Some(Running {
+                is_open: false,
+                opening_hours: Some(&hours),
+                show_phone: false,
+            }),
+            ..shop_card()
+        };
+        let parts = (0..limits::QUICK_REPLY_ITEMS)
+            .map(|_| Action::postback(labels::OPENING_HOURS.clone(), "shop.part?p=opening_hours"))
+            .collect();
+        limits::check(&[t.shop(&card), t.shop_settings(parts)]).unwrap();
+        let front = ShopFront {
+            name: &name,
+            description: &description,
+            photo: Some(&photo),
+            is_open: false,
+            opening_hours: Some(&hours),
+            minimum_order: Some(Money::from_satang(9_999_999)),
+            products: Action::postback(
+                labels::VIEW_PRODUCTS.clone(),
+                format!("browse.shop?shop={}", i64::MAX),
+            ),
+            ..shop_front()
+        };
+        let settings = Action::postback(labels::SHOP_SETTINGS.clone(), "shop_settings");
+        limits::check(&t.shop_front_preview(&front, settings)).unwrap();
+        limits::check(&[t.shop_open_state(&name, false, true, reopen())]).unwrap();
     }
 
     /// FR-LINE-11: the summary, the admins' alert and the owner's notices fit, with the longest

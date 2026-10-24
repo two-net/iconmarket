@@ -1,11 +1,13 @@
 //! Shops & catalog (SRS §2.1): shops, products, images, categories and moderation.
 //!
-//! [`categories`] holds the categories in the order admins set, [`browse`] is "ซื้อของ", and
-//! [`shops`] is "เปิดร้าน" and "ร้านของฉัน".
+//! [`categories`] holds the categories in the order admins set, [`browse`] is "ซื้อของ",
+//! [`shops`] is "เปิดร้าน", "ร้านของฉัน", "เปิด/ปิดร้าน" and "ตั้งค่าร้าน", and [`products`]
+//! says whether a product can be ordered.
 
 pub mod browse;
 pub mod categories;
 pub mod images;
+pub mod products;
 pub mod shops;
 
 use axum::Router;

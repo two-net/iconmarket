@@ -17,6 +17,10 @@ use crate::users::access::{self, authorize};
 /// The action of a category's Quick Reply; its `category` is the category's ID
 pub const CATEGORY: &str = "browse";
 const CATEGORY_ID: &str = "category";
+/// The action of "ดูสินค้า" on a shop's card (FR-SHOP-09); its `shop` is the shop's ID. #28
+/// lists the products it shows.
+pub const SHOP: &str = "browse.shop";
+pub const SHOP_ID: &str = "shop";
 /// The page of categories "ดูเพิ่มเติม" shows, on the postback of "ซื้อของ"
 const PAGE: &str = "page";
 /// Categories on a page of Quick Replies, leaving room for "ดูเพิ่มเติม"

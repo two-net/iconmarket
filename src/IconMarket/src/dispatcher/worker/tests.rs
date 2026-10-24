@@ -1404,3 +1404,80 @@ async fn a_shop_is_applied_for_and_approved_end_to_end() {
     let alice = s.user(ALICE).await;
     assert_eq!(alice.menu_roles, Some(MenuRoles::Seller));
 }
+
+/// FR-SHOP-05 – FR-SHOP-09, end to end: the seller closes the shop from the menu, sets its
+/// opening hours in "ตั้งค่าร้าน", and sees it as buyers do, closed, with "ดูสินค้า".
+#[tokio::test]
+async fn a_shop_is_run_end_to_end() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut seller = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    seller.menu_roles = Set(Some(MenuRoles::Seller));
+    seller.update(&s.db).await.unwrap();
+    let shop = shop::ActiveModel {
+        phone: Set(Some("0812345678".to_owned())),
+        pickup_address: Set(Some("ซอย 3 บ้านเลขที่ 45/2".to_owned())),
+        ..testing::new_shop(alice)
+    };
+    let shop = shop.insert(&s.db).await.unwrap();
+    let products = format!("browse.shop?shop={}", shop.id);
+
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "open_close"),
+            tapped("a2", ALICE, "shop_settings"),
+            tapped("a3", ALICE, "shop.part?p=opening_hours"),
+            said("a4", ALICE, "ทุกวัน 06:00–10:00"),
+            tapped("a5", ALICE, "shop.front"),
+            tapped("a6", ALICE, &products),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 6).await;
+    replied(&s, 6).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    let closed = reply("a1");
+    assert!(
+        closed[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("ปิดร้านป้าแดงแล้วค่ะ"),
+        "{closed}"
+    );
+    let switch_back = &closed[0]["quickReply"]["items"][0]["action"];
+    assert_eq!(switch_back["data"], "shop.open?to=1");
+    assert_eq!(reply("a2").as_array().unwrap().len(), 2);
+    assert_eq!(reply("a4")[0], json!(t.shop_settings_saved()));
+    let front = serde_json::to_string(&reply("a5")[1]).unwrap();
+    for shown in ["ร้านปิด", "ทุกวัน 06:00–10:00", "ดูสินค้า", &products]
+    {
+        assert!(front.contains(shown), "{shown} in {front}");
+    }
+    assert!(
+        !front.contains("081-234-5678") && !front.contains("ซอย 3"),
+        "{front}"
+    );
+    // #28 lists the shop's products
+    let menu = templates::main_menu([Tab::Buyer, Tab::Seller], true);
+    assert_eq!(reply("a6"), json!([t.fallback(), menu]));
+    assert_eq!(replies.len(), 6);
+
+    let shop = shop::Entity::find_by_id(shop.id)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!shop.is_open);
+    assert_eq!(shop.opening_hours.as_deref(), Some("ทุกวัน 06:00–10:00"));
+}
