@@ -15,11 +15,13 @@ use chrono_tz::Tz;
 
 use crate::catalog::images::Rejected;
 use crate::config::{AppConfig, PoliteParticle};
+use crate::dispatcher::menu::{Item, Tab};
 use crate::line::flex::{
-    Bubble, BubbleSize, Button, ButtonStyle, Carousel, FlexBox, FlexContainer, Justify,
+    Bubble, BubbleSize, Button, ButtonHeight, ButtonStyle, Carousel, FlexBox, FlexContainer,
+    Justify, Size, Spacing, Text, Weight,
 };
-use crate::line::{Action, Message, QuickReply, limits};
-use crate::thai::{self, NumberError};
+use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
+use crate::thai::{self, Label, NumberError};
 use crate::users::access::Denied;
 
 /// Builds messages in the configured voice and time zone.
@@ -107,6 +109,22 @@ impl Templates {
         Message::text(text).with_quick_reply(menus())
     }
 
+    /// The user's guided flow went unanswered for `minutes` and was ended (FR-UI-15). Goes first
+    /// in the reply to their next event.
+    pub fn step_expired(&self, minutes: u32) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "ขั้นตอนที่ทำค้างไว้หมดเวลาแล้ว{kha} เพราะไม่ได้ตอบนานเกิน {minutes} นาที ถ้ายังต้องการ เริ่มใหม่จากเมนูได้เลย{kha}"
+        );
+        Message::text(text).with_quick_reply(menus())
+    }
+
+    /// A guided flow or a proposal was cancelled (FR-UI-04). The main menu follows.
+    pub fn cancelled(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!("ยกเลิกแล้ว{kha} เลือกเมนูที่ต้องการได้เลย{kha}"))
+    }
+
     /// Why a typed number was not accepted, and how to type it.
     pub fn number_problem(&self, error: NumberError) -> String {
         let (kha, kha_question) = (self.kha(), self.kha_question());
@@ -155,6 +173,87 @@ fn menus() -> QuickReply {
     QuickReply::new(
         [&labels::MENU, &labels::HELP].map(|label| Action::message(label.clone(), label.as_str())),
     )
+}
+
+/// `message` with the cancel button among its Quick Replies, as every prompt of a guided flow
+/// has (FR-UI-04). Sends `ยกเลิก` as if typed.
+pub fn with_cancel(mut message: Message) -> Message {
+    let cancel = Action::message(labels::CANCEL.clone(), labels::CANCEL.as_str());
+    let quick_reply = message
+        .quick_reply
+        .get_or_insert_with(|| QuickReply { items: Vec::new() });
+    if !quick_reply.items.iter().any(|item| item.action == cancel) {
+        quick_reply.items.push(QuickReplyItem { action: cancel });
+    }
+    message
+}
+
+/// The main menu as a message (FR-UI-05): a card for each of `tabs`, with a button for each
+/// function. `has_shop` turns "เปิดร้าน" into "ร้านของฉัน".
+pub fn main_menu(tabs: impl IntoIterator<Item = Tab>, has_shop: bool) -> Message {
+    let cards = tabs
+        .into_iter()
+        .map(|tab| menu_card(tab, has_shop))
+        .collect();
+    Message::flex("เมนูหลัก", Carousel::new(cards))
+}
+
+fn menu_card(tab: Tab, has_shop: bool) -> Bubble {
+    let title = Text {
+        size: Some(Size::Lg),
+        weight: Some(Weight::Bold),
+        ..Text::new(tab_title(tab).as_str())
+    };
+    let buttons = tab.items().map(|item| {
+        let label = item_label(item, has_shop).clone();
+        let button = Button {
+            style: Some(ButtonStyle::Secondary),
+            height: Some(ButtonHeight::Sm),
+            ..Button::new(item.postback().button(label))
+        };
+        button.into()
+    });
+    Bubble {
+        size: Some(BubbleSize::Kilo),
+        header: Some(FlexBox::vertical([title.into()])),
+        body: Some(FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical(buttons)
+        }),
+        ..Bubble::default()
+    }
+}
+
+fn tab_title(tab: Tab) -> &'static Label {
+    match tab {
+        Tab::Buyer => &labels::BUYER,
+        Tab::Seller => &labels::SELLER,
+        Tab::Admin => &labels::ADMIN,
+    }
+}
+
+fn item_label(item: Item, has_shop: bool) -> &'static Label {
+    match item {
+        Item::Buy => &labels::BUY,
+        Item::Search => &labels::SEARCH,
+        Item::Cart => &labels::CART,
+        Item::MyOrders => &labels::MY_ORDERS,
+        Item::MyShop if has_shop => &labels::MY_SHOP,
+        Item::MyShop => &labels::OPEN_SHOP,
+        Item::Help => &labels::HELP,
+        Item::ShopOrders => &labels::SHOP_ORDERS,
+        Item::AddProduct => &labels::ADD_PRODUCT,
+        Item::MyProducts => &labels::MY_PRODUCTS,
+        Item::OpenClose => &labels::OPEN_CLOSE,
+        Item::Sales => &labels::SALES,
+        Item::ShopSettings => &labels::SHOP_SETTINGS,
+        Item::ApproveShops => &labels::APPROVE_SHOPS,
+        Item::ReviewQueue => &labels::REVIEW_QUEUE,
+        Item::Users => &labels::USERS,
+        Item::Categories => &labels::CATEGORIES,
+        Item::Stats => &labels::STATS,
+        Item::Announcements => &labels::ANNOUNCEMENTS,
+    }
 }
 
 /// Page `number` (from 0) of `items` as a carousel (FR-LINE-11, FR-SRCH-03): a `card` for
@@ -247,11 +346,36 @@ pub mod labels {
         EDIT = "แก้ไข",
         /// Help topics (FR-HELP-01)
         HELP = "ช่วยเหลือ",
+
+        // The menu's tabs and functions (§3.1.2)
+        BUYER = "ผู้ซื้อ",
+        SELLER = "ผู้ขาย",
+        ADMIN = "ผู้ดูแล",
+        BUY = "ซื้อของ",
+        SEARCH = "ค้นหา",
+        CART = "ตะกร้า",
+        MY_ORDERS = "คำสั่งซื้อของฉัน",
+        OPEN_SHOP = "เปิดร้าน",
+        MY_SHOP = "ร้านของฉัน",
+        SHOP_ORDERS = "ออเดอร์ร้าน",
+        ADD_PRODUCT = "เพิ่มสินค้า",
+        MY_PRODUCTS = "สินค้าของฉัน",
+        OPEN_CLOSE = "เปิด/ปิดร้าน",
+        SALES = "ยอดขาย",
+        SHOP_SETTINGS = "ตั้งค่าร้าน",
+        APPROVE_SHOPS = "อนุมัติร้าน",
+        REVIEW_QUEUE = "รายการรอตรวจ",
+        USERS = "ผู้ใช้",
+        CATEGORIES = "หมวดหมู่",
+        STATS = "สถิติ",
+        ANNOUNCEMENTS = "ประกาศ",
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::slice;
+
     use chrono::TimeZone;
 
     use super::*;
@@ -301,6 +425,8 @@ mod tests {
             t.something_went_wrong(),
             text(&t.ai_resting()).to_owned(),
             text(&t.ai_unavailable()).to_owned(),
+            text(&t.step_expired(15)).to_owned(),
+            text(&t.cancelled()).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
@@ -381,6 +507,34 @@ mod tests {
             assert_eq!(quick_reply.items.len(), 2, "{denied:?}");
             limits::check(&[message]).unwrap();
         }
+    }
+
+    /// FR-UI-15: an expired step says how long it waited, and where to start again.
+    #[test]
+    fn an_expired_step_says_why_and_offers_the_menus() {
+        let message = templates(PoliteParticle::Kha).step_expired(15);
+        assert!(text(&message).contains("เกิน 15 นาที"));
+        assert_eq!(message.quick_reply.as_ref().unwrap().items.len(), 2);
+        limits::check(&[message]).unwrap();
+    }
+
+    /// FR-UI-04: every prompt of a flow gets the cancel button, once, after its own.
+    #[test]
+    fn prompts_get_the_cancel_button_once() {
+        let cancel = Action::message(labels::CANCEL.clone(), "ยกเลิก");
+        let plain = with_cancel(Message::text("ชื่อสินค้าคืออะไรคะ"));
+        let actions = |message: &Message| -> Vec<Action> {
+            let items = &message.quick_reply.as_ref().expect("a Quick Reply").items;
+            items.iter().map(|item| item.action.clone()).collect()
+        };
+        assert_eq!(actions(&plain), slice::from_ref(&cancel));
+
+        let zone = Action::message(Label::fit("ซอย 1"), "ซอย 1");
+        let choices = Message::text("อยู่ซอยไหนคะ").with_quick_reply(QuickReply::new([zone.clone()]));
+        let choices = with_cancel(choices);
+        assert_eq!(actions(&choices), [zone, cancel]);
+        assert_eq!(actions(&with_cancel(choices.clone())), actions(&choices));
+        limits::check(&[plain, choices]).unwrap();
     }
 
     /// FR-PROD-04: a refused photo comes with the limit it broke and what to send instead.

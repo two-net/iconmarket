@@ -6,7 +6,7 @@
 
 #![allow(
     dead_code,
-    reason = "follow, postback and menu handling are built by #13, #14, #17 and #19"
+    reason = "follow, postback and menu handling are built by #14, #17 and #19"
 )]
 
 pub mod access;

@@ -1,15 +1,112 @@
 //! Dispatcher (SRS §2.1): processes inbox events in order per user and routes input
 //! (§3.1.3). Built by #13 and #14.
+//!
+//! The conversation framework every chat feature is built on (#13):
+//!
+//! - [`Turn`]: what handling one event works with, and the notice of an expired flow;
+//! - [`postback`]: postback data, an action name and opaque IDs (FR-UI-13, NFR-SEC-03);
+//! - [`flow`]: guided flows, kept per user and expiring when idle (FR-UI-04, FR-UI-15);
+//! - [`pending`]: confirmations of proposed changes, applied once (FR-UI-13);
+//! - [`menu`]: the main menu for the user's roles (FR-UI-05).
+//!
+//! Every message that expects an answer offers buttons or Quick Replies for the next step
+//! (FR-UI-03), so that every core task can be done by tapping, except typing names, prices,
+//! other quantities and addresses (FR-UI-02).
+
+#![allow(
+    dead_code,
+    reason = "the event loop that hands events to the framework is built by #14"
+)]
+
+pub mod flow;
+pub mod menu;
+pub mod pending;
+pub mod postback;
+#[cfg(test)]
+mod tests;
 
 use chrono::TimeDelta;
 use sea_orm::prelude::DateTimeUtc;
-use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter};
 
+use crate::config::SessionConfig;
+use crate::line::Message;
+use crate::line::limits::MESSAGES_PER_REQUEST;
+use crate::notifications::templates::Templates;
 use crate::persistence::entity::{pending_action, session};
+use crate::users::access::Actor;
 
 /// How long an expired session is kept, so that a user who comes back the same day is told
 /// their step expired (FR-UI-15) instead of finding no trace of it.
 const EXPIRED_SESSION_GRACE: TimeDelta = TimeDelta::days(1);
+
+/// What handling one of a user's events works with.
+pub struct Turn<'a> {
+    pub db: &'a DatabaseConnection,
+    pub templates: &'a Templates,
+    /// The user as they are now, loaded for each event, so a lost role or a suspension applies
+    /// to the very next tap (NFR-SEC-10)
+    pub actor: Actor,
+    /// When the event is handled, which expiry is judged by
+    pub now: DateTimeUtc,
+    /// Their guided flow in progress, as the event found it
+    pub flow: Option<flow::Stored>,
+    session: &'a SessionConfig,
+    /// Whether their flow expired since their last event
+    expired: bool,
+}
+
+impl<'a> Turn<'a> {
+    /// Starts handling an event of `actor`'s at `now`, with their flow in progress. A flow left
+    /// unanswered for `session.timeoutMinutes` ends here, and [`reply`](Self::reply) says so.
+    pub async fn new(
+        db: &'a DatabaseConnection,
+        templates: &'a Templates,
+        session: &'a SessionConfig,
+        actor: Actor,
+        now: DateTimeUtc,
+    ) -> Result<Self, DbErr> {
+        let (flow, expired) = match flow::find(db, actor.user.id, now).await? {
+            flow::Found::None => (None, false),
+            flow::Found::Active(stored) => (Some(stored), false),
+            flow::Found::Expired => (None, true),
+        };
+        Ok(Self {
+            db,
+            templates,
+            actor,
+            now,
+            flow,
+            session,
+            expired,
+        })
+    }
+
+    /// Ends the flow in progress as if it had expired, for one this release can't continue: a
+    /// flow renamed or removed, or a draft it can no longer read.
+    pub async fn expire_flow(&mut self) -> Result<(), DbErr> {
+        if self.flow.take().is_some() {
+            flow::end(self.db, self.actor.user.id).await?;
+            self.expired = true;
+        }
+        Ok(())
+    }
+
+    /// The reply to the event: `messages`, after the notice that the user's flow expired if it
+    /// did (FR-UI-15). The notice is dropped rather than the reply when there is no room for it.
+    pub fn reply(&self, mut messages: Vec<Message>) -> Vec<Message> {
+        if self.expired && messages.len() < MESSAGES_PER_REQUEST {
+            let notice = self.templates.step_expired(self.session.timeout_minutes);
+            messages.insert(0, notice);
+        }
+        messages
+    }
+
+    /// When a flow answered now expires, unless answered again (FR-UI-15).
+    fn flow_expires_at(&self) -> DateTimeUtc {
+        self.now + TimeDelta::minutes(self.session.timeout_minutes.into())
+    }
+}
 
 /// What [`delete_expired`] deleted.
 #[derive(Debug, PartialEq, Eq)]
@@ -36,129 +133,4 @@ pub async fn delete_expired(db: &impl ConnectionTrait, now: DateTimeUtc) -> Resu
         sessions,
         pending_actions,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use chrono::{TimeZone, Utc};
-    use sea_orm::ActiveValue::Set;
-    use sea_orm::prelude::Uuid;
-    use sea_orm::{ActiveModelTrait, DatabaseConnection, QueryOrder, QuerySelect};
-    use serde_json::json;
-
-    use super::*;
-    use crate::persistence::entity::user;
-    use crate::persistence::{orm, random_id, testing};
-
-    async fn new_user(db: &DatabaseConnection, line_user_id: &str) -> i64 {
-        let now = Utc::now();
-        let user = user::ActiveModel {
-            line_user_id: Set(Some(line_user_id.to_owned())),
-            is_admin: Set(false),
-            is_following: Set(true),
-            status: Set(user::Status::Active),
-            created_at: Set(now),
-            updated_at: Set(now),
-            ..Default::default()
-        };
-        user.insert(db).await.unwrap().id
-    }
-
-    async fn new_session(db: &DatabaseConnection, user_id: i64, expires_at: DateTimeUtc) {
-        let session = session::ActiveModel {
-            user_id: Set(user_id),
-            flow: Set("add_product".to_owned()),
-            step: Set("price".to_owned()),
-            data: Set(json!({ "name": "ไข่ไก่" })),
-            expires_at: Set(expires_at),
-        };
-        session.insert(db).await.unwrap();
-    }
-
-    async fn new_pending_action(
-        db: &DatabaseConnection,
-        user_id: i64,
-        expires_at: DateTimeUtc,
-        consumed: bool,
-    ) -> Uuid {
-        let action = pending_action::ActiveModel {
-            id: Set(random_id()),
-            user_id: Set(user_id),
-            kind: Set("checkout".to_owned()),
-            payload: Set(json!({ "shop_id": 1 })),
-            expires_at: Set(expires_at),
-            consumed_at: Set(consumed.then_some(expires_at - TimeDelta::minutes(30))),
-            created_at: Set(expires_at - TimeDelta::hours(1)),
-        };
-        action.insert(db).await.unwrap().id
-    }
-
-    async fn sessions(db: &DatabaseConnection) -> Vec<i64> {
-        session::Entity::find()
-            .select_only()
-            .column(session::Column::UserId)
-            .order_by_asc(session::Column::UserId)
-            .into_tuple()
-            .all(db)
-            .await
-            .unwrap()
-    }
-
-    async fn pending_actions(db: &DatabaseConnection) -> Vec<Uuid> {
-        pending_action::Entity::find()
-            .select_only()
-            .column(pending_action::Column::Id)
-            .into_tuple()
-            .all(db)
-            .await
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn expired_sessions_and_pending_actions_are_deleted() {
-        let (_container, pool) = testing::migrated().await;
-        let db = orm(pool);
-        let now = Utc.with_ymd_and_hms(2026, 10, 24, 7, 30, 0).unwrap();
-        let second = TimeDelta::seconds(1);
-
-        let [gone, expired_today, active] = [
-            "U0123456789abcdef0123456789abcde0",
-            "U0123456789abcdef0123456789abcde1",
-            "U0123456789abcdef0123456789abcde2",
-        ];
-        let (gone, expired_today, active) = (
-            new_user(&db, gone).await,
-            new_user(&db, expired_today).await,
-            new_user(&db, active).await,
-        );
-        new_session(&db, gone, now - EXPIRED_SESSION_GRACE - second).await;
-        new_session(&db, expired_today, now - EXPIRED_SESSION_GRACE + second).await;
-        new_session(&db, active, now + TimeDelta::minutes(15)).await;
-        new_pending_action(&db, active, now - second, false).await;
-        new_pending_action(&db, active, now - second, true).await;
-        let open = new_pending_action(&db, active, now + second, false).await;
-
-        let deleted = delete_expired(&db, now).await.unwrap();
-        assert_eq!(
-            deleted,
-            Deleted {
-                sessions: 1,
-                pending_actions: 2
-            }
-        );
-        assert_eq!(sessions(&db).await, [expired_today, active]);
-        assert_eq!(pending_actions(&db).await, [open]);
-
-        // Running it again has no further effect
-        let again = delete_expired(&db, now).await.unwrap();
-        assert_eq!(
-            again,
-            Deleted {
-                sessions: 0,
-                pending_actions: 0
-            }
-        );
-        assert_eq!(sessions(&db).await, [expired_today, active]);
-        assert_eq!(pending_actions(&db).await, [open]);
-    }
 }
