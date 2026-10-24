@@ -114,6 +114,7 @@ fn enums_are_stored_by_their_srs_names() {
     assert_eq!(order::PaymentMethod::PromptPay.to_value(), "PROMPTPAY");
     assert_eq!(product::Status::Held.to_value(), "HELD");
     assert_eq!(shop::Status::Closed.to_value(), "CLOSED");
+    assert_eq!(user::MenuRoles::SellerAdmin.to_value(), "SELLER_ADMIN");
 }
 
 #[test]
@@ -295,6 +296,7 @@ async fn every_attribute_can_be_stored() {
             picture_url: Some("https://profile.line-scdn.net/0h".to_owned()),
             profile_refreshed_at: Some(at),
             is_admin: true,
+            menu_roles: Some(user::MenuRoles::SellerAdmin),
             is_following: true,
             status: user::Status::Suspended,
             consent_version: Some("2026-10".to_owned()),
@@ -1120,6 +1122,41 @@ async fn the_admin_role_follows_the_config() {
     let stamped: Vec<_> = users.iter().map(|user| user.updated_at != at()).collect();
     assert_eq!(stamped, [true, true, true, false]);
 
+    // FR-ADM-08: each change is audited as the system's, with why
+    let audited = || async {
+        audit_log::Entity::find()
+            .order_by_asc(audit_log::Column::Id)
+            .all(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.actor_id, row.action, row.target_id, row.details))
+            .collect::<Vec<_>>()
+    };
+    let listed_reason = json!({ "reason": "listed in admin.lineUserIds" });
+    let unlisted_reason = json!({ "reason": "no longer listed in admin.lineUserIds" });
+    let changes = [
+        (
+            None,
+            "admin.granted".to_owned(),
+            Some(listed.id),
+            listed_reason,
+        ),
+        (
+            None,
+            "admin.revoked".to_owned(),
+            Some(unlisted.id),
+            unlisted_reason.clone(),
+        ),
+        (
+            None,
+            "admin.revoked".to_owned(),
+            Some(deleted.id),
+            unlisted_reason,
+        ),
+    ];
+    assert_eq!(audited().await, changes);
+
     let again = seed(pool, &catalog(&[]), &config).await.unwrap();
     assert_eq!(
         again,
@@ -1129,4 +1166,5 @@ async fn the_admin_role_follows_the_config() {
             revoked: 0,
         }
     );
+    assert_eq!(audited().await, changes);
 }

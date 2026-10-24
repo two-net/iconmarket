@@ -66,6 +66,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             "rich-menu provisioning failed, continuing"
         );
     }
+    // Users whose roles changed, by the admin sync or while the app was down, get their menu
+    let orm = persistence::orm(db.clone());
+    if let Err(e) = notifications::relink_rich_menus(&orm, &line, None).await {
+        warn!(
+            error = format!("{e:#}"),
+            "rich-menu relinking failed, continuing"
+        );
+    }
 
     let stop = CancellationToken::new();
     let jobs = TaskTracker::new();

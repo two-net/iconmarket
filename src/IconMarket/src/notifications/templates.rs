@@ -20,6 +20,7 @@ use crate::line::flex::{
 };
 use crate::line::{Action, Message, QuickReply, limits};
 use crate::thai::{self, NumberError};
+use crate::users::access::Denied;
 
 /// Builds messages in the configured voice and time zone.
 pub struct Templates {
@@ -82,6 +83,27 @@ impl Templates {
         let kha = self.kha();
         let text =
             format!("ขอโทษ{kha} ผู้ช่วยตอบไม่ได้ในตอนนี้ ลองใหม่อีกครั้ง หรือเลือกจากเมนูด้านล่างได้เลย{kha}");
+        Message::text(text).with_quick_reply(menus())
+    }
+
+    /// Why an action was refused (NFR-SEC-02, NFR-SEC-10): what the user can still do, and
+    /// where to ask. A button tapped too late gets this rather than a technical error.
+    pub fn denied(&self, denied: Denied) -> Message {
+        let (kha, help) = (self.kha(), labels::HELP.as_str());
+        let text = match denied {
+            Denied::Suspended => format!(
+                "ขอโทษ{kha} บัญชีของคุณถูกระงับการใช้งานชั่วคราว ยังดูคำสั่งซื้อของคุณและเมนูช่วยเหลือได้ตามปกติ สอบถามได้ที่ \"{help}\" แล้วเลือก \"ติดต่อผู้ดูแล\"{kha}"
+            ),
+            Denied::ShopSuspended => format!(
+                "ขอโทษ{kha} ร้านของคุณถูกระงับชั่วคราว จึงแก้ไขร้านและสินค้าไม่ได้ แต่ยังดูแลออเดอร์ที่มีอยู่ได้ตามปกติ สอบถามได้ที่ \"{help}\" แล้วเลือก \"ติดต่อผู้ดูแล\"{kha}"
+            ),
+            Denied::NotAllowed => {
+                format!("ขอโทษ{kha} รายการนี้ทำไม่ได้ เลือกจากเมนูด้านล่างได้เลย{kha}")
+            }
+            Denied::NotFound => {
+                format!("ขอโทษ{kha} ไม่พบรายการนี้แล้ว อาจถูกลบหรือเปลี่ยนไป เลือกจากเมนูด้านล่างได้เลย{kha}")
+            }
+        };
         Message::text(text).with_quick_reply(menus())
     }
 
@@ -244,6 +266,13 @@ mod tests {
         NumberError::TooLarge,
     ];
 
+    const DENIALS: [Denied; 4] = [
+        Denied::Suspended,
+        Denied::ShopSuspended,
+        Denied::NotAllowed,
+        Denied::NotFound,
+    ];
+
     const REJECTIONS: [Rejected; 5] = [
         Rejected::TooLarge { max_mb: 10 },
         Rejected::NotJpegOrPng,
@@ -275,6 +304,7 @@ mod tests {
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
+        texts.extend(DENIALS.map(|denied| text(&t.denied(denied)).to_owned()));
         texts
     }
 
@@ -334,6 +364,21 @@ mod tests {
                     &Action::message(labels::HELP.clone(), "ช่วยเหลือ"),
                 ]
             );
+            limits::check(&[message]).unwrap();
+        }
+    }
+
+    /// NFR-SEC-10, FR-ADM-04: a refusal says what still works and offers the menus.
+    #[test]
+    fn refusals_say_what_still_works_and_offer_the_menus() {
+        let t = templates(PoliteParticle::Kha);
+        assert!(text(&t.denied(Denied::Suspended)).contains("ยังดูคำสั่งซื้อของคุณ"));
+        assert!(text(&t.denied(Denied::ShopSuspended)).contains("ยังดูแลออเดอร์ที่มีอยู่"));
+        for denied in DENIALS {
+            let message = t.denied(denied);
+            assert!(text(&message).starts_with("ขอโทษค่ะ"), "{denied:?}");
+            let quick_reply = message.quick_reply.as_ref().expect("a Quick Reply");
+            assert_eq!(quick_reply.items.len(), 2, "{denied:?}");
             limits::check(&[message]).unwrap();
         }
     }

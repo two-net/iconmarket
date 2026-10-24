@@ -43,9 +43,17 @@ async fn connect(host: &str, port: u16) -> PgPool {
     PgPool::connect_with(options).await.unwrap()
 }
 
+/// An admin's LINE user ID.
+const ADMIN: &str = "U0123456789abcdef0123456789abcdef";
+
 /// A valid file for the app on `listen_port`, connecting to the database at `host`:`port` as
-/// `user`, whose password is their name.
-fn config(listen_port: u16, host: &str, port: u16, user: &str) -> String {
+/// `user`, whose password is their name, with `admins` as the admins.
+fn config(listen_port: u16, host: &str, port: u16, user: &str, admins: &[&str]) -> String {
+    let admins = admins
+        .iter()
+        .map(|id| format!("\"{id}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"
 [app]
@@ -78,7 +86,7 @@ noticeVersion = "1"
 noticeText = "Notice"
 
 [admin]
-lineUserIds = ["U0123456789abcdef0123456789abcdef"]
+lineUserIds = [{admins}]
 "#
     )
 }
@@ -197,7 +205,7 @@ async fn an_empty_database_is_migrated_and_seeded_before_requests_are_accepted()
     let (_postgres, host, db_port) = postgres().await;
     let db = connect(&host, db_port).await;
     let port = free_port();
-    let config = config(port, &host, db_port, "postgres");
+    let config = config(port, &host, db_port, "postgres", &[ADMIN]);
 
     let mut app = App::start(port, &config);
     app.wait_until_healthy();
@@ -267,7 +275,7 @@ async fn a_database_user_who_cannot_create_tables_stops_startup() {
         .unwrap();
     let port = free_port();
 
-    let mut app = App::start(port, &config(port, &host, db_port, "app"));
+    let mut app = App::start(port, &config(port, &host, db_port, "app", &[ADMIN]));
     let status = app.wait();
     assert!(!status.success());
     let log = app.log();
@@ -288,5 +296,76 @@ async fn a_database_user_who_cannot_create_tables_stops_startup() {
         !log.iter()
             .any(|line| line["message"] == "accepting requests"),
         "{log:#?}"
+    );
+}
+
+/// The LINE user IDs of the admins, in ID order.
+async fn admins(db: &PgPool) -> Vec<String> {
+    sqlx::query_scalar("SELECT line_user_id FROM users WHERE is_admin ORDER BY id")
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// FR-ADM-01, FR-ADM-08: the admin role follows `admin.lineUserIds` at every start.
+#[tokio::test]
+async fn removing_an_admin_from_the_config_revokes_the_role_at_restart() {
+    let (_postgres, host, db_port) = postgres().await;
+    let db = connect(&host, db_port).await;
+    let port = free_port();
+    let other = "Ufedcba9876543210fedcba9876543210";
+    let both = config(port, &host, db_port, "postgres", &[ADMIN, other]);
+
+    // The first start creates the schema; then both admins follow the OA
+    let mut app = App::start(port, &both);
+    app.wait_until_healthy();
+    app.stop();
+    for line_user_id in [ADMIN, other] {
+        sqlx::query(
+            "INSERT INTO users (line_user_id, is_admin, is_following, status, created_at, \
+             updated_at) VALUES ($1, false, true, 'ACTIVE', now(), now())",
+        )
+        .bind(line_user_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let mut app = App::start(port, &both);
+    app.wait_until_healthy();
+    let log = app.stop();
+    assert_eq!(
+        log[position(&log, "seed data applied")]["admins_granted"],
+        2
+    );
+    assert_eq!(admins(&db).await, [ADMIN, other]);
+
+    // The operator removes one and restarts
+    let mut app = App::start(port, &config(port, &host, db_port, "postgres", &[ADMIN]));
+    app.wait_until_healthy();
+    let log = app.stop();
+    let seeded = &log[position(&log, "seed data applied")];
+    assert_eq!(seeded["admins_granted"], 0, "{seeded}");
+    assert_eq!(seeded["admins_revoked"], 1, "{seeded}");
+    assert_eq!(admins(&db).await, [ADMIN]);
+
+    let audited: Vec<(Option<i64>, String, String)> = sqlx::query_as(
+        "SELECT a.actor_id, a.action, u.line_user_id FROM audit_logs a \
+         JOIN users u ON u.id = a.target_id ORDER BY a.id",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    let audited: Vec<_> = audited
+        .iter()
+        .map(|(actor, action, user)| (*actor, action.as_str(), user.as_str()))
+        .collect();
+    assert_eq!(
+        audited,
+        [
+            (None, "admin.granted", ADMIN),
+            (None, "admin.granted", other),
+            (None, "admin.revoked", other),
+        ]
     );
 }

@@ -20,6 +20,9 @@ pub struct Model {
     /// Synced from `admin.lineUserIds` (FR-ADM-01). The other roles aren't stored: every user
     /// is a buyer, and the owner of an `APPROVED` shop is a seller.
     pub is_admin: bool,
+    /// The roles of the rich menu linked to the user; `None` for the default, buyer-only menu.
+    /// Differs from their current roles until the menu is relinked (FR-UI-10).
+    pub menu_roles: Option<MenuRoles>,
     /// False after `unfollow`; no pushes are sent until they follow again (FR-ONB-06)
     pub is_following: bool,
     pub status: Status,
@@ -47,6 +50,19 @@ pub enum Status {
     Active,
     Suspended,
     Deleted,
+}
+
+/// The roles beyond buyer that a linked rich menu has tabs for (FR-UI-10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "String(StringLen::None)",
+    rename_all = "SCREAMING_SNAKE_CASE"
+)]
+pub enum MenuRoles {
+    Seller,
+    Admin,
+    SellerAdmin,
 }
 
 #[derive(Clone, Copy, Debug, EnumIter, DeriveRelation)]

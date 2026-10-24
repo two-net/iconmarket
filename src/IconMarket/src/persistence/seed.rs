@@ -5,17 +5,14 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use sea_orm::ActiveValue::Set;
-use sea_orm::sea_query::{Condition, Expr};
-use sea_orm::{
-    ColumnTrait, DatabaseTransaction, DbErr, EntityTrait, PaginatorTrait, QueryFilter,
-    TransactionTrait,
-};
+use sea_orm::{DatabaseTransaction, DbErr, EntityTrait, PaginatorTrait, TransactionTrait};
 use sqlx::PgPool;
 
-use super::entity::{category, user};
+use super::entity::category;
 use super::migration::lock;
 use super::orm;
 use crate::config::{AdminConfig, CatalogConfig};
+use crate::users::roles;
 
 /// What seeding changed.
 #[derive(Debug, PartialEq, Eq)]
@@ -29,8 +26,8 @@ pub struct Seeded {
 }
 
 /// Creates the default categories while there are none, and gives the admin role to exactly
-/// the users listed in the config (FR-ADM-01). Runs under the migration lock, so instances
-/// starting together seed once (MIG-07).
+/// the users listed in the config, auditing each change (FR-ADM-01, FR-ADM-08). Runs under the
+/// migration lock, so instances starting together seed once (MIG-07).
 pub async fn seed(
     db: &PgPool,
     catalog: &CatalogConfig,
@@ -39,7 +36,7 @@ pub async fn seed(
     let txn = orm(db.clone()).begin().await?;
     lock(&txn).await?;
     let categories = seed_categories(&txn, &catalog.default_categories).await?;
-    let (granted, revoked) = sync_admins(&txn, &admin.line_user_ids).await?;
+    let (granted, revoked) = roles::sync_admins(&txn, admin, Utc::now()).await?;
     txn.commit().await?;
     Ok(Seeded {
         categories,
@@ -72,36 +69,4 @@ async fn seed_categories(txn: &DatabaseTransaction, names: &[String]) -> Result<
         category::Entity::insert_many(categories).exec(txn).await?;
     }
     Ok(count)
-}
-
-/// Grants the admin role to the users in `line_user_ids` and removes it from everyone else,
-/// deleted accounts included. Returns how many were granted and revoked.
-///
-/// Listed users who haven't followed the OA have no row yet; they get the role when they do.
-async fn sync_admins(
-    txn: &DatabaseTransaction,
-    line_user_ids: &[String],
-) -> Result<(u64, u64), DbErr> {
-    let now = Utc::now();
-    let granted = user::Entity::update_many()
-        .col_expr(user::Column::IsAdmin, Expr::value(true))
-        .col_expr(user::Column::UpdatedAt, Expr::value(now))
-        .filter(user::Column::IsAdmin.eq(false))
-        .filter(user::Column::LineUserId.is_in(line_user_ids))
-        .exec(txn)
-        .await?
-        .rows_affected;
-    let revoked = user::Entity::update_many()
-        .col_expr(user::Column::IsAdmin, Expr::value(false))
-        .col_expr(user::Column::UpdatedAt, Expr::value(now))
-        .filter(user::Column::IsAdmin.eq(true))
-        .filter(
-            Condition::any()
-                .add(user::Column::LineUserId.is_null())
-                .add(user::Column::LineUserId.is_not_in(line_user_ids)),
-        )
-        .exec(txn)
-        .await?
-        .rows_affected;
-    Ok((granted, revoked))
 }
