@@ -1,8 +1,8 @@
 //! Dates and times as Thai users read them (FR-UI-07, CON-11): `22 ต.ค. 2569 14:30`, with
 //! Buddhist-Era years, in the business time zone (`app.timeZone`). Timestamps are kept in
-//! UTC and converted only for display (DR-02).
+//! UTC and converted only for display and for day boundaries (DR-02).
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeDelta, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 
 const MONTHS: [&str; 12] = [
@@ -32,6 +32,19 @@ pub fn format_date(at: DateTime<Utc>, time_zone: Tz) -> String {
 pub fn format_date_time(at: DateTime<Utc>, time_zone: Tz) -> String {
     let local = at.with_timezone(&time_zone);
     format!("{} {:02}:{:02}", date(&local), local.hour(), local.minute())
+}
+
+/// The first instant at which the clocks in `time_zone` show `time` on `date`: the earlier one
+/// when the clocks go back, and the end of the gap when they skip `time`.
+pub fn local_instant(date: NaiveDate, time: NaiveTime, time_zone: Tz) -> DateTime<Utc> {
+    let mut at = date.and_time(time);
+    loop {
+        if let Some(instant) = time_zone.from_local_datetime(&at).earliest() {
+            return instant.to_utc();
+        }
+        // Clocks change on the minute
+        at += TimeDelta::minutes(1);
+    }
 }
 
 fn date(local: &DateTime<Tz>) -> String {

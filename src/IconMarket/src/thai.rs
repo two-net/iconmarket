@@ -13,7 +13,7 @@ mod label;
 mod money;
 mod number;
 
-pub use date::{format_date, format_date_time};
+pub use date::{format_date, format_date_time, local_instant};
 pub use label::{Label, shorten};
 pub use money::Money;
 #[allow(

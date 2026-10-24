@@ -221,13 +221,17 @@ async fn an_empty_database_is_migrated_and_seeded_before_requests_are_accepted()
     assert_eq!(log[seeded]["categories"], 2);
 
     // FR-JOB-03: the jobs are registered before requests are accepted
-    let jobs: Vec<(String, String)> = sqlx::query_as("SELECT name, schedule FROM jobs")
-        .fetch_all(&db)
-        .await
-        .unwrap();
+    let jobs: Vec<(String, String)> =
+        sqlx::query_as("SELECT name, schedule FROM jobs ORDER BY name")
+            .fetch_all(&db)
+            .await
+            .unwrap();
     assert_eq!(
         jobs,
-        [("delete-expired".to_owned(), "every 900s".to_owned())]
+        [
+            ("delete-expired".to_owned(), "every 900s".to_owned()),
+            ("retry-pushes".to_owned(), "every 60s".to_owned()),
+        ]
     );
 
     let categories: Vec<String> =

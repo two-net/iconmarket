@@ -171,6 +171,29 @@ async fn other_refusals_are_not_retried() {
     assert_eq!(fake.requests().len(), 1);
 }
 
+/// A queued notification is sent as stored, and retried like any push.
+#[tokio::test]
+async fn stored_messages_are_pushed_as_they_are_with_the_same_retries() {
+    let fake = Fake::start().await;
+    fake.script(PUSH, [Answer::error(500, "Internal server error")]);
+    let stored = serde_json::to_value(messages()).unwrap();
+    let key = RetryKey::random();
+
+    let pushed = fake.client().push_stored(USER, &stored, key).await.unwrap();
+
+    assert_eq!(pushed.attempts, 2);
+    assert_eq!(fake.deliveries(), 1);
+    let requests = fake.requests();
+    assert_eq!(
+        requests[1].json(),
+        json!({ "to": USER, "messages": [{ "type": "text", "text": "ไข่ไก่มาส่งแล้วค่ะ" }] })
+    );
+    assert_eq!(
+        requests[1].header("x-line-retry-key"),
+        Some(&*key.uuid().to_string())
+    );
+}
+
 #[test]
 fn retry_keys_are_version_4_uuids() {
     let key = RetryKey::random().uuid();

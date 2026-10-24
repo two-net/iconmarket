@@ -3,7 +3,8 @@
 //! sources.
 //!
 //! An event is handled in one transaction, which also marks it `DONE`, and answered once that
-//! commits, so it takes effect at most once (NFR-REL-02). Each attempt is counted before it
+//! commits, so it takes effect at most once (NFR-REL-02). Its notifications, queued in the same
+//! transaction, are pushed after the reply. Each attempt is counted before it
 //! starts, in a transaction of its own, so one cut short by a crash or a shutdown counts too. A
 //! failed attempt changes nothing and is tried again shortly; after [`MAX_ATTEMPTS`] the event
 //! fails for good and its user is told something went wrong. The source's next event waits
@@ -36,10 +37,11 @@ use tokio_util::task::TaskTracker;
 use tracing::{Instrument, Span, debug, error, info, warn};
 
 use super::event::{Event, Source};
-use super::route::{self, Reply};
+use super::route::{self, Handled, Reply};
 use crate::config::Config;
 use crate::line::{self, Delivery, Importance, Message};
 use crate::notifications::templates::Templates;
+use crate::notifications::{self, Queued};
 use crate::persistence::entity::webhook_event::{self, Status};
 use crate::{ai, logging};
 
@@ -131,7 +133,8 @@ enum Claimed {
 /// What became of a try at a source's next event.
 #[derive(Debug)]
 enum Next {
-    /// It was attempted; its answer, if any, goes out before the source's next is taken
+    /// It was attempted; its answer, if any, goes out before the source's next is taken, so a
+    /// recipient's notifications arrive in order
     Attempted(Option<Answer>),
     /// The attempt failed; try again after this long
     Retry(Duration),
@@ -141,10 +144,10 @@ enum Next {
     Elsewhere,
 }
 
-/// A reply to send, once its event is done with.
+/// What to send once an event is done with: a reply, notifications, or both.
 #[derive(Debug)]
 struct Answer {
-    reply: Reply,
+    handled: Handled,
     /// When its event was received, to measure how long the reply took (NFR-PERF-02)
     received_at: DateTimeUtc,
     /// Its event's span
@@ -277,8 +280,8 @@ impl Worker {
         };
         let reply = self.settle(&row, result).instrument(span.clone()).await?;
         Ok(match reply {
-            Settled::Answer(reply) => Next::Attempted(Some(Answer {
-                reply,
+            Settled::Answer(handled) => Next::Attempted(Some(Answer {
+                handled,
                 received_at: row.received_at,
                 span,
             })),
@@ -287,32 +290,37 @@ impl Worker {
         })
     }
 
-    /// Handles the event `row` in `txn`, marks it `DONE` and commits. Returns the reply to send.
+    /// Handles the event `row` in `txn`, marks it `DONE` and commits. Returns the reply and the
+    /// notifications to send.
     async fn attempt(
         &self,
         txn: DatabaseTransaction,
         row: &webhook_event::Model,
         now: DateTimeUtc,
-    ) -> Result<Option<Reply>, DbErr> {
+    ) -> Result<Handled, DbErr> {
         let event = Event::read(&row.payload);
-        let reply = route::handle(&self.context, &txn, row, event, now).await?;
+        let handled = route::handle(&self.context, &txn, row, event, now).await?;
         finish(&txn, row.id, Status::Done, None).await?;
         txn.commit().await?;
-        Ok(reply)
+        Ok(handled)
     }
 
-    /// What follows attempt `row.attempts` at `row`, which ended with `result`: its reply, or,
+    /// What follows attempt `row.attempts` at `row`, which ended with `result`: what to send, or,
     /// recorded first, why it failed.
     async fn settle(
         &self,
         row: &webhook_event::Model,
-        result: Result<Option<Reply>, String>,
+        result: Result<Handled, String>,
     ) -> Result<Settled, DbErr> {
         let attempt = row.attempts;
         let error = match result {
-            Ok(reply) => {
+            Ok(handled) => {
                 debug!(event_type = %row.event_type, attempt, "event handled");
-                return Ok(reply.map_or(Settled::Silent, Settled::Answer));
+                return Ok(if handled.reply.is_none() && handled.pushes.is_empty() {
+                    Settled::Silent
+                } else {
+                    Settled::Answer(handled)
+                });
             }
             Err(error) => error,
         };
@@ -334,21 +342,39 @@ impl Worker {
             return Ok(Settled::Silent);
         };
         let sorry = self.context.templates.something_went_wrong();
-        Ok(Settled::Answer(Reply {
-            token,
-            to: row.user_key.clone(),
-            messages: vec![Message::text(sorry)],
+        Ok(Settled::Answer(Handled {
+            reply: Some(Reply {
+                token,
+                to: row.user_key.clone(),
+                messages: vec![Message::text(sorry)],
+            }),
+            pushes: Queued::default(),
         }))
     }
 
-    /// Sends `answer` with its event's reply token, or not at all if that fails: a reply is
-    /// never pushed instead unless it is essential (FR-LINE-07).
+    /// Sends `answer`: its reply first, while the reply token is fresh, then its notifications
+    /// (FR-NOT-04).
     async fn send(&self, answer: Answer) {
         let Answer {
-            reply,
+            handled: Handled { reply, pushes },
             received_at,
             span,
         } = answer;
+        if let Some(reply) = reply {
+            self.reply(reply, received_at, &span).await;
+        }
+        if !pushes.is_empty() {
+            let count = pushes.len();
+            notifications::send(&self.context.db, &self.context.line, pushes)
+                .instrument(span.clone())
+                .await;
+            span.in_scope(|| debug!(pushes = count, "notifications sent"));
+        }
+    }
+
+    /// Sends `reply` with its event's reply token, or not at all if that fails: a reply is never
+    /// pushed instead unless it is essential (FR-LINE-07).
+    async fn reply(&self, reply: Reply, received_at: DateTimeUtc, span: &Span) {
         let delivery = self
             .context
             .line
@@ -371,9 +397,9 @@ impl Worker {
 
 /// What [`Worker::settle`] made of an attempt.
 enum Settled {
-    /// Done with, with this reply
-    Answer(Reply),
-    /// Done with, without a reply
+    /// Done with, with this to send
+    Answer(Handled),
+    /// Done with, with nothing to send
     Silent,
     /// To be tried again after this long
     Retry(Duration),

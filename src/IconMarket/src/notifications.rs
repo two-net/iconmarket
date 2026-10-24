@@ -1,7 +1,21 @@
-//! Notifications (SRS §2.1): message templates, reply and push sending, and quota-aware
-//! batching (#15). Rich menus are provisioned here at startup (#17).
+//! Notifications (SRS §2.1, §4.8): message templates, and the push notifications of Table
+//! 4.8-A with their switches, per-recipient batching, push log and retries ([`push`], #15).
+//! Rich menus are provisioned here at startup (#17).
+//!
+//! A feature notifies through the [`Outbox`] of its processing step:
+//! [`Turn::notify`](crate::dispatcher::Turn::notify) while handling an event, or an outbox of
+//! its own in a job, queued in the job's transaction and sent once that commits.
 
+mod push;
 pub mod templates;
+#[cfg(test)]
+mod tests;
+
+#[allow(
+    unused_imports,
+    reason = "the features that notify are built by later issues"
+)]
+pub use push::{Kind, Outbox, PushStats, Queued, Retried, To, retry, send, stats};
 
 use sea_orm::DatabaseConnection;
 use tracing::debug;

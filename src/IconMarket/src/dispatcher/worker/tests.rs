@@ -20,9 +20,9 @@ use tokio_util::task::TaskTracker;
 use super::*;
 use crate::config::{self, Config};
 use crate::dispatcher::menu::Tab;
-use crate::line::testing::{Answer, Fake, REPLY};
-use crate::notifications::templates;
-use crate::persistence::entity::{session, user};
+use crate::line::testing::{Answer, Fake, PUSH, REPLY};
+use crate::notifications::{Kind, Outbox, To, templates};
+use crate::persistence::entity::{push_log, session, user};
 use crate::persistence::{orm, testing};
 use crate::users::access::Denied;
 
@@ -81,17 +81,22 @@ impl Running {
 }
 
 impl Setup {
-    /// Starts a worker on `pool` with a rate limit of `per_minute`, handling up to `sources`
-    /// sources at a time.
-    fn run_on(&self, pool: &PgPool, per_minute: u32, sources: usize) -> Running {
+    /// What a worker on `pool` with a rate limit of `per_minute` works with.
+    fn context(&self, pool: &PgPool, per_minute: u32) -> Context {
         let config = config(per_minute);
-        let context = Context {
+        Context {
             db: orm(pool.clone()),
             line: self.line.client(),
             ai: ai::Gateway::new(&config.ai, chrono_tz::Asia::Bangkok, pool.clone()),
             templates: Templates::new(&config.app),
             config: Arc::new(config),
-        };
+        }
+    }
+
+    /// Starts a worker on `pool` with a rate limit of `per_minute`, handling up to `sources`
+    /// sources at a time.
+    fn run_on(&self, pool: &PgPool, per_minute: u32, sources: usize) -> Running {
+        let context = self.context(pool, per_minute);
         let (tracker, stop, wakeup) = (
             TaskTracker::new(),
             CancellationToken::new(),
@@ -622,4 +627,72 @@ async fn a_stopped_worker_takes_no_more_events() {
     tokio::time::sleep(FAST.look_every * 3).await;
     assert_eq!(statuses(&inbox(&setup.db).await), [(Status::Pending, 0)]);
     assert_eq!(setup.line.requests().len(), 0);
+}
+
+/// FR-NOT-04, FR-LINE-07: what an event notifies is pushed once it is answered, while its reply
+/// token is fresh, and each push is logged (FR-NOT-05).
+#[tokio::test]
+async fn an_events_notifications_are_pushed_after_its_reply() {
+    let s = setup().await;
+    let seller = testing::new_user(BOB).insert(&s.db).await.unwrap();
+    let context = s.context(&s.pool, 20);
+    let mut outbox = Outbox::default();
+    outbox.add(
+        Kind::NewOrder,
+        To::User(seller.id),
+        vec![Message::text("ออเดอร์ใหม่ค่ะ")],
+    );
+    let txn = s.db.begin().await.unwrap();
+    let pushes = outbox
+        .queue(&txn, &context.config.notification, Utc::now())
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let worker = Worker::new(
+        &TaskTracker::new(),
+        CancellationToken::new(),
+        context,
+        Wakeup::default(),
+        1,
+        FAST,
+    );
+
+    let reply = Reply {
+        token: token("e1"),
+        to: ALICE.to_owned(),
+        messages: vec![Message::text("สั่งซื้อแล้วค่ะ")],
+    };
+    worker
+        .send(super::Answer {
+            handled: Handled {
+                reply: Some(reply),
+                pushes,
+            },
+            received_at: Utc::now(),
+            span: Span::none(),
+        })
+        .await;
+
+    let requests: Vec<_> = s
+        .line
+        .requests()
+        .into_iter()
+        .map(|request| {
+            let to = request.json()["to"].as_str().map(str::to_owned);
+            (request.path, to)
+        })
+        .collect();
+    assert_eq!(
+        requests,
+        [
+            (REPLY.to_owned(), None),
+            (PUSH.to_owned(), Some(BOB.to_owned())),
+        ]
+    );
+    let logs = push_log::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        (logs[0].status, logs[0].push_type.as_str()),
+        (push_log::Status::Sent, "order.new")
+    );
 }

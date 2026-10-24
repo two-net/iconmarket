@@ -83,9 +83,9 @@ struct ReplyRequest<'a> {
 }
 
 #[derive(Serialize)]
-struct PushRequest<'a> {
+struct PushRequest<'a, M: Serialize + ?Sized> {
     to: &'a str,
-    messages: &'a [Message],
+    messages: &'a M,
 }
 
 impl Client {
@@ -113,12 +113,33 @@ impl Client {
         retry_key: RetryKey,
     ) -> Result<Pushed, Error> {
         limits::check(messages)?;
-        let body = PushRequest { to, messages };
+        self.push_body(&PushRequest { to, messages }, retry_key)
+            .await
+    }
+
+    /// Pushes messages stored as LINE's JSON, as [`push`](Self::push) does: messages that were
+    /// checked against LINE's limits before they were stored, such as a queued notification's.
+    pub async fn push_stored(
+        &self,
+        to: &str,
+        messages: &serde_json::Value,
+        retry_key: RetryKey,
+    ) -> Result<Pushed, Error> {
+        self.push_body(&PushRequest { to, messages }, retry_key)
+            .await
+    }
+
+    /// Pushes `body`, retrying as [`push`](Self::push) describes.
+    async fn push_body<M: Serialize + ?Sized>(
+        &self,
+        body: &PushRequest<'_, M>,
+        retry_key: RetryKey,
+    ) -> Result<Pushed, Error> {
         let mut waits = self.backoff.iter();
         let mut attempts = 0;
         loop {
             attempts += 1;
-            let error = match self.push_once(&body, retry_key).await {
+            let error = match self.push_once(body, retry_key).await {
                 Ok(request_id) => {
                     return Ok(Pushed {
                         request_id,
@@ -137,9 +158,9 @@ impl Client {
     }
 
     /// One try of a push, returning LINE's request ID.
-    async fn push_once(
+    async fn push_once<M: Serialize + ?Sized>(
         &self,
-        body: &PushRequest<'_>,
+        body: &PushRequest<'_, M>,
         retry_key: RetryKey,
     ) -> Result<Option<String>, Error> {
         let response = self

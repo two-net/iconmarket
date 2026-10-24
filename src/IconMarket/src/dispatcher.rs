@@ -5,8 +5,9 @@
 //! LINE source and concurrently across sources (FR-LINE-05). Each event is handled in one
 //! database transaction, which also marks it processed, and is answered once that commits: an
 //! event cut short by a crash or an error changes nothing and is handled again, and none takes
-//! effect twice (NFR-REL-02, NFR-REL-03). Anything sent to LINE other than the reply, such as a
-//! push to another user, must likewise wait for the commit.
+//! effect twice (NFR-REL-02, NFR-REL-03). Anything sent to LINE other than the reply must likewise
+//! wait for the commit: notifications to other users ([`Turn::notify`]) are queued in the event's
+//! transaction and pushed after its reply (FR-NOT-04).
 //!
 //! [`route`] decides who handles an event (FR-LINE-06, FR-UI-12, FR-UI-14), after the per-user
 //! rate limit ([`limit`], NFR-SEC-05). The conversation framework every chat feature is built
@@ -38,6 +39,8 @@ mod route;
 mod tests;
 mod worker;
 
+use std::sync::Mutex;
+
 use chrono::TimeDelta;
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseTransaction, DbErr, EntityTrait, QueryFilter};
@@ -46,6 +49,7 @@ use crate::config::SessionConfig;
 use crate::line::Message;
 use crate::line::limits::MESSAGES_PER_REQUEST;
 use crate::notifications::templates::Templates;
+use crate::notifications::{Kind, Outbox, To};
 use crate::persistence::entity::{pending_action, session};
 use crate::users::access::Actor;
 
@@ -76,6 +80,9 @@ pub struct Turn<'a> {
     session: &'a SessionConfig,
     /// Whether their flow expired since their last event
     expired: bool,
+    /// What handling the event notifies, pushed once it commits. Behind a lock so that handlers,
+    /// which share the turn, can add to it.
+    notifications: Mutex<Outbox>,
 }
 
 impl<'a> Turn<'a> {
@@ -101,6 +108,7 @@ impl<'a> Turn<'a> {
             flow,
             session,
             expired,
+            notifications: Mutex::new(Outbox::default()),
         })
     }
 
@@ -122,6 +130,26 @@ impl<'a> Turn<'a> {
             messages.insert(0, notice);
         }
         messages
+    }
+
+    /// Notifies `to` of what handling the event did (Table 4.8-A), once the event takes effect:
+    /// by push, with the event's other notifications for the same recipient (FR-NOT-04). Nothing
+    /// is sent if handling the event fails.
+    pub fn notify(&self, kind: Kind, to: To, messages: Vec<Message>) {
+        self.notifications
+            .lock()
+            .expect("no panic while held")
+            .add(kind, to, messages);
+    }
+
+    /// Ends the turn: its [reply](Self::reply) of `messages`, and what it notifies.
+    pub fn finish(self, messages: Vec<Message>) -> (Vec<Message>, Outbox) {
+        let messages = self.reply(messages);
+        let outbox = self
+            .notifications
+            .into_inner()
+            .expect("no panic while held");
+        (messages, outbox)
     }
 
     /// When a flow answered now expires, unless answered again (FR-UI-15).

@@ -17,7 +17,7 @@ mod tests;
 use std::cmp;
 use std::future::Future;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
 use chrono_tz::Tz;
 use sea_orm::ActiveValue::{Set, Unchanged};
 use sea_orm::sea_query::{Alias, Expr, ExprTrait, LockBehavior, LockType, OnConflict};
@@ -30,8 +30,8 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use crate::dispatcher;
 use crate::persistence::{self, entity::job};
+use crate::{dispatcher, line, notifications, thai};
 
 /// How soon a failed run is tried again, unless the job is due sooner anyway.
 const RETRY_AFTER: TimeDelta = TimeDelta::minutes(1);
@@ -40,28 +40,33 @@ const RETRY_AFTER: TimeDelta = TimeDelta::minutes(1);
 /// instance rescheduled, or the system clock being changed.
 const MAX_WAIT: TimeDelta = TimeDelta::minutes(1);
 
-/// A background job (FR-JOB-02). The others are added by their issues: push retries (#15),
-/// retention (#16), pending-order expiry (#33), and the summary and digest (#47, #48). The
-/// webhook inbox, processed continuously, has a worker of its own in the dispatcher.
+/// A background job (FR-JOB-02). The others are added by their issues: retention (#16),
+/// pending-order expiry (#33), and the summary and digest (#47, #48). The webhook inbox,
+/// processed continuously, has a worker of its own in the dispatcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Job {
     /// Deletes expired sessions and pending actions (§5.4)
     DeleteExpired,
+    /// Sends the pushes left to send: failed tries, and those a crash or shutdown cut off
+    /// (FR-LINE-12, FR-NOT-05)
+    RetryPushes,
 }
 
 impl Job {
-    const ALL: [Self; 1] = [Self::DeleteExpired];
+    const ALL: [Self; 2] = [Self::DeleteExpired, Self::RetryPushes];
 
     /// Its key in `jobs` and in log lines.
     pub fn name(self) -> &'static str {
         match self {
             Self::DeleteExpired => "delete-expired",
+            Self::RetryPushes => "retry-pushes",
         }
     }
 
     fn schedule(self) -> Schedule {
         match self {
             Self::DeleteExpired => Schedule::Every(TimeDelta::minutes(15)),
+            Self::RetryPushes => Schedule::Every(TimeDelta::minutes(1)),
         }
     }
 
@@ -76,6 +81,17 @@ impl Job {
                     "expired sessions and pending actions deleted"
                 );
             }
+            Self::RetryPushes => {
+                let retried = notifications::retry(&context.db, &context.line, Utc::now()).await?;
+                if retried != notifications::Retried::default() {
+                    info!(
+                        sent = retried.sent,
+                        pending = retried.pending,
+                        failed = retried.failed,
+                        "pushes retried"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -85,6 +101,7 @@ impl Job {
 #[derive(Clone)]
 struct Context {
     db: DatabaseConnection,
+    line: line::Client,
     /// The business time zone (`app.timeZone`), which daily schedules are in
     time_zone: Tz,
 }
@@ -119,12 +136,12 @@ impl Schedule {
             Self::Every(period) => now + period,
             Self::Daily(time) => {
                 let today = now.with_timezone(&time_zone).date_naive();
-                let at = local(today, time, time_zone);
+                let at = thai::local_instant(today, time, time_zone);
                 if at > now {
                     at
                 } else {
                     let tomorrow = today.succ_opt().expect("a date before the year 262143");
-                    local(tomorrow, time, time_zone)
+                    thai::local_instant(tomorrow, time, time_zone)
                 }
             }
         }
@@ -139,25 +156,19 @@ impl Schedule {
     }
 }
 
-/// The first instant at which the clocks in `time_zone` show `time` on `date`: the earlier one
-/// when the clocks go back, and the end of the gap when they skip `time`.
-fn local(date: NaiveDate, time: NaiveTime, time_zone: Tz) -> DateTime<Utc> {
-    let mut at = date.and_time(time);
-    loop {
-        if let Some(instant) = time_zone.from_local_datetime(&at).earliest() {
-            return instant.to_utc();
-        }
-        // Clocks change on the minute
-        at += TimeDelta::minutes(1);
-    }
-}
-
 /// Registers the jobs, then runs each on `tracker` whenever it is due. Each job stops picking
 /// up work once `stop` is cancelled; a run still going when time runs out is run again at the
 /// next start (NFR-REL-05).
-pub async fn start(tracker: &TaskTracker, stop: CancellationToken, db: PgPool, time_zone: Tz) {
+pub async fn start(
+    tracker: &TaskTracker,
+    stop: CancellationToken,
+    db: PgPool,
+    line: line::Client,
+    time_zone: Tz,
+) {
     let context = Context {
         db: persistence::orm(db),
+        line,
         time_zone,
     };
     for job in Job::ALL {

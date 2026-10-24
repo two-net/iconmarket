@@ -11,7 +11,8 @@
 //!
 //! A photo no flow step takes goes on by FR-UI-14, and what the dispatcher can't take gets a
 //! friendly reply with the main menu (FR-UI-09). Everything routed here is handled in the
-//! event's transaction, and its reply is sent once that commits.
+//! event's transaction, which also queues what it notifies; its reply and notifications are
+//! sent once that commits.
 //!
 //! Many destinations are built by later issues. Until then each is an arm here that logs which
 //! issue builds it and answers with the reply the dispatcher gives when nothing else applies;
@@ -31,6 +32,7 @@ use super::{Turn, flow};
 use crate::ai::Feature;
 use crate::line::Message;
 use crate::notifications::templates::labels;
+use crate::notifications::{Outbox, Queued};
 use crate::payments;
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
@@ -48,6 +50,14 @@ pub struct Reply {
     /// The chat it answers, should it have to be pushed instead
     pub to: String,
     pub messages: Vec<Message>,
+}
+
+/// What handling an event leaves to send once its transaction commits.
+#[derive(Debug, Default)]
+pub struct Handled {
+    pub reply: Option<Reply>,
+    /// The notifications it queued (FR-NOT-04)
+    pub pushes: Queued,
 }
 
 /// What a user sent, as handed to the module that handles it.
@@ -92,42 +102,45 @@ impl Input {
     }
 }
 
-/// Handles `event`, stored as `row`, at `now`. Everything it changes goes through `txn`; the
-/// reply, if there is one, is sent once `txn` commits.
+/// Handles `event`, stored as `row`, at `now`. Everything it changes goes through `txn`, in which
+/// what it notifies is queued too; the reply, if there is one, and the notifications are sent once
+/// `txn` commits.
 pub async fn handle(
     context: &Context,
     txn: &DatabaseTransaction,
     row: &webhook_event::Model,
     event: Event,
     now: DateTimeUtc,
-) -> Result<Option<Reply>, DbErr> {
+) -> Result<Handled, DbErr> {
     let Event {
         reply_token,
         source,
         kind,
     } = event;
-    let messages = match source {
+    let (messages, outbox) = match source {
         Source::User(line_user_id) => {
             user_event(context, txn, row, &line_user_id, kind, now).await?
         }
         Source::Group { .. } => {
             group_event(context, &kind);
-            Vec::new()
+            Default::default()
         }
         // Multi-person chats, and events from no chat, are ignored
-        Source::Room | Source::Unknown => Vec::new(),
+        Source::Room | Source::Unknown => Default::default(),
     };
-    Ok(match reply_token {
+    let pushes = outbox.queue(txn, &context.config.notification, now).await?;
+    let reply = match reply_token {
         Some(token) if !messages.is_empty() => Some(Reply {
             token,
             to: row.user_key.clone(),
             messages,
         }),
         _ => None,
-    })
+    };
+    Ok(Handled { reply, pushes })
 }
 
-/// An event in a user's one-to-one chat (FR-LINE-06).
+/// An event in a user's one-to-one chat (FR-LINE-06): the reply, and what it notifies.
 async fn user_event(
     context: &Context,
     txn: &DatabaseTransaction,
@@ -135,23 +148,23 @@ async fn user_event(
     line_user_id: &str,
     kind: Kind,
     now: DateTimeUtc,
-) -> Result<Vec<Message>, DbErr> {
+) -> Result<(Vec<Message>, Outbox), DbErr> {
     let input = match kind {
         Kind::Follow => {
             let Some(turn) = load_turn(context, txn, line_user_id, now).await? else {
-                return Ok(Vec::new());
+                return Ok(Default::default());
             };
             let messages = not_built("following", 19, fallback(&turn));
-            return Ok(turn.reply(messages));
+            return Ok(turn.finish(messages));
         }
         // Without registering anyone: a user who never wrote has nothing to update
         Kind::Unfollow => {
             debug!(what = "unfollowing", issue = 36, "not built yet");
-            return Ok(Vec::new());
+            return Ok(Default::default());
         }
         Kind::Message(content) => Input::new(content),
         Kind::Postback(data) => Input::Postback(data),
-        Kind::Join | Kind::Leave | Kind::Other => return Ok(Vec::new()),
+        Kind::Join | Kind::Leave | Kind::Other => return Ok(Default::default()),
     };
 
     let per_minute = context.config.limits.messages_per_user_per_minute;
@@ -159,20 +172,20 @@ async fn user_event(
         Verdict::Allowed => {}
         Verdict::Notice => {
             info!(per_minute, "user over the rate limit; told to slow down");
-            return Ok(vec![context.templates.slow_down()]);
+            return Ok((vec![context.templates.slow_down()], Outbox::default()));
         }
         Verdict::Ignored => {
             debug!(per_minute, "user over the rate limit; event ignored");
-            return Ok(Vec::new());
+            return Ok(Default::default());
         }
     }
 
     let Some(mut turn) = load_turn(context, txn, line_user_id, now).await? else {
-        return Ok(Vec::new());
+        return Ok(Default::default());
     };
     let messages = route(context, &mut turn, input).await?;
     // With the notice of an expired flow (FR-UI-15)
-    Ok(turn.reply(messages))
+    Ok(turn.finish(messages))
 }
 
 /// The turn of the user with `line_user_id`, registered on their first event (FR-ONB-01) and

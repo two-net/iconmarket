@@ -300,6 +300,55 @@ fn item_label(item: Item, has_shop: bool) -> &'static Label {
     }
 }
 
+/// A pushed notification (FR-NOT-03), as in Appendix A.4: the `headline`, which is also its
+/// preview in LINE's notifications and chat list, the `details` on lines of their own, and a
+/// button for each thing the recipient can do about it straight away, the first one primary:
+/// "ออเดอร์ใหม่ค่ะ IM-20261022-0007" with "รับออเดอร์" and "ปฏิเสธ".
+pub fn notice(headline: &str, details: &[String], buttons: Vec<Action>) -> Message {
+    let headline_text = Text {
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(headline)
+    };
+    let lines = details.iter().map(|line| {
+        let text = Text {
+            size: Some(Size::Sm),
+            wrap: Some(true),
+            ..Text::new(line.as_str())
+        };
+        text.into()
+    });
+    let body = FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::vertical(std::iter::once(headline_text.into()).chain(lines))
+    };
+    let footer = (!buttons.is_empty()).then(|| {
+        let buttons = buttons.into_iter().enumerate().map(|(i, action)| {
+            let style = if i == 0 {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Secondary
+            };
+            let button = Button {
+                style: Some(style),
+                height: Some(ButtonHeight::Sm),
+                ..Button::new(action)
+            };
+            button.into()
+        });
+        FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical(buttons)
+        }
+    });
+    let card = Bubble {
+        body: Some(body),
+        footer,
+        ..Bubble::default()
+    };
+    Message::flex(headline, card)
+}
+
 /// Page `number` (from 0) of `items` as a carousel (FR-LINE-11, FR-SRCH-03): a `card` for
 /// each item on the page and, when items remain, a "ดูเพิ่มเติม" bubble whose button sends
 /// the postback `more(next_page)`. `per_page` is capped so that bubble always fits.
@@ -710,6 +759,82 @@ mod tests {
         let second = quick_reply_page(&zones, 1, 99, button, |next| format!("zone:page={next}"));
         assert_eq!(second.len(), 8);
         assert!(second.iter().all(|action| action.label() != &labels::MORE));
+    }
+
+    /// FR-NOT-03: a notification offers what the recipient can do, the first choice foremost.
+    #[test]
+    fn a_notice_has_its_headline_details_and_buttons() {
+        let accept = Action::postback(Label::fit("รับออเดอร์"), "order.accept?o=7");
+        let reject = Action::postback(Label::fit("ปฏิเสธ"), "order.reject?o=7");
+        let details = [
+            "ไข่ไก่เบอร์ 2 × 2 = ฿220".to_owned(),
+            "ค่าส่ง ฿10 · รวม ฿230".to_owned(),
+            "ส่งที่ ซอย 3 · เงินสด".to_owned(),
+        ];
+        let message = notice(
+            "ออเดอร์ใหม่ค่ะ IM-20261022-0007",
+            &details,
+            vec![accept.clone(), reject.clone()],
+        );
+        limits::check(slice::from_ref(&message)).unwrap();
+
+        let Body::Flex { alt_text, contents } = &message.body else {
+            panic!("not a card");
+        };
+        assert_eq!(alt_text, "ออเดอร์ใหม่ค่ะ IM-20261022-0007");
+        let FlexContainer::Bubble(card) = contents else {
+            panic!("not a bubble");
+        };
+        let texts: Vec<_> = card
+            .body
+            .as_ref()
+            .unwrap()
+            .contents
+            .iter()
+            .map(|component| match component {
+                Component::Text(text) => text.text.as_str(),
+                other => panic!("not text: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "ออเดอร์ใหม่ค่ะ IM-20261022-0007",
+                "ไข่ไก่เบอร์ 2 × 2 = ฿220",
+                "ค่าส่ง ฿10 · รวม ฿230",
+                "ส่งที่ ซอย 3 · เงินสด",
+            ]
+        );
+        let buttons: Vec<_> = card
+            .footer
+            .as_ref()
+            .expect("buttons")
+            .contents
+            .iter()
+            .map(|component| match component {
+                Component::Button(button) => (&button.action, button.style),
+                other => panic!("not a button: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            buttons,
+            [
+                (&accept, Some(ButtonStyle::Primary)),
+                (&reject, Some(ButtonStyle::Secondary)),
+            ]
+        );
+
+        // Without buttons, no empty footer
+        let plain = notice("ร้านป้าแดงรับออเดอร์แล้วค่ะ", &[], Vec::new());
+        let Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } = &plain.body
+        else {
+            panic!("not a bubble");
+        };
+        assert_eq!(card.footer, None);
+        limits::check(&[plain]).unwrap();
     }
 
     #[test]

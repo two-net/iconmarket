@@ -570,9 +570,12 @@ async fn every_attribute_can_be_stored() {
             push_type: "new_order".to_owned(),
             recipient: "U0123456789abcdef0123456789abcdef".to_owned(),
             retry_key: Some(random_id()),
-            status: push_log::Status::Failed,
+            status: push_log::Status::Pending,
             error: Some("429".to_owned()),
             sent_at: at,
+            messages: Some(json!([{ "type": "text", "text": "ออเดอร์ใหม่ค่ะ" }])),
+            attempts: 1,
+            queued_at: at,
         },
     )
     .await;
