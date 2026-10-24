@@ -28,6 +28,10 @@ pub enum Action {
     CategoryDeactivated,
     CategoryActivated,
     CategoryDeleted,
+    // Shops (FR-ADM-02)
+    /// By an admin, or by the system when `shop.requireApproval` is off (FR-SHOP-03)
+    ShopApproved,
+    ShopRejected,
 }
 
 impl Action {
@@ -42,6 +46,8 @@ impl Action {
             Self::CategoryDeactivated => "category.deactivated",
             Self::CategoryActivated => "category.activated",
             Self::CategoryDeleted => "category.deleted",
+            Self::ShopApproved => "shop.approved",
+            Self::ShopRejected => "shop.rejected",
         }
     }
 }
@@ -51,6 +57,7 @@ impl Action {
 pub enum Target {
     User(i64),
     Category(i64),
+    Shop(i64),
 }
 
 impl Target {
@@ -59,6 +66,7 @@ impl Target {
         match self {
             Self::User(id) => ("user", id),
             Self::Category(id) => ("category", id),
+            Self::Shop(id) => ("shop", id),
         }
     }
 }

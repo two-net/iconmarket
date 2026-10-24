@@ -8,7 +8,7 @@
 
 #![allow(
     dead_code,
-    reason = "account deletion is built by #36; shop applications (#23) and checkout (#32) first ask for the address; product and shop cards (#24, #28) carry the report button"
+    reason = "account deletion is built by #36; checkout (#32) first asks for the address; product and shop cards (#24, #28) carry the report button"
 )]
 
 pub mod access;

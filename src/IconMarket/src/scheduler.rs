@@ -86,7 +86,8 @@ impl Job {
                 debug!(
                     sessions = deleted.sessions,
                     pending_actions = deleted.pending_actions,
-                    "expired sessions and pending actions deleted"
+                    draft_images = deleted.draft_images,
+                    "expired sessions, pending actions and draft images deleted"
                 );
             }
             Self::RetryPushes => {

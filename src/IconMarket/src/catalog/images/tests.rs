@@ -515,3 +515,60 @@ async fn uploads_at_the_same_time_cannot_pass_the_limit() {
     };
     assert_eq!(positions(&db, product_id).await, [0, 1, 2]);
 }
+
+/// FR-SHOP-01: a photo sent before its shop exists is the sender's draft, public like the
+/// photo it will be; the shop adopts it once made, as its one photo, and only its sender's
+/// draft can be adopted, once.
+#[tokio::test]
+async fn a_draft_is_adopted_by_what_it_is_for() {
+    let (_container, pool) = testing::migrated().await;
+    let db = orm(pool);
+    let market = market(&db).await;
+    let (sender, other) = (market.shop.owner_id, market.buyer.id);
+    let shop = Owner::Shop(market.shop.id);
+
+    let draft = store(&db, Owner::Draft(sender), photo(), &config(), Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        get(&db, &format!("/img/p/{draft}")).await.status(),
+        StatusCode::OK
+    );
+    let old = store(&db, shop, photo(), &config(), Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first(&db, shop).await.unwrap(), Some(old));
+
+    assert!(!adopt(&db, draft, other, shop).await.unwrap());
+    assert!(adopt(&db, draft, sender, shop).await.unwrap());
+    assert!(!adopt(&db, draft, sender, shop).await.unwrap());
+    let adopted = image::Entity::find_by_id(draft)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (adopted.owner_type, adopted.owner_id, adopted.position),
+        (OwnerType::Shop, market.shop.id, 0)
+    );
+
+    assert_eq!(keep_only(&db, shop, Some(draft)).await.unwrap(), 1);
+    assert_eq!(first(&db, shop).await.unwrap(), Some(draft));
+    assert_eq!(keep_only(&db, shop, None).await.unwrap(), 1);
+    assert_eq!(first(&db, shop).await.unwrap(), None);
+
+    // A replaced draft goes, and only its sender's
+    let replaced = store(&db, Owner::Draft(sender), photo(), &config(), Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    delete_draft(&db, replaced, other).await.unwrap();
+    assert_eq!(
+        first(&db, Owner::Draft(sender)).await.unwrap(),
+        Some(replaced)
+    );
+    delete_draft(&db, replaced, sender).await.unwrap();
+    assert_eq!(first(&db, Owner::Draft(sender)).await.unwrap(), None);
+}

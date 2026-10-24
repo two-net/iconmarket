@@ -12,16 +12,18 @@
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use url::Url;
 
 use crate::catalog::images::Rejected;
 use crate::config::{AiProvider, AppConfig, PoliteParticle};
 use crate::dispatcher::menu::{Item, Tab};
 use crate::line::flex::{
-    Bubble, BubbleSize, Button, ButtonHeight, ButtonStyle, Carousel, Component, FlexBox,
-    FlexContainer, Justify, Separator, Size, Spacing, Text, Weight,
+    AspectMode, Bubble, BubbleSize, Button, ButtonHeight, ButtonStyle, Carousel, Component,
+    FlexBox, FlexContainer, Hero, Image, Justify, Separator, Size, Spacing, Text, Weight,
 };
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
-use crate::thai::{self, Label, NumberError};
+use crate::payments;
+use crate::thai::{self, Label, Money, NumberError};
 use crate::users::access::Denied;
 use crate::users::help::Topic;
 
@@ -1010,6 +1012,616 @@ impl Templates {
         ];
         notice(&headline, &details, vec![review])
     }
+
+    /// Asks for the shop's name, of at most `max_chars` (FR-SHOP-01): the first question of an
+    /// application, which says how it goes, or a new name for `current`.
+    pub fn ask_shop_name(&self, max_chars: usize, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let intro = match current {
+            None => format!("มาเปิดร้านกัน{kha} ระบบจะถามทีละข้อ ไม่กี่นาทีก็เสร็จ "),
+            Some(_) => String::new(),
+        };
+        Message::text(format!(
+            "{intro}ร้านชื่ออะไรดี{kha_question} พิมพ์มาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha} เช่น ร้านป้าแดง{}",
+            now(current)
+        ))
+    }
+
+    /// Asks for the shop's short description, of at most `max_chars` (FR-SHOP-01).
+    pub fn ask_shop_description(&self, max_chars: usize, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "บอกลูกค้าสั้นๆ ว่าร้านขายอะไร{kha_question} พิมพ์ได้ไม่เกิน {max_chars} ตัวอักษร{kha} เช่น ไข่ไก่ ผักสวนครัว ส่งทุกเช้า{}",
+            now(current)
+        ))
+    }
+
+    /// Asks for the shop's optional photo (FR-SHOP-01). `has_photo` when one was given, which
+    /// can then be removed.
+    pub fn ask_shop_photo(&self, has_photo: bool) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let optional = if has_photo {
+            format!(
+                "ส่งรูปใหม่มาแทนได้เลย ถ้าไม่ใช้รูป กด \"{}\" ได้เลย{kha}",
+                labels::REMOVE.as_str()
+            )
+        } else {
+            format!(
+                "ไม่บังคับ{kha} ถ้ายังไม่มี กด \"{}\" ได้เลย{kha}",
+                labels::SKIP.as_str()
+            )
+        };
+        Message::text(format!(
+            "มีรูปหน้าร้านหรือสินค้าเด่นของร้านไหม{kha_question} ส่งมา 1 รูป ลูกค้าจะเห็นรูปนี้ที่ร้าน {optional}"
+        ))
+    }
+
+    /// Asks where buyers pick their orders up, of at most `max_chars` (FR-SHOP-01). `home` when
+    /// the user's address can be used as it is; `none`, if given, goes without one, a location
+    /// being shared instead.
+    pub fn ask_pickup_address(
+        &self,
+        max_chars: usize,
+        home: bool,
+        none: Option<&Label>,
+        current: Option<&str>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let home = if home {
+            format!(
+                "ถ้าเป็นที่เดียวกับบ้าน กด \"{}\" หรือ",
+                labels::USE_HOME_ADDRESS.as_str()
+            )
+        } else {
+            String::new()
+        };
+        let none = none
+            .map(|none| format!(" ถ้าจะแชร์ตำแหน่งร้านแทน กด \"{}\" ได้เลย{kha}", none.as_str()))
+            .unwrap_or_default();
+        Message::text(format!(
+            "ลูกค้ามารับของที่ไหน{kha_question} {home}พิมพ์ที่อยู่ร้านมาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha}{none}{}",
+            now(current)
+        ))
+    }
+
+    /// Asks for the shop's location (FR-SHOP-01). `home` when the user's own can be used;
+    /// `none`, if given, goes without, the shop having an address; `shared` when one is.
+    pub fn ask_pickup_location(&self, home: bool, none: Option<&Label>, shared: bool) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let home = if home {
+            format!(
+                " หรือกด \"{}\" ถ้าร้านอยู่ที่บ้าน",
+                labels::USE_HOME_LOCATION.as_str()
+            )
+        } else {
+            String::new()
+        };
+        let none = match none {
+            Some(none) => format!(" ถ้าไม่สะดวก กด \"{}\" ได้เลย{kha}", none.as_str()),
+            None => format!(" ต้องแชร์ไว้{kha} เพราะร้านยังไม่มีที่อยู่"),
+        };
+        let current = if shared {
+            now(Some("แชร์ไว้แล้ว"))
+        } else {
+            String::new()
+        };
+        Message::text(format!(
+            "แชร์ตำแหน่งร้านไว้ให้ลูกค้าหาเจอง่ายขึ้นไหม{kha_question} กด \"{}\" แล้วเลือกตำแหน่งร้าน{home}{none}{current}",
+            labels::SHARE_LOCATION.as_str()
+        ))
+    }
+
+    /// Asks for the shop's contact phone, which is required (FR-SHOP-01). `own` when the
+    /// user's phone is offered.
+    pub fn ask_shop_phone(&self, own: bool, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let own = if own {
+            "ถ้าใช้เบอร์เดียวกับของคุณ กดเบอร์ด้านล่าง หรือ"
+        } else {
+            ""
+        };
+        Message::text(format!(
+            "ลูกค้าติดต่อร้านได้ที่เบอร์อะไร{kha_question} {own}พิมพ์มาได้เลย{kha} เช่น 0812345678{}",
+            now(current)
+        ))
+    }
+
+    /// Not a valid Thai phone number, where the shop's is required (FR-SHOP-01).
+    pub fn shop_phone_invalid(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} เบอร์โทรนี้ไม่ถูกต้อง พิมพ์เบอร์มือถือ 10 หลักที่ขึ้นต้นด้วย 06 08 หรือ 09 เช่น 0812345678 หรือเบอร์บ้าน 9 หลัก เช่น 021234567 ได้เลย{kha}"
+        ))
+    }
+
+    /// Asks how buyers get their orders: picked up, delivered or either (FR-SHOP-01).
+    pub fn ask_fulfillment(&self, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ลูกค้ารับของได้แบบไหนบ้าง{kha_question} เลือกจากปุ่มด้านล่างได้เลย{kha}{}",
+            now(current)
+        ))
+    }
+
+    /// Asks for the delivery fee, of at most `max` (FR-SHOP-01).
+    pub fn ask_delivery_fee(&self, max: Money, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ค่าส่งครั้งละเท่าไร{kha_question} พิมพ์เป็นตัวเลขได้เลย เช่น 10 ไม่เกิน {max} ถ้าส่งฟรี กด \"{}\" ได้เลย{kha}{}",
+            labels::NO_DELIVERY_FEE.as_str(),
+            now(current)
+        ))
+    }
+
+    /// Asks for the optional minimum order, of at most `max` (FR-SHOP-01).
+    pub fn ask_minimum_order(&self, max: Money, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ต้องสั่งขั้นต่ำเท่าไรต่อออเดอร์{kha_question} พิมพ์เป็นตัวเลขได้เลย เช่น 50 ไม่เกิน {max} ถ้าไม่มีขั้นต่ำ กด \"{}\" ได้เลย{kha}{}",
+            labels::NO_MINIMUM.as_str(),
+            now(current)
+        ))
+    }
+
+    /// An amount over `max`, the most the step takes.
+    pub fn amount_too_large(&self, max: Money) -> Message {
+        let kha = self.kha();
+        Message::text(format!("ขอโทษ{kha} ตรงนี้ใส่ได้ไม่เกิน {max} พิมพ์ใหม่ได้เลย{kha}"))
+    }
+
+    /// Asks for the optional PromptPay ID buyers transfer to (FR-SHOP-01). `phone` when the
+    /// shop's phone is offered; `none` goes without, or removes the one given.
+    pub fn ask_promptpay(&self, phone: bool, none: &Label, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let phone = if phone {
+            " หรือกดเบอร์ร้านด้านล่าง"
+        } else {
+            ""
+        };
+        Message::text(format!(
+            "มีพร้อมเพย์ให้ลูกค้าโอนเงินไหม{kha_question} พิมพ์เบอร์มือถือหรือเลขบัตรประชาชน 13 หลักที่ผูกพร้อมเพย์ไว้{phone} ไม่บังคับ{kha} ถ้าไม่มี กด \"{}\" ได้เลย{kha}{}",
+            none.as_str(),
+            now(current)
+        ))
+    }
+
+    /// Not a PromptPay ID: the forms taken. `none` goes without one.
+    pub fn promptpay_invalid(&self, none: &Label) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} เลขพร้อมเพย์นี้ไม่ถูกต้อง พิมพ์เบอร์มือถือ 10 หลัก เช่น 0812345678 หรือเลขบัตรประชาชน 13 หลักได้เลย ถ้าไม่มี กด \"{}\" ได้เลย{kha}",
+            none.as_str()
+        ))
+    }
+
+    /// The shop would have neither a pickup address nor a location (FR-SHOP-01).
+    pub fn pickup_needed(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ร้านต้องมีที่อยู่หรือตำแหน่งอย่างน้อยหนึ่งอย่าง ลูกค้าจะได้รู้ว่ามารับของที่ไหน{kha}"
+        ))
+    }
+
+    /// Text where the shop's photo was asked for. `none` goes without one.
+    pub fn photo_expected(&self, none: &Label) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ตรงนี้ต้องส่งเป็นรูป{kha} กด \"{}\" หรือ \"{}\" ได้เลย ถ้าไม่ใช้รูป กด \"{}\" ได้เลย{kha}",
+            labels::TAKE_PHOTO.as_str(),
+            labels::CHOOSE_PHOTO.as_str(),
+            none.as_str()
+        ))
+    }
+
+    /// Text where the shop's location was asked for. `none`, if given, goes without one.
+    pub fn shop_location_expected(&self, none: Option<&Label>) -> Message {
+        let kha = self.kha();
+        let none = none
+            .map(|none| format!(" หรือกด \"{}\"", none.as_str()))
+            .unwrap_or_default();
+        Message::text(format!(
+            "ตรงนี้ต้องแชร์ตำแหน่ง{kha} กด \"{}\" แล้วเลือกตำแหน่งร้าน{none} ได้เลย{kha}",
+            labels::SHARE_LOCATION.as_str()
+        ))
+    }
+
+    /// The photo sent earlier in the application is gone, so it is asked for again.
+    pub fn photo_lost(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} รูปร้านที่ส่งไว้หายไปแล้ว ส่งรูปมาใหม่อีกครั้งได้เลย{kha}"
+        ))
+    }
+
+    /// The application before it is sent (FR-SHOP-01): `card`, whose buttons send it or
+    /// correct a part. `approval` when an admin approves it first (FR-SHOP-03); `submit` says
+    /// what sends it.
+    pub fn shop_summary(
+        &self,
+        card: &ShopCard<'_>,
+        approval: bool,
+        submit: &Label,
+    ) -> Vec<Message> {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let then = if approval {
+            " แล้วผู้ดูแลจะตรวจก่อนเปิดร้าน"
+        } else {
+            " แล้วร้านจะเปิดทันที"
+        };
+        let text = format!(
+            "ตรวจข้อมูลร้านอีกครั้งนะ{kha_question} ถ้าถูกต้อง กด \"{}\"{then} ถ้าต้องการแก้ กด \"{}\" ได้เลย{kha}",
+            submit.as_str(),
+            labels::EDIT.as_str()
+        );
+        let bubble = self.shop_bubble(card, None);
+        vec![
+            Message::text(text),
+            Message::flex(format!("สรุปข้อมูลร้าน: {}", card.name), bubble),
+        ]
+    }
+
+    /// Asks which part of the application to correct; `parts` are its buttons.
+    pub fn choose_shop_part(&self, parts: Vec<Action>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!("แก้ข้อไหนดี{kha_question} เลือกได้เลย{kha}"))
+            .with_quick_reply(QuickReply::new(parts))
+    }
+
+    /// The application for shop `name` was sent, for an admin to approve (FR-SHOP-03). The
+    /// main menu follows.
+    pub fn application_sent(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ส่งคำขอเปิด{}แล้ว{kha} ผู้ดูแลจะตรวจแล้วแจ้งผลในแชตนี้ ระหว่างนี้เลือกเมนูอื่นได้เลย{kha}",
+            shop_called(name)
+        ))
+    }
+
+    /// Shop `name` is open at once, no approval being needed (FR-SHOP-03). The main menu, now
+    /// with the seller's, follows.
+    pub fn shop_opened(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "เปิด{}แล้ว{kha} เริ่มลงสินค้าได้เลย กด \"{}\" ในเมนูผู้ขายได้เลย{kha}",
+            shop_called(name),
+            labels::ADD_PRODUCT.as_str()
+        ))
+    }
+
+    /// "ร้านของฉัน" while the application for shop `name`, sent at `at`, awaits an admin
+    /// (FR-SHOP-03). A user owns one shop (FR-SHOP-02), so they can't apply again meanwhile.
+    pub fn application_pending(&self, name: &str, at: DateTime<Utc>) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "คำขอเปิด{} ส่งเมื่อ {} กำลังรอผู้ดูแลอนุมัติ{kha} ระบบจะแจ้งผลในแชตนี้ หนึ่งคนเปิดได้ 1 ร้าน จึงยังส่งคำขอใหม่ไม่ได้{kha}",
+            shop_called(name),
+            self.date_time(at)
+        );
+        Message::text(text).with_quick_reply(menus())
+    }
+
+    /// "ร้านของฉัน" once the application for shop `name` was turned down, for `reason`
+    /// (FR-SHOP-04): `again` applies again.
+    pub fn application_rejected(&self, name: &str, reason: Option<&str>, again: Action) -> Message {
+        let kha = self.kha();
+        let reason = reason
+            .map(|reason| format!(" เหตุผล: {reason}"))
+            .unwrap_or_default();
+        let text = format!(
+            "คำขอเปิด{}ยังไม่ผ่านการอนุมัติ{kha}{reason} แก้ไขแล้วส่งใหม่ได้ กด \"{}\" ได้เลย{kha}",
+            shop_called(name),
+            again.label().as_str()
+        );
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(text).with_quick_reply(QuickReply::new([again, menu]))
+    }
+
+    /// "ร้านของฉัน" for the owner of approved shop `name`: `actions` manage it. Its card
+    /// comes first.
+    pub fn my_shop(&self, name: &str, actions: Vec<Action>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "{}ของคุณได้รับอนุมัติแล้ว{kha} ดูแลร้านได้จากเมนูผู้ขาย เลือกด้านล่างได้เลย{kha}",
+            shop_called(name)
+        ))
+        .with_quick_reply(QuickReply::new(actions))
+    }
+
+    /// A button of an application that is no longer in progress: cancelled, expired or sent.
+    /// `open_shop` starts again.
+    pub fn application_gone(&self, open_shop: Action) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "คำขอนี้ไม่ได้ทำต่อแล้ว{kha} อาจยกเลิกหรือหมดเวลาไป ถ้ายังอยากเปิดร้าน กด \"{}\" เพื่อเริ่มใหม่ได้เลย{kha}",
+            open_shop.label().as_str()
+        );
+        Message::text(text).with_quick_reply(QuickReply::new([open_shop]))
+    }
+
+    /// The owner's card of their shop: `card`, without buttons.
+    pub fn shop(&self, card: &ShopCard<'_>) -> Message {
+        Message::flex(card.name, self.shop_bubble(card, None))
+    }
+
+    /// "อนุมัติร้าน" (FR-ADM-02): page `page` of the applications awaiting an admin, oldest
+    /// first, a card each with its buttons, and "ดูเพิ่มเติม" sending `more(next_page)`.
+    pub fn applications(
+        &self,
+        cards: &[ShopCard<'_>],
+        page: usize,
+        more: impl FnOnce(usize) -> String,
+    ) -> Message {
+        if cards.is_empty() {
+            let kha = self.kha();
+            return Message::text(format!(
+                "ตอนนี้ไม่มีคำขอเปิดร้านที่รออนุมัติ{kha} ถ้ามีคำขอใหม่ จะแสดงที่นี่{kha}"
+            ))
+            .with_quick_reply(admin_menus());
+        }
+        let card = |card: &ShopCard<'_>| self.shop_bubble(card, None);
+        let page = carousel_page(cards, page, APPLICATIONS_PER_PAGE, card, more);
+        Message::flex(labels::APPROVE_SHOPS.as_str(), page).with_quick_reply(admin_menus())
+    }
+
+    /// Tells the admins of a new application (Table 4.8-A), as in Appendix A.5: `card`, with
+    /// the buttons that approve or reject it.
+    pub fn shop_application_alert(&self, card: &ShopCard<'_>) -> Message {
+        let headline = format!("มีคำขอเปิดร้านใหม่{}", self.kha());
+        let bubble = self.shop_bubble(card, Some(&headline));
+        Message::flex(headline, bubble)
+    }
+
+    /// Shop `name` is approved (FR-ADM-02), as in Appendix A.5.
+    pub fn shop_approved(&self, name: &str) -> Message {
+        Message::text(format!("อนุมัติ{}แล้ว{}", shop_called(name), self.kha()))
+            .with_quick_reply(admin_menus())
+    }
+
+    /// The application for shop `name` was decided already, by an earlier tap or another
+    /// admin: `approved` or rejected (FR-UI-13).
+    pub fn application_decided(&self, name: &str, approved: bool) -> Message {
+        let kha = self.kha();
+        let decided = if approved {
+            "ได้รับอนุมัติไปแล้ว"
+        } else {
+            "ไม่ได้รับอนุมัติไปแล้ว"
+        };
+        Message::text(format!(
+            "คำขอเปิด{}{decided}{kha} ไม่ต้องทำอะไรเพิ่ม{kha}",
+            shop_called(name)
+        ))
+        .with_quick_reply(admin_menus())
+    }
+
+    /// The application changed since its card was sent: the owner applied again. Its current
+    /// card follows (FR-UI-13).
+    pub fn application_changed(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "คำขอนี้มีการแก้ไขใหม่{kha} ตรวจข้อมูลล่าสุดด้านล่างอีกครั้งนะ{kha_question}"
+        ))
+    }
+
+    /// Asks why shop `name` is turned down, in at most `max_chars` (FR-ADM-02). `reasons` are
+    /// common ones, sent as if typed.
+    pub fn ask_rejection_reason(
+        &self,
+        name: &str,
+        max_chars: usize,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ไม่อนุมัติ{}เพราะอะไร{kha_question} เลือกด้านล่าง หรือพิมพ์เหตุผลมาได้เลย ไม่เกิน {max_chars} ตัวอักษร เจ้าของร้านจะเห็นเหตุผลนี้{kha}",
+            shop_called(name)
+        );
+        Message::text(text).with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// Shop `name` is turned down, and its owner told why (FR-ADM-02, FR-SHOP-04).
+    pub fn shop_rejected(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ไม่อนุมัติ{}แล้ว{kha} แจ้งเหตุผลถึงเจ้าของร้านแล้ว{kha}",
+            shop_called(name)
+        ))
+        .with_quick_reply(admin_menus())
+    }
+
+    /// Tells the owner their shop `name` is approved (FR-SHOP-04), as in Appendix A.5:
+    /// `add_product` starts selling.
+    pub fn shop_approved_notice(&self, name: &str, add_product: Action) -> Message {
+        let kha = self.kha();
+        let headline = format!("ร้านของคุณได้รับอนุมัติแล้ว{kha}");
+        let details = [format!("{} เริ่มลงสินค้าได้เลย{kha}", shop_called(name))];
+        notice(&headline, &details, vec![add_product])
+    }
+
+    /// Tells the owner the application for their shop `name` was turned down, for `reason`
+    /// (FR-SHOP-04): `again` applies again.
+    pub fn shop_rejected_notice(&self, name: &str, reason: &str, again: Action) -> Message {
+        let kha = self.kha();
+        let headline = format!("คำขอเปิดร้านยังไม่ผ่านการอนุมัติ{kha}");
+        let details = [
+            shop_called(name),
+            format!("เหตุผล: {reason}"),
+            format!("แก้ไขแล้วส่งคำขอใหม่ได้{kha}"),
+        ];
+        notice(&headline, &details, vec![again])
+    }
+
+    /// A shop's card (FR-SHOP-01): its photo, name and description, and how it sells, with
+    /// who applied and when for the admins, `heading` above, and `card.buttons` at the foot,
+    /// the first one primary.
+    fn shop_bubble(&self, card: &ShopCard<'_>, heading: Option<&str>) -> Bubble {
+        let header = heading.map(|heading| {
+            let heading = Text {
+                weight: Some(Weight::Bold),
+                wrap: Some(true),
+                ..Text::new(heading)
+            };
+            FlexBox::vertical([heading.into()])
+        });
+        let hero = card.photo.map(|url| {
+            Hero::Image(Image {
+                size: Some(Size::Full),
+                aspect_ratio: Some("20:13".to_owned()),
+                aspect_mode: Some(AspectMode::Cover),
+                ..Image::new(url)
+            })
+        });
+        let name = Text {
+            size: Some(Size::Lg),
+            weight: Some(Weight::Bold),
+            wrap: Some(true),
+            ..Text::new(card.name)
+        };
+        let description = Text {
+            size: Some(Size::Sm),
+            wrap: Some(true),
+            ..Text::new(card.description)
+        };
+        let location = if card.pickup_location {
+            "แชร์ไว้แล้ว"
+        } else {
+            "ไม่ได้แชร์"
+        };
+        let phone = card.phone.map(thai::format_phone);
+        let minimum = card.minimum_order.map(|minimum| minimum.to_string());
+        let promptpay = match card.promptpay {
+            PromptPay::Number(number) => number.map(payments::format_promptpay_id),
+            PromptPay::Given(true) => Some("มี".to_owned()),
+            PromptPay::Given(false) => None,
+        };
+        let mut rows = vec![
+            row("ที่รับของ", card.pickup_address.unwrap_or(NONE)),
+            row("ตำแหน่ง", location),
+            row("เบอร์ร้าน", phone.as_deref().unwrap_or(NONE)),
+            row("การรับส่ง", &fulfillment_line(card)),
+            row("ยอดขั้นต่ำ", minimum.as_deref().unwrap_or(NONE)),
+            row("พร้อมเพย์", promptpay.as_deref().unwrap_or(NONE)),
+        ];
+        if let Some(applicant) = &card.applicant {
+            rows.push(row("ผู้สมัคร", applicant.display_name.unwrap_or(NONE)));
+            rows.push(row("ส่งเมื่อ", &self.date_time(applicant.at)));
+        }
+        let details = FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical(rows)
+        };
+        let body = FlexBox {
+            spacing: Some(Spacing::Md),
+            ..FlexBox::vertical([
+                name.into(),
+                description.into(),
+                Separator::default().into(),
+                details.into(),
+            ])
+        };
+        let footer = (!card.buttons.is_empty()).then(|| {
+            let buttons = card.buttons.iter().enumerate().map(|(i, action)| {
+                let style = if i == 0 {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Secondary
+                };
+                let button = Button {
+                    style: Some(style),
+                    height: Some(ButtonHeight::Sm),
+                    ..Button::new(action.clone())
+                };
+                button.into()
+            });
+            FlexBox {
+                spacing: Some(Spacing::Sm),
+                ..FlexBox::vertical(buttons)
+            }
+        });
+        Bubble {
+            size: Some(BubbleSize::Mega),
+            header,
+            hero,
+            body: Some(body),
+            footer,
+            ..Bubble::default()
+        }
+    }
+}
+
+/// Applications on a page of "อนุมัติร้าน". Their cards are the largest the market sends, so
+/// fewer than a carousel holds fit its 50 KB (FR-LINE-11).
+pub const APPLICATIONS_PER_PAGE: usize = 8;
+
+/// The shop called `name` as a sentence names it: `ร้านป้าแดง` as it is, and a name that
+/// doesn't say it is a shop with `ร้าน` before it, as in Appendix A.5.
+pub fn shop_called(name: &str) -> String {
+    if name.starts_with("ร้าน") {
+        name.to_owned()
+    } else if name.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        format!("ร้าน {name}")
+    } else {
+        format!("ร้าน{name}")
+    }
+}
+
+/// How a shop's buyers get their orders, and what delivery costs.
+fn fulfillment_line(card: &ShopCard<'_>) -> String {
+    let fee = if card.delivery_fee == Money::ZERO {
+        "ส่งฟรี".to_owned()
+    } else {
+        format!("ค่าส่ง {}", card.delivery_fee)
+    };
+    match (card.offers_pickup, card.offers_delivery) {
+        (true, true) => format!("รับเองหรือให้ร้านไปส่ง {fee}"),
+        (false, true) => format!("ร้านไปส่ง {fee}"),
+        _ => labels::PICKUP_ONLY.as_str().to_owned(),
+    }
+}
+
+/// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
+pub struct ShopCard<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    /// Its photo's `/img/p` link
+    pub photo: Option<&'a Url>,
+    pub pickup_address: Option<&'a str>,
+    /// Whether a location is shared; the card doesn't show where (NFR-PRIV-04)
+    pub pickup_location: bool,
+    /// Its digits, as kept
+    pub phone: Option<&'a str>,
+    pub offers_pickup: bool,
+    pub offers_delivery: bool,
+    pub delivery_fee: Money,
+    pub minimum_order: Option<Money>,
+    pub promptpay: PromptPay<'a>,
+    /// Who applied and when, for the admins
+    pub applicant: Option<Applicant<'a>>,
+    pub buttons: Vec<Action>,
+}
+
+/// The PromptPay ID as a shop's card shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptPay<'a> {
+    /// To its owner: the ID, if any
+    Number(Option<&'a str>),
+    /// To admins: only whether there is one (NFR-PRIV-04)
+    Given(bool),
+}
+
+/// Who applied to open a shop, and when, as the admins see it (FR-ADM-02).
+pub struct Applicant<'a> {
+    pub display_name: Option<&'a str>,
+    pub at: DateTime<Utc>,
+}
+
+/// Where an admin carries on after deciding: the other applications, and the main menu.
+fn admin_menus() -> QuickReply {
+    QuickReply::new([
+        Item::ApproveShops
+            .postback()
+            .button(labels::APPROVE_SHOPS.clone()),
+        Action::message(labels::MENU.clone(), labels::MENU.as_str()),
+    ])
 }
 
 /// What "ข้อมูลของฉัน" shows for a value the user hasn't given
@@ -1639,6 +2251,46 @@ pub mod labels {
         REASON_PROHIBITED = "สินค้าต้องห้าม",
         REASON_SCAM = "หลอกลวง/โกง",
         REASON_RUDE = "ไม่สุภาพ",
+
+        // Shop applications (FR-SHOP-01)
+        /// Sends the application for an admin to approve
+        SUBMIT_APPLICATION = "ส่งคำขอ",
+        /// Sends it when no approval is needed (FR-SHOP-03)
+        OPEN_NOW = "เปิดร้านเลย",
+        /// Applies again once turned down (FR-SHOP-04)
+        APPLY_AGAIN = "สมัครใหม่",
+        TAKE_PHOTO = "ถ่ายรูป",
+        CHOOSE_PHOTO = "เลือกรูป",
+        /// Leaves a part as it is while correcting the application
+        KEEP = "ใช้ของเดิม",
+        /// Removes an optional part while correcting it
+        REMOVE = "ลบออก",
+        USE_HOME_ADDRESS = "ใช้ที่อยู่บ้าน",
+        USE_HOME_LOCATION = "ใช้ตำแหน่งบ้าน",
+        PICKUP_ONLY = "รับเองที่ร้าน",
+        DELIVERY_ONLY = "ร้านไปส่ง",
+        PICKUP_AND_DELIVERY = "ได้ทั้งสองแบบ",
+        NO_DELIVERY_FEE = "ไม่มีค่าส่ง",
+        NO_MINIMUM = "ไม่มีขั้นต่ำ",
+        // The parts of an application, to correct one
+        SHOP_NAME = "ชื่อร้าน",
+        SHOP_DESCRIPTION = "คำอธิบาย",
+        SHOP_PHOTO = "รูปร้าน",
+        PICKUP_ADDRESS = "ที่รับของ",
+        PICKUP_LOCATION = "ตำแหน่งร้าน",
+        SHOP_PHONE = "เบอร์ร้าน",
+        FULFILLMENT = "การรับส่ง",
+        DELIVERY_FEE = "ค่าส่ง",
+        MINIMUM_ORDER = "ยอดขั้นต่ำ",
+        PROMPTPAY = "พร้อมเพย์",
+
+        // Approving shops (FR-ADM-02)
+        APPROVE = "อนุมัติ",
+        REJECT = "ไม่อนุมัติ",
+        // Common reasons for turning an application down, sent as typed
+        REASON_INCOMPLETE = "ข้อมูลไม่ครบ",
+        REASON_NOT_RESIDENT = "ไม่ได้อยู่ในหมู่บ้าน",
+        REASON_UNREACHABLE = "ติดต่อไม่ได้",
     }
 }
 
@@ -1745,6 +2397,50 @@ mod tests {
             text(&t.ask_report_reason(&REPORTED, 300, Vec::new())).to_owned(),
             text(&t.already_reported(&REPORTED)).to_owned(),
             text(&t.report_received(&REPORTED)).to_owned(),
+            text(&t.ask_shop_name(50, None)).to_owned(),
+            text(&t.ask_shop_name(50, Some("ร้านป้าแดง"))).to_owned(),
+            text(&t.ask_shop_description(300, Some("ไข่ไก่"))).to_owned(),
+            text(&t.ask_shop_photo(false)).to_owned(),
+            text(&t.ask_shop_photo(true)).to_owned(),
+            text(&t.ask_pickup_address(200, true, Some(&labels::SKIP), None)).to_owned(),
+            text(&t.ask_pickup_address(200, false, None, Some("ซอย 3"))).to_owned(),
+            text(&t.ask_pickup_location(true, Some(&labels::SKIP), false)).to_owned(),
+            text(&t.ask_pickup_location(false, None, true)).to_owned(),
+            text(&t.ask_shop_phone(true, None)).to_owned(),
+            text(&t.ask_shop_phone(false, Some("081-234-5678"))).to_owned(),
+            text(&t.shop_phone_invalid()).to_owned(),
+            text(&t.ask_fulfillment(Some("รับเองที่ร้าน"))).to_owned(),
+            text(&t.ask_delivery_fee(Money::from_baht(1_000), Some("฿10"))).to_owned(),
+            text(&t.ask_minimum_order(Money::from_baht(100_000), None)).to_owned(),
+            text(&t.amount_too_large(Money::from_baht(1_000))).to_owned(),
+            text(&t.ask_promptpay(true, &labels::SKIP, None)).to_owned(),
+            text(&t.promptpay_invalid(&labels::REMOVE)).to_owned(),
+            text(&t.pickup_needed()).to_owned(),
+            text(&t.photo_expected(&labels::SKIP)).to_owned(),
+            text(&t.shop_location_expected(None)).to_owned(),
+            text(&t.shop_location_expected(Some(&labels::SKIP))).to_owned(),
+            text(&t.photo_lost()).to_owned(),
+            text(&t.shop_summary(&shop_card(), true, &labels::SUBMIT_APPLICATION)[0]).to_owned(),
+            text(&t.shop_summary(&shop_card(), false, &labels::OPEN_NOW)[0]).to_owned(),
+            text(&t.choose_shop_part(Vec::new())).to_owned(),
+            text(&t.application_sent("ร้านป้าแดง")).to_owned(),
+            text(&t.shop_opened("ร้านป้าแดง")).to_owned(),
+            text(&t.application_pending(
+                "ร้านป้าแดง",
+                Utc.with_ymd_and_hms(2026, 10, 25, 2, 0, 0).unwrap(),
+            ))
+            .to_owned(),
+            text(&t.application_rejected("ร้านป้าแดง", Some("ข้อมูลไม่ครบ"), apply_again())).to_owned(),
+            text(&t.application_rejected("ร้านป้าแดง", None, apply_again())).to_owned(),
+            text(&t.my_shop("ร้านป้าแดง", Vec::new())).to_owned(),
+            text(&t.application_gone(apply_again())).to_owned(),
+            text(&t.applications(&[], 0, |_| unreachable!())).to_owned(),
+            text(&t.shop_approved("ร้านป้าแดง")).to_owned(),
+            text(&t.application_decided("ร้านป้าแดง", true)).to_owned(),
+            text(&t.application_decided("ร้านป้าแดง", false)).to_owned(),
+            text(&t.application_changed()).to_owned(),
+            text(&t.ask_rejection_reason("ร้านป้าแดง", 300, Vec::new())).to_owned(),
+            text(&t.shop_rejected("ร้านป้าแดง")).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
@@ -1770,6 +2466,144 @@ mod tests {
 
     fn add_category() -> Action {
         Action::postback(labels::ADD_CATEGORY.clone(), "categories.add")
+    }
+
+    fn apply_again() -> Action {
+        Action::postback(labels::APPLY_AGAIN.clone(), "open_shop.again")
+    }
+
+    /// Appendix A.5's shop, as its owner sees it.
+    fn shop_card() -> ShopCard<'static> {
+        ShopCard {
+            name: "ร้านป้าแดง",
+            description: "ไข่ไก่ ผักสวนครัว",
+            photo: None,
+            pickup_address: Some("ซอย 3 บ้านเลขที่ 45/2"),
+            pickup_location: false,
+            phone: Some("0812345678"),
+            offers_pickup: true,
+            offers_delivery: true,
+            delivery_fee: Money::from_baht(10),
+            minimum_order: None,
+            promptpay: PromptPay::Number(None),
+            applicant: None,
+            buttons: Vec::new(),
+        }
+    }
+
+    /// The texts of `card`'s body, its rows' labels and values among them.
+    fn card_texts(card: &Bubble) -> Vec<String> {
+        fn texts(component: &Component, out: &mut Vec<String>) {
+            match component {
+                Component::Text(text) => out.push(text.text.clone()),
+                Component::Box(flex_box) => {
+                    for component in &flex_box.contents {
+                        texts(component, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for component in &card.body.as_ref().unwrap().contents {
+            texts(component, &mut out);
+        }
+        out
+    }
+
+    /// Appendix A.5: a shop is named as a sentence names it.
+    #[test]
+    fn a_shop_is_named_as_a_sentence_names_it() {
+        assert_eq!(shop_called("ร้านป้าแดง"), "ร้านป้าแดง");
+        assert_eq!(shop_called("ขนมบ้านสวน"), "ร้านขนมบ้านสวน");
+        assert_eq!(shop_called("Baan Suan"), "ร้าน Baan Suan");
+        let t = templates(PoliteParticle::Kha);
+        assert_eq!(text(&t.shop_approved("ร้านป้าแดง")), "อนุมัติร้านป้าแดงแล้วค่ะ");
+    }
+
+    /// FR-SHOP-01, NFR-PRIV-04: a shop's card says how it sells; its owner sees the PromptPay
+    /// ID, the admins only whether there is one, with who applied and when.
+    #[test]
+    fn a_shop_card_shows_what_its_viewer_may_see() {
+        let t = templates(PoliteParticle::Kha);
+        let owners = ShopCard {
+            promptpay: PromptPay::Number(Some("1101700203450")),
+            minimum_order: Some(Money::from_baht(50)),
+            ..shop_card()
+        };
+        let texts = card_texts(&t.shop_bubble(&owners, None));
+        let row = |label: &str| {
+            let at = texts.iter().position(|text| text == label).expect(label);
+            texts[at + 1].clone()
+        };
+        assert_eq!(texts[..2], ["ร้านป้าแดง", "ไข่ไก่ ผักสวนครัว"]);
+        assert_eq!(row("ที่รับของ"), "ซอย 3 บ้านเลขที่ 45/2");
+        assert_eq!(row("ตำแหน่ง"), "ไม่ได้แชร์");
+        assert_eq!(row("เบอร์ร้าน"), "081-234-5678");
+        assert_eq!(row("การรับส่ง"), "รับเองหรือให้ร้านไปส่ง ค่าส่ง ฿10");
+        assert_eq!(row("ยอดขั้นต่ำ"), "฿50");
+        assert_eq!(row("พร้อมเพย์"), "1-1017-00203-45-0");
+        assert!(!texts.contains(&"ผู้สมัคร".to_owned()));
+
+        let at = Utc.with_ymd_and_hms(2026, 10, 25, 2, 0, 0).unwrap();
+        let admins = ShopCard {
+            promptpay: PromptPay::Given(true),
+            offers_pickup: false,
+            delivery_fee: Money::ZERO,
+            applicant: Some(Applicant {
+                display_name: Some("ป้าแดง"),
+                at,
+            }),
+            ..owners
+        };
+        let texts = card_texts(&t.shop_bubble(&admins, None));
+        let row = |label: &str| {
+            let at = texts.iter().position(|text| text == label).expect(label);
+            texts[at + 1].clone()
+        };
+        assert_eq!(row("พร้อมเพย์"), "มี");
+        assert_eq!(row("การรับส่ง"), "ร้านไปส่ง ส่งฟรี");
+        assert_eq!(row("ผู้สมัคร"), "ป้าแดง");
+        assert_eq!(row("ส่งเมื่อ"), "25 ต.ค. 2569 09:00");
+        let pickup = ShopCard {
+            offers_delivery: false,
+            promptpay: PromptPay::Given(false),
+            ..shop_card()
+        };
+        let texts = card_texts(&t.shop_bubble(&pickup, None));
+        assert!(texts.contains(&"รับเองที่ร้าน".to_owned()));
+        assert!(!texts.contains(&"มี".to_owned()));
+    }
+
+    /// FR-LINE-11: the summary, the admins' alert and the owner's notices fit, with the longest
+    /// values the application takes.
+    #[test]
+    fn shop_messages_with_everything_fit() {
+        let t = templates(PoliteParticle::Khrap);
+        let (name, description, address) = ("ข".repeat(50), "ข".repeat(300), "ข".repeat(200));
+        let photo = Url::parse("https://iconmarket.example.com/img/p/0123").unwrap();
+        let button = |label: &Label| Action::postback(label.clone(), "open_shop.submit?r=1");
+        let card = ShopCard {
+            name: &name,
+            description: &description,
+            photo: Some(&photo),
+            pickup_address: Some(&address),
+            pickup_location: true,
+            minimum_order: Some(Money::from_satang(9_999_999)),
+            promptpay: PromptPay::Number(Some("004999012345678")),
+            buttons: vec![button(&labels::SUBMIT_APPLICATION), button(&labels::EDIT)],
+            ..shop_card()
+        };
+        limits::check(&t.shop_summary(&card, true, &labels::SUBMIT_APPLICATION)).unwrap();
+        limits::check(&[t.shop_application_alert(&card)]).unwrap();
+        limits::check(&[t.shop(&card)]).unwrap();
+        let add = Action::postback(labels::ADD_PRODUCT.clone(), "add_product");
+        let reason = "ข".repeat(300);
+        limits::check(&[
+            t.shop_approved_notice(&name, add),
+            t.shop_rejected_notice(&name, &reason, apply_again()),
+        ])
+        .unwrap();
     }
 
     #[test]

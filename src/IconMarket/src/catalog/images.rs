@@ -5,10 +5,14 @@
 //! and re-encoded ([`process`]), then [`store`]d under a random ID. A product or shop image is
 //! public by that ID at `/img/p/{id}`. A slip image is reachable only through its payment slip's
 //! [`SlipLink`] at `/img/s/{token}`, until the link expires (AC-14).
+//!
+//! A photo sent in a guided flow before what it is for exists, such as the photo of a shop
+//! applied for, is a [draft](Owner::Draft) of the user who sent it. The flow [`adopt`]s it for
+//! what it makes; one that ends without is swept by [`delete_orphaned_drafts`].
 
 #![allow(
     dead_code,
-    reason = "the product, shop and payment flows that upload images are built by later issues"
+    reason = "the product and payment flows that upload images are built by later issues"
 )]
 
 mod process;
@@ -24,9 +28,10 @@ use axum::response::{IntoResponse, Response};
 use chrono::{TimeDelta, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::{DateTimeUtc, Uuid};
+use sea_orm::sea_query::{Expr, Query};
 use sea_orm::{
-    ColumnTrait, DbErr, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
-    TransactionSession, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QueryOrder,
+    QuerySelect, RelationTrait, TransactionSession, TransactionTrait,
 };
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
@@ -37,7 +42,7 @@ use crate::config::ImageConfig;
 use crate::http::AppState;
 use crate::line;
 use crate::persistence::entity::image::{self, OwnerType};
-use crate::persistence::entity::{payment_slip, product};
+use crate::persistence::entity::{payment_slip, product, session};
 use crate::persistence::{self, random_id};
 
 pub use process::{Processed, process};
@@ -55,6 +60,11 @@ const TARGET: Duration = Duration::from_secs(5);
 const PUBLIC: &str = "public, max-age=31536000, immutable";
 /// A slip shows the payer's name and account, so no cache keeps it past its link's expiry.
 const PRIVATE: &str = "private, no-store";
+
+/// How long after their flow was last live a user's drafts are kept. Whether a flow is live is
+/// judged when an event starts, and the sweep may run while one is handled, so a draft is kept a
+/// while longer than its flow.
+const DRAFT_GRACE: TimeDelta = TimeDelta::hours(1);
 
 /// Why an upload was not stored: something the user can fix, each with its guidance
 /// ([`Templates::image_rejected`](crate::notifications::templates::Templates::image_rejected)).
@@ -78,6 +88,8 @@ pub enum Owner {
     Product(i64),
     Shop(i64),
     Slip(i64),
+    /// The user with this ID, who sent it in a guided flow (FR-SHOP-01)
+    Draft(i64),
 }
 
 impl Owner {
@@ -86,6 +98,7 @@ impl Owner {
             Self::Product(id) => (OwnerType::Product, id),
             Self::Shop(id) => (OwnerType::Shop, id),
             Self::Slip(id) => (OwnerType::Slip, id),
+            Self::Draft(user_id) => (OwnerType::Draft, user_id),
         }
     }
 }
@@ -212,6 +225,90 @@ pub async fn store(
     Ok(Ok(id))
 }
 
+/// Gives user `user_id`'s draft `id` to `owner`, as its first image. Returns whether there was
+/// such a draft: it may have been [swept](delete_orphaned_drafts).
+pub async fn adopt(
+    db: &impl ConnectionTrait,
+    id: Uuid,
+    user_id: i64,
+    owner: Owner,
+) -> Result<bool, DbErr> {
+    let (owner_type, owner_id) = owner.parts();
+    let adopted = image::Entity::update_many()
+        .col_expr(image::Column::OwnerType, Expr::value(owner_type))
+        .col_expr(image::Column::OwnerId, Expr::value(owner_id))
+        .col_expr(image::Column::Position, Expr::value(0_i16))
+        .filter(image::Column::Id.eq(id))
+        .filter(image::Column::OwnerType.eq(OwnerType::Draft))
+        .filter(image::Column::OwnerId.eq(user_id))
+        .exec(db)
+        .await?;
+    Ok(adopted.rows_affected > 0)
+}
+
+/// Deletes user `user_id`'s draft `id`, replaced by another photo.
+pub async fn delete_draft(db: &impl ConnectionTrait, id: Uuid, user_id: i64) -> Result<(), DbErr> {
+    image::Entity::delete_many()
+        .filter(image::Column::Id.eq(id))
+        .filter(image::Column::OwnerType.eq(OwnerType::Draft))
+        .filter(image::Column::OwnerId.eq(user_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+/// Deletes `owner`'s images but `keep`: a shop has one photo, and a new one replaces it.
+/// Returns how many were deleted.
+pub async fn keep_only(
+    db: &impl ConnectionTrait,
+    owner: Owner,
+    keep: Option<Uuid>,
+) -> Result<u64, DbErr> {
+    let (owner_type, owner_id) = owner.parts();
+    let mut others = image::Entity::delete_many()
+        .filter(image::Column::OwnerType.eq(owner_type))
+        .filter(image::Column::OwnerId.eq(owner_id));
+    if let Some(keep) = keep {
+        others = others.filter(image::Column::Id.ne(keep));
+    }
+    Ok(others.exec(db).await?.rows_affected)
+}
+
+/// The ID of `owner`'s first image, such as a shop's photo.
+pub async fn first(db: &impl ConnectionTrait, owner: Owner) -> Result<Option<Uuid>, DbErr> {
+    let (owner_type, owner_id) = owner.parts();
+    image::Entity::find()
+        .select_only()
+        .column(image::Column::Id)
+        .filter(image::Column::OwnerType.eq(owner_type))
+        .filter(image::Column::OwnerId.eq(owner_id))
+        .order_by_asc(image::Column::Position)
+        .order_by_asc(image::Column::CreatedAt)
+        .into_tuple()
+        .one(db)
+        .await
+}
+
+/// Deletes, at `now`, the drafts of users whose guided flow ended more than [`DRAFT_GRACE`]
+/// ago, or who have none: cancelled, expired or finished without adopting them. Returns how
+/// many were deleted.
+pub async fn delete_orphaned_drafts(
+    db: &impl ConnectionTrait,
+    now: DateTimeUtc,
+) -> Result<u64, DbErr> {
+    let live = Query::select()
+        .column(session::Column::UserId)
+        .from(session::Entity)
+        .and_where(session::Column::ExpiresAt.gt(now - DRAFT_GRACE))
+        .to_owned();
+    let deleted = image::Entity::delete_many()
+        .filter(image::Column::OwnerType.eq(OwnerType::Draft))
+        .filter(image::Column::OwnerId.not_in_subquery(live))
+        .exec(db)
+        .await?;
+    Ok(deleted.rows_affected)
+}
+
 /// The expiring link to a slip image, kept in its payment slip (NFR-SEC-04): a random token
 /// used for nothing else, and when it stops working.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,14 +347,18 @@ fn link(base: &Url, kind: &str, id: Uuid) -> Url {
     url
 }
 
-/// `GET /img/p/{imageId}`: a product or shop image, public by its random ID. Never a slip
-/// image, though it has an ID too.
+/// `GET /img/p/{imageId}`: a product or shop image, or a draft of one, public by its random ID.
+/// Never a slip image, though it has an ID too.
 pub async fn serve_product(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Ok(id) = Uuid::try_parse(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let found = image::Entity::find_by_id(id)
-        .filter(image::Column::OwnerType.is_in([OwnerType::Product, OwnerType::Shop]))
+        .filter(image::Column::OwnerType.is_in([
+            OwnerType::Product,
+            OwnerType::Shop,
+            OwnerType::Draft,
+        ]))
         .one(&persistence::orm(state.db))
         .await;
     match found {

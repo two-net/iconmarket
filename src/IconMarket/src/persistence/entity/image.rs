@@ -12,8 +12,8 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub owner_type: OwnerType,
-    /// The product, shop or payment slip; not a foreign key, as it points at one of three
-    /// tables
+    /// The product, shop or payment slip, or the user who sent a draft; not a foreign key, as
+    /// it points at one of several tables
     #[sea_orm(indexed)]
     pub owner_id: i64,
     /// Display order among the owner's images
@@ -36,6 +36,10 @@ pub enum OwnerType {
     Product,
     Shop,
     Slip,
+    /// A photo sent in a guided flow before what it is for exists, such as a shop applied for:
+    /// owned by the user who sent it until the flow gives it to what it makes, and deleted if
+    /// the flow ends without
+    Draft,
 }
 
 #[derive(Clone, Copy, Debug, EnumIter, DeriveRelation)]

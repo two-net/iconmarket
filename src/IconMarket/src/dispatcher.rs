@@ -45,6 +45,7 @@ use chrono::TimeDelta;
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseTransaction, DbErr, EntityTrait, QueryFilter};
 
+use crate::catalog::images;
 use crate::config::SessionConfig;
 use crate::line::Message;
 use crate::line::limits::MESSAGES_PER_REQUEST;
@@ -198,11 +199,14 @@ impl<'a> Turn<'a> {
 pub struct Deleted {
     pub sessions: u64,
     pub pending_actions: u64,
+    /// Photos sent in flows that ended without using them
+    pub draft_images: u64,
 }
 
-/// Deletes the sessions that expired more than [`EXPIRED_SESSION_GRACE`] before `now`, and the
-/// pending actions that expired before `now`, consumed or not (§5.4). A tap on a deleted
-/// action's button finds nothing, so it shows the current state (FR-UI-13).
+/// Deletes the sessions that expired more than [`EXPIRED_SESSION_GRACE`] before `now`, the
+/// pending actions that expired before `now`, consumed or not (§5.4), and the draft photos of
+/// flows that ended ([`images::delete_orphaned_drafts`]). A tap on a deleted action's button
+/// finds nothing, so it shows the current state (FR-UI-13).
 pub async fn delete_expired(db: &impl ConnectionTrait, now: DateTimeUtc) -> Result<Deleted, DbErr> {
     let sessions = session::Entity::delete_many()
         .filter(session::Column::ExpiresAt.lt(now - EXPIRED_SESSION_GRACE))
@@ -214,8 +218,10 @@ pub async fn delete_expired(db: &impl ConnectionTrait, now: DateTimeUtc) -> Resu
         .exec(db)
         .await?
         .rows_affected;
+    let draft_images = images::delete_orphaned_drafts(db, now).await?;
     Ok(Deleted {
         sessions,
         pending_actions,
+        draft_images,
     })
 }

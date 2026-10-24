@@ -30,6 +30,9 @@ pub struct Model {
     pub pickup_address: Option<String>,
     pub pickup_latitude: Option<f64>,
     pub pickup_longitude: Option<f64>,
+    /// Why an admin turned the application down, while `REJECTED` (FR-SHOP-04); cleared when
+    /// the owner applies again
+    pub rejection_reason: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     /// When the shop became `CLOSED`; shops are never removed (DR-04)

@@ -24,6 +24,7 @@ use super::*;
 use crate::config::{AppConfig, PoliteParticle};
 use crate::line::{Action, Body};
 use crate::notifications::templates::labels;
+use crate::persistence::entity::image::{self, OwnerType};
 use crate::persistence::entity::{counter, user};
 use crate::persistence::{orm, random_id, testing};
 use crate::users::access::{self, Denied};
@@ -704,7 +705,8 @@ async fn expired_sessions_and_pending_actions_are_deleted() {
         deleted,
         Deleted {
             sessions: 1,
-            pending_actions: 2
+            pending_actions: 2,
+            draft_images: 0,
         }
     );
     assert_eq!(sessions(&db).await, [expired_today, active]);
@@ -716,9 +718,82 @@ async fn expired_sessions_and_pending_actions_are_deleted() {
         again,
         Deleted {
             sessions: 0,
-            pending_actions: 0
+            pending_actions: 0,
+            draft_images: 0,
         }
     );
     assert_eq!(sessions(&db).await, [expired_today, active]);
     assert_eq!(pending_actions(&db).await, [open]);
+}
+
+/// A photo of `owner_type` owned by `owner_id`, as sent at `at`.
+async fn new_image(
+    db: &DatabaseConnection,
+    owner_type: OwnerType,
+    owner_id: i64,
+    at: DateTimeUtc,
+) -> Uuid {
+    let image = image::ActiveModel {
+        id: Set(random_id()),
+        owner_type: Set(owner_type),
+        owner_id: Set(owner_id),
+        position: Set(0),
+        content_type: Set("image/jpeg".to_owned()),
+        width: Set(1),
+        height: Set(1),
+        size_bytes: Set(3),
+        data: Set(vec![0xFF, 0xD8, 0xFF]),
+        created_at: Set(at),
+    };
+    image.insert(db).await.unwrap().id
+}
+
+async fn images(db: &DatabaseConnection) -> Vec<Uuid> {
+    image::Entity::find()
+        .select_only()
+        .column(image::Column::Id)
+        .order_by_asc(image::Column::CreatedAt)
+        .into_tuple()
+        .all(db)
+        .await
+        .unwrap()
+}
+
+/// A photo sent in a flow is kept while the flow lasts, and an hour after, as the sweep may run
+/// while an answer that keeps it alive is handled; then it goes, as do those of users with no
+/// flow. Other images stay.
+#[tokio::test]
+async fn drafts_are_swept_once_their_flow_has_ended() {
+    let (_container, db) = database().await;
+    let now = t0();
+    let [in_flow, just_ended, ended, cancelled] = [
+        "U0123456789abcdef0123456789abcde0",
+        "U0123456789abcdef0123456789abcde1",
+        "U0123456789abcdef0123456789abcde2",
+        "U0123456789abcdef0123456789abcde3",
+    ];
+    let (in_flow, just_ended, ended, cancelled) = (
+        new_user(&db, in_flow).await,
+        new_user(&db, just_ended).await,
+        new_user(&db, ended).await,
+        new_user(&db, cancelled).await,
+    );
+    new_session(&db, in_flow, now + minutes(10)).await;
+    new_session(&db, just_ended, now - minutes(59)).await;
+    new_session(&db, ended, now - minutes(61)).await;
+    let sent = now - minutes(70);
+    let kept = new_image(&db, OwnerType::Draft, in_flow, sent).await;
+    let kept_a_while = new_image(&db, OwnerType::Draft, just_ended, sent + minutes(1)).await;
+    new_image(&db, OwnerType::Draft, ended, sent + minutes(2)).await;
+    new_image(&db, OwnerType::Draft, cancelled, sent + minutes(3)).await;
+    // A shop's photo whose ID happens to be a user's with no flow
+    let shop_photo = new_image(&db, OwnerType::Shop, cancelled, sent + minutes(4)).await;
+
+    let deleted = delete_expired(&db, now).await.unwrap();
+    assert_eq!(deleted.draft_images, 2);
+    assert_eq!(images(&db).await, [kept, kept_a_while, shop_photo]);
+
+    let later = delete_expired(&db, now + minutes(2)).await.unwrap();
+    assert_eq!(later.draft_images, 1);
+    assert_eq!(images(&db).await, [kept, shop_photo]);
 }

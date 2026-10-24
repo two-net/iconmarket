@@ -115,6 +115,7 @@ fn enums_are_stored_by_their_srs_names() {
     assert_eq!(order::PaymentMethod::PromptPay.to_value(), "PROMPTPAY");
     assert_eq!(product::Status::Held.to_value(), "HELD");
     assert_eq!(shop::Status::Closed.to_value(), "CLOSED");
+    assert_eq!(image::OwnerType::Draft.to_value(), "DRAFT");
     assert_eq!(user::MenuRoles::SellerAdmin.to_value(), "SELLER_ADMIN");
 }
 
@@ -335,6 +336,7 @@ async fn every_attribute_can_be_stored() {
             pickup_address: Some("ซอย 3 บ้านเลขที่ 45/2".to_owned()),
             pickup_latitude: Some(16.441_9),
             pickup_longitude: Some(102.835_9),
+            rejection_reason: Some("ยังไม่ได้แจ้งเบอร์ติดต่อ".to_owned()),
             created_at: at,
             updated_at: at,
             deleted_at: Some(at),

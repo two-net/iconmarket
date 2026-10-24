@@ -30,9 +30,11 @@ use super::pending;
 use super::postback::Postback;
 use super::worker::Context;
 use super::{Finished, Turn};
+use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::ai::Feature;
 use crate::catalog::browse;
+use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
 use crate::notifications::Queued;
 use crate::notifications::templates::labels;
@@ -56,6 +58,10 @@ const MY_DATA: &str = "my_data.";
 const ADDRESS: &str = "address.";
 /// What the actions of the buttons of "หมวดหมู่" start with (FR-ADM-05)
 const CATEGORIES: &str = "categories.";
+/// What the actions of a shop application's buttons start with (FR-SHOP-01)
+const OPEN_SHOP: &str = "open_shop.";
+/// What the actions of the buttons of "อนุมัติร้าน" start with (FR-ADM-02)
+const APPROVALS: &str = "approvals.";
 
 /// The answer to an event, sent once its transaction commits.
 #[derive(Clone, Debug, PartialEq)]
@@ -443,8 +449,8 @@ fn step_name(step: &Step) -> &'static str {
 /// (FR-UI-14), or when this release has no such flow: it ends as if expired (FR-UI-15).
 ///
 /// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21),
-/// problem reports (#22), shop applications and settings (#23, #24), products (#25, #26) and
-/// checkout (#32).
+/// problem reports (#22), shop applications and the reasons for turning one down (#23), shop
+/// settings (#24), products (#25, #26) and checkout (#32).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -465,6 +471,14 @@ async fn answer_flow(
         },
         ReportFlow::NAME => match stored.read::<ReportFlow>() {
             Some(session) => Some(report::answer(turn, session, input).await),
+            None => None,
+        },
+        ShopFlow::NAME => match stored.read::<ShopFlow>() {
+            Some(session) => Some(shops::answer(turn, config, &context.line, session, input).await),
+            None => None,
+        },
+        RejectionFlow::NAME => match stored.read::<RejectionFlow>() {
+            Some(session) => Some(approvals::answer(turn, config, session, input).await),
             None => None,
         },
         _ => None,
@@ -506,6 +520,12 @@ async fn tapped(
         action if action.starts_with(CATEGORIES) => {
             return categories::tapped(turn, postback).await;
         }
+        action if action.starts_with(OPEN_SHOP) => {
+            return shops::tapped(turn, &context.config, postback).await;
+        }
+        action if action.starts_with(APPROVALS) => {
+            return approvals::tapped(turn, &context.config, postback).await;
+        }
         action if action.starts_with(help::PREFIX) => {
             return help::tapped(turn, &context.config, &context.ai, postback).await;
         }
@@ -533,12 +553,13 @@ async fn menu_item(
     use Item::*;
     let issue = match item {
         Buy => return browse::tapped(turn, postback).await,
+        MyShop => return shops::tapped(turn, &context.config, postback).await,
+        ApproveShops => return approvals::tapped(turn, &context.config, postback).await,
         Categories => return categories::tapped(turn, postback).await,
         Help => return help::tapped(turn, &context.config, &context.ai, postback).await,
         Search => 28,
         Cart => 29,
         MyOrders | ShopOrders => 34,
-        MyShop | ApproveShops => 23,
         AddProduct => 25,
         MyProducts => 26,
         OpenClose | ShopSettings => 24,

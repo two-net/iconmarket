@@ -23,14 +23,14 @@ use tokio_util::task::TaskTracker;
 use super::*;
 use crate::config::{self, Config};
 use crate::dispatcher::Turn;
-use crate::dispatcher::menu::Tab;
+use crate::dispatcher::menu::{Item, Tab};
 use crate::line::testing::{Answer, Fake, PUSH, REPLY};
 use crate::line::{Action, QuickReply};
 use crate::notifications::templates::labels;
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{
-    audit_log, category, join_attempt, push_log, report, session, user,
+    audit_log, category, join_attempt, push_log, report, session, shop, user,
 };
 use crate::persistence::{orm, testing};
 use crate::thai::Label;
@@ -1218,4 +1218,189 @@ async fn an_outdated_menu_is_relinked_after_the_reply() {
         .unwrap()
         .unwrap();
     assert_eq!(user.menu_roles, Some(MenuRoles::Admin));
+}
+
+/// The pushes LINE got, in order: each one's recipient and messages.
+fn pushes(setup: &Setup) -> Vec<(String, Value)> {
+    setup
+        .line
+        .requests()
+        .iter()
+        .filter(|request| request.path == PUSH)
+        .map(|request| {
+            let body = request.json();
+            let to = body["to"].as_str().unwrap().to_owned();
+            (to, body["messages"].clone())
+        })
+        .collect()
+}
+
+/// The JSON body of `request`; `Null` for one without, such as a rich menu's link.
+fn body(request: &crate::line::testing::Request) -> Value {
+    serde_json::from_slice(&request.body).unwrap_or(Value::Null)
+}
+
+/// Waits until LINE got a request that is `wanted`, by its path and body.
+async fn requested(setup: &Setup, wanted: impl Fn(&str, &Value) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let requests = setup.line.requests();
+        if requests
+            .iter()
+            .any(|request| wanted(&request.path, &body(request)))
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never requested");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Acceptance (Appendix A.5, FR-SHOP-01 – FR-SHOP-04): a villager applies from the menu, the
+/// admin is pushed the application with its buttons and approves it with one tap, and the new
+/// seller is pushed the news, with "เพิ่มสินค้า", and linked the seller's menu.
+#[tokio::test]
+async fn a_shop_is_applied_for_and_approved_end_to_end() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut applicant = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    applicant.zone = Set(Some("ซอย 3".to_owned()));
+    applicant.house_number = Set(Some("45/2".to_owned()));
+    applicant.update(&s.db).await.unwrap();
+    let bob = onboarded(&s.db, BOB).await;
+    let mut admin = user::Entity::find_by_id(bob)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    admin.is_admin = Set(true);
+    admin.menu_roles = Set(Some(MenuRoles::Admin));
+    admin.update(&s.db).await.unwrap();
+
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "my_shop"),
+            said("a2", ALICE, "ร้านป้าแดง"),
+            said("a3", ALICE, "ไข่ไก่ ผักสวนครัว"),
+            said("a4", ALICE, "ข้าม"),
+            said("a5", ALICE, "ใช้ที่อยู่บ้าน"),
+            said("a6", ALICE, "ข้าม"),
+            said("a7", ALICE, "081-234-5678"),
+            said("a8", ALICE, "ได้ทั้งสองแบบ"),
+            said("a9", ALICE, "10"),
+            said("a10", ALICE, "ไม่มีขั้นต่ำ"),
+            said("a11", ALICE, "ข้าม"),
+            tapped("a12", ALICE, "open_shop.submit?r=10"),
+        ],
+    )
+    .await;
+    let mut context = s.context(&s.pool, 20);
+    context.rich_menus = Some(RichMenus::for_test(vec![
+        (MenuRoles::Seller, "richmenu-seller".to_owned()),
+        (MenuRoles::Admin, "richmenu-admin".to_owned()),
+        (MenuRoles::SellerAdmin, "richmenu-both".to_owned()),
+    ]));
+    let running = s.run_with(context, 2);
+    settled(&s.db, 12).await;
+    requested(&s, |path, body| path == PUSH && body["to"] == BOB).await;
+
+    // The admin's push: the application's card, with its buttons
+    let [(to, alert)] = &pushes(&s)[..] else {
+        panic!("one push: {:?}", pushes(&s));
+    };
+    assert_eq!(to, BOB);
+    assert_eq!(alert[0]["altText"], "มีคำขอเปิดร้านใหม่ค่ะ");
+    let card = serde_json::to_string(&alert[0]["contents"]).unwrap();
+    for shown in [
+        "ร้านป้าแดง",
+        "ไข่ไก่ ผักสวนครัว",
+        "ซอย 3 บ้านเลขที่ 45/2",
+        "รับเองหรือให้ร้านไปส่ง ค่าส่ง ฿10",
+    ] {
+        assert!(card.contains(shown), "{shown} in {card}");
+    }
+    let buttons = alert[0]["contents"]["footer"]["contents"]
+        .as_array()
+        .unwrap();
+    let labels: Vec<_> = buttons
+        .iter()
+        .map(|button| button["action"]["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels, ["อนุมัติ", "ไม่อนุมัติ"]);
+    let approve = buttons[0]["action"]["data"].as_str().unwrap().to_owned();
+
+    store(&s.db, [tapped("b1", BOB, &approve)]).await;
+    running.wakeup.notify();
+    settled(&s.db, 13).await;
+    let link = format!("/v2/bot/user/{ALICE}/richmenu/richmenu-seller");
+    requested(&s, |path, _| path == link).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    assert_eq!(
+        reply("a12"),
+        json!([
+            t.application_sent("ร้านป้าแดง"),
+            templates::main_menu([Tab::Buyer], true)
+        ])
+    );
+    assert_eq!(reply("b1"), json!([t.shop_approved("ร้านป้าแดง")]));
+    assert_eq!(reply("b1")[0]["text"], "อนุมัติร้านป้าแดงแล้วค่ะ");
+    assert_eq!(replies.len(), 13);
+
+    let add_product = Item::AddProduct
+        .postback()
+        .button(labels::ADD_PRODUCT.clone());
+    let approved = t.shop_approved_notice("ร้านป้าแดง", add_product);
+    assert_eq!(pushes(&s)[1], (ALICE.to_owned(), json!([approved])));
+    let shop = shop::Entity::find()
+        .filter(shop::Column::OwnerId.eq(alice))
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(shop.status, shop::Status::Approved);
+    let audited: Vec<_> = audit_log::Entity::find()
+        .all(&s.db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.actor_id, row.action, row.target_id))
+        .collect();
+    assert_eq!(
+        audited,
+        [(Some(bob), "shop.approved".to_owned(), Some(shop.id))]
+    );
+    // Answered, then told, then given the seller's menu
+    let paths: Vec<_> = s
+        .line
+        .requests()
+        .into_iter()
+        .map(|request| {
+            let body = body(&request);
+            let to = body["to"].as_str().or(body["replyToken"].as_str());
+            (request.path, to.map(str::to_owned))
+        })
+        .collect();
+    let at = |wanted: (&str, Option<&str>)| {
+        paths
+            .iter()
+            .position(|(path, to)| path == wanted.0 && to.as_deref() == wanted.1)
+            .unwrap()
+    };
+    let answered = at((REPLY, Some(token("b1").as_str())));
+    let told = at((PUSH, Some(ALICE)));
+    let linked = at((link.as_str(), None));
+    assert!(answered < told && told < linked, "{paths:?}");
+    let alice = s.user(ALICE).await;
+    assert_eq!(alice.menu_roles, Some(MenuRoles::Seller));
 }

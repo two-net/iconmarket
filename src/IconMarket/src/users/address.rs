@@ -18,6 +18,7 @@ use tracing::info;
 
 use super::access::Denied;
 use super::profile;
+use crate::catalog::shops;
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::postback::Postback;
@@ -58,6 +59,8 @@ pub enum Ask {
 pub enum Then {
     /// Back to "ข้อมูลของฉัน" (FR-ONB-05)
     MyData,
+    /// On to "เปิดร้าน" (FR-SHOP-01)
+    OpenShop,
 }
 
 /// The flow's draft: what it asks for, where it goes next, and the answers so far. An answer
@@ -125,6 +128,7 @@ impl Then {
     ) -> Result<Vec<Message>, DbErr> {
         match self {
             Self::MyData => profile::show(turn, config, user).await,
+            Self::OpenShop => shops::open(turn, config, user).await,
         }
     }
 }

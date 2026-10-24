@@ -2,9 +2,13 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// An exact amount of Thai Baht, held in satang (1/100 baht) so arithmetic never rounds
-/// (DR-01). Displays as `฿1,250` for whole baht and `฿12.50` otherwise (FR-UI-07).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// (DR-01). Displays as `฿1,250` for whole baht and `฿12.50` otherwise (FR-UI-07). A draft in a
+/// guided flow keeps it as its satang.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Money(i64);
 
 impl Money {

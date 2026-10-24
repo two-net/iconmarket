@@ -2,7 +2,8 @@
 //! announcements. Built by #21, #23, #31, #38 and #49. Every admin action and sensitive action
 //! is written to the [`audit`] log (FR-ADM-08).
 //!
-//! [`categories`] is "หมวดหมู่" (FR-ADM-05).
+//! [`approvals`] is "อนุมัติร้าน" (FR-ADM-02), and [`categories`] is "หมวดหมู่" (FR-ADM-05).
 
+pub mod approvals;
 pub mod audit;
 pub mod categories;
