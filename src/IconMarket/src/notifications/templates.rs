@@ -607,6 +607,125 @@ impl Templates {
         };
         Message::flex(labels::MY_DATA.as_str(), card)
     }
+
+    /// Asks for a category's name (FR-ADM-05) of at most `max_chars`: a new one, or a new name
+    /// for the one named `current`.
+    pub fn ask_category_name(&self, max_chars: usize, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let typed = format!("พิมพ์มาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha}");
+        Message::text(match current {
+            None => format!("หมวดหมู่ใหม่ชื่ออะไรดี{kha_question} {typed} เช่น ขนม/ของหวาน"),
+            Some(_) => format!("ชื่อใหม่ของหมวดนี้คืออะไร{kha_question} {typed}{}", now(current)),
+        })
+    }
+
+    /// Another category is already called `name` (FR-ADM-05).
+    pub fn category_name_taken(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} มีหมวด \"{name}\" อยู่แล้ว พิมพ์ชื่ออื่นได้เลย{kha}"
+        ))
+    }
+
+    /// Category `name` was added, last in the order (FR-ADM-05).
+    pub fn category_added(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "เพิ่มหมวด \"{name}\" ไว้ท้ายรายการแล้ว{kha} เลื่อนขึ้นได้จากปุ่มของหมวดนั้นเลย{kha}"
+        ))
+    }
+
+    /// Category `from` is now called `to` (FR-ADM-05).
+    pub fn category_renamed(&self, from: &str, to: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!("เปลี่ยนชื่อหมวด \"{from}\" เป็น \"{to}\" แล้ว{kha}"))
+    }
+
+    /// Category `name` was deactivated (FR-ADM-05): what that hides, and what it keeps.
+    pub fn category_deactivated(&self, name: &str) -> Message {
+        let (kha, buy) = (self.kha(), labels::BUY.as_str());
+        Message::text(format!(
+            "ปิดใช้งานหมวด \"{name}\" แล้ว{kha} ผู้ซื้อจะไม่เห็นหมวดนี้ใน \"{buy}\" และลงสินค้าใหม่ในหมวดนี้ไม่ได้ สินค้าเดิมยังอยู่ครบ{kha}"
+        ))
+    }
+
+    /// Category `name` was activated again (FR-ADM-05).
+    pub fn category_activated(&self, name: &str) -> Message {
+        let (kha, buy) = (self.kha(), labels::BUY.as_str());
+        Message::text(format!(
+            "เปิดใช้งานหมวด \"{name}\" แล้ว{kha} ผู้ซื้อเห็นหมวดนี้ใน \"{buy}\" อีกครั้ง{kha}"
+        ))
+    }
+
+    /// Asks to confirm deleting category `name`, which can't be undone (FR-ADM-05, FR-UI-13).
+    /// `confirm` deletes it; cancelling keeps it.
+    pub fn confirm_delete_category(&self, name: &str, confirm: Action) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ลบหมวด \"{name}\" ใช่ไหม{kha_question} ลบแล้วกู้คืนไม่ได้ ถ้าแน่ใจ กด \"{}\" ได้เลย{kha}",
+            confirm.label().as_str()
+        );
+        with_cancel(Message::text(text).with_quick_reply(QuickReply::new([confirm])))
+    }
+
+    /// Category `name` was deleted (FR-ADM-05).
+    pub fn category_deleted(&self, name: &str) -> Message {
+        Message::text(format!("ลบหมวด \"{name}\" แล้ว{}", self.kha()))
+    }
+
+    /// Category `name` has or had products, so can't be deleted (FR-ADM-05). `deactivate`
+    /// hides it instead, while it is active.
+    pub fn category_in_use(&self, name: &str, deactivate: Option<Action>) -> Message {
+        let kha = self.kha();
+        let why = format!("ขอโทษ{kha} หมวด \"{name}\" มีสินค้าอยู่หรือเคยมี จึงลบไม่ได้");
+        match deactivate {
+            Some(deactivate) => {
+                let text = format!(
+                    "{why} ถ้าไม่ต้องการใช้หมวดนี้แล้ว กด \"{}\" แทนได้เลย{kha}",
+                    deactivate.label().as_str()
+                );
+                Message::text(text).with_quick_reply(QuickReply::new([deactivate]))
+            }
+            None => Message::text(format!("{why} หมวดนี้ปิดใช้งานอยู่แล้ว ผู้ซื้อจึงไม่เห็น{kha}")),
+        }
+    }
+
+    /// "หมวดหมู่" (FR-ADM-05): page `page` of every category in the order buyers see them, a
+    /// card each with its buttons, and "ดูเพิ่มเติม" sending `more(next_page)`. `add` adds one.
+    pub fn categories(
+        &self,
+        cards: &[CategoryCard<'_>],
+        page: usize,
+        more: impl FnOnce(usize) -> String,
+        add: Action,
+    ) -> Message {
+        let add = QuickReply::new([add]);
+        if cards.is_empty() {
+            let kha = self.kha();
+            let text = format!(
+                "ยังไม่มีหมวดหมู่เลย{kha} กด \"{}\" เพื่อเริ่มได้เลย{kha}",
+                labels::ADD_CATEGORY.as_str()
+            );
+            return Message::text(text).with_quick_reply(add);
+        }
+        let page = carousel_page(cards, page, CATEGORIES_PER_PAGE, category_card, more);
+        Message::flex(labels::CATEGORIES.as_str(), page).with_quick_reply(add)
+    }
+
+    /// "ซื้อของ" (FR-SRCH-01): the active categories, `choices` a page of them.
+    pub fn choose_category(&self, choices: Vec<Action>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!("อยากซื้ออะไรดี{kha_question} เลือกหมวดได้เลย{kha}"))
+            .with_quick_reply(QuickReply::new(choices))
+    }
+
+    /// "ซื้อของ" with no active category. The main menu follows.
+    pub fn nothing_to_browse(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ตอนนี้ยังไม่มีหมวดสินค้าให้เลือก{kha} ลองใหม่ภายหลัง หรือเลือกจากเมนูด้านล่างได้เลย{kha}"
+        ))
+    }
 }
 
 /// What "ข้อมูลของฉัน" shows for a value the user hasn't given
@@ -673,6 +792,68 @@ fn line(text: &str) -> Component {
 /// The colour of the labels of a card's rows
 const MUTED: &str = "#888888";
 
+/// Categories on a page of "หมวดหมู่", leaving room for "ดูเพิ่มเติม" (FR-LINE-11)
+pub const CATEGORIES_PER_PAGE: usize = limits::BUBBLES_PER_CAROUSEL - 1;
+
+/// A category's card in "หมวดหมู่": its place and name, whether buyers see it, its products,
+/// and its buttons, the moves side by side above the rest.
+fn category_card(card: &CategoryCard<'_>) -> Bubble {
+    let title = Text {
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(format!("{}. {}", card.rank, card.name))
+    };
+    let status = if card.is_active {
+        "เปิดใช้"
+    } else {
+        "ปิดใช้ (ผู้ซื้อไม่เห็น)"
+    };
+    let body = FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::vertical([
+            row("สถานะ", status),
+            row("สินค้า", &format!("{} รายการ", card.products)),
+        ])
+    };
+    let buttons = |actions: Vec<Action>| -> Component {
+        let buttons = actions.into_iter().map(|action| {
+            let button = Button {
+                style: Some(ButtonStyle::Secondary),
+                height: Some(ButtonHeight::Sm),
+                flex: Some(1),
+                ..Button::new(action)
+            };
+            button.into()
+        });
+        FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::horizontal(buttons)
+        }
+        .into()
+    };
+    let moves: Vec<_> = card.up.iter().chain(&card.down).cloned().collect();
+    let rows = [
+        moves,
+        vec![card.rename.clone()],
+        vec![card.toggle.clone(), card.delete.clone()],
+    ];
+    let footer = FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::vertical(
+            rows.into_iter()
+                .filter(|actions| !actions.is_empty())
+                .map(buttons),
+        )
+    };
+    Bubble {
+        size: Some(BubbleSize::Kilo),
+        header: Some(FlexBox::vertical([title.into()])),
+        body: Some(body),
+        footer: Some(footer),
+        ..Bubble::default()
+    }
+}
+
 /// "ข้อมูลของฉัน" as shown (FR-ONB-05): the personal data of the user's row, of their shop's,
 /// and what other records hold about them (DR-10).
 pub struct MyData<'a> {
@@ -715,6 +896,24 @@ pub struct Retention {
     pub push_log_days: u32,
     /// `None` while the AI is off, as nothing is sent to it then
     pub ai_message_days: Option<u32>,
+}
+
+/// A category as "หมวดหมู่" shows it (FR-ADM-05).
+pub struct CategoryCard<'a> {
+    /// Its place in the order buyers see, from 1
+    pub rank: usize,
+    pub name: &'a str,
+    pub is_active: bool,
+    /// Its products that aren't deleted
+    pub products: u64,
+    /// Moves it up; `None` for the first
+    pub up: Option<Action>,
+    /// Moves it down; `None` for the last
+    pub down: Option<Action>,
+    pub rename: Action,
+    /// Deactivates it, or activates it again
+    pub toggle: Action,
+    pub delete: Action,
 }
 
 /// The privacy notice as shown before consent (FR-ONB-02, NFR-PRIV-02).
@@ -1031,6 +1230,17 @@ pub mod labels {
         CATEGORIES = "หมวดหมู่",
         STATS = "สถิติ",
         ANNOUNCEMENTS = "ประกาศ",
+
+        // Categories (FR-ADM-05)
+        ADD_CATEGORY = "เพิ่มหมวดหมู่",
+        MOVE_UP = "เลื่อนขึ้น",
+        MOVE_DOWN = "เลื่อนลง",
+        RENAME = "เปลี่ยนชื่อ",
+        /// Hides a category from browsing and new listings
+        DEACTIVATE = "ปิดใช้งาน",
+        ACTIVATE = "เปิดใช้งาน",
+        DELETE = "ลบ",
+        CONFIRM_DELETE = "ยืนยันลบ",
     }
 }
 
@@ -1120,11 +1330,40 @@ mod tests {
             text(&t.phone_saved(None)).to_owned(),
             text(&t.location_saved(true)).to_owned(),
             text(&t.location_saved(false)).to_owned(),
+            text(&t.ask_category_name(20, None)).to_owned(),
+            text(&t.ask_category_name(20, Some("ขนม"))).to_owned(),
+            text(&t.category_name_taken("ขนม")).to_owned(),
+            text(&t.category_added("ขนม")).to_owned(),
+            text(&t.category_renamed("ขนม", "ขนม/ของหวาน")).to_owned(),
+            text(&t.category_deactivated("ขนม")).to_owned(),
+            text(&t.category_activated("ขนม")).to_owned(),
+            text(&t.confirm_delete_category("ขนม", confirm_delete())).to_owned(),
+            text(&t.category_deleted("ขนม")).to_owned(),
+            text(&t.category_in_use("ขนม", None)).to_owned(),
+            text(&t.category_in_use("ขนม", Some(deactivate()))).to_owned(),
+            text(&t.categories(&[], 0, |_| unreachable!(), add_category())).to_owned(),
+            text(&t.choose_category(vec![add_category()])).to_owned(),
+            text(&t.nothing_to_browse()).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
         texts.extend(DENIALS.map(|denied| text(&t.denied(denied)).to_owned()));
         texts
+    }
+
+    fn confirm_delete() -> Action {
+        Action::postback(
+            labels::CONFIRM_DELETE.clone(),
+            "confirm?k=category.delete&pa=1",
+        )
+    }
+
+    fn deactivate() -> Action {
+        Action::postback(labels::DEACTIVATE.clone(), "categories.deactivate?c=1")
+    }
+
+    fn add_category() -> Action {
+        Action::postback(labels::ADD_CATEGORY.clone(), "categories.add")
     }
 
     #[test]
@@ -1654,6 +1893,47 @@ mod tests {
             panic!("not a card");
         };
         assert_eq!(alt_text, "ข้อมูลของฉัน");
+    }
+
+    /// FR-ADM-05, FR-LINE-11: a full page of "หมวดหมู่", with the longest names and every
+    /// button, fits one message; the confirmation of a deletion can be cancelled.
+    #[test]
+    fn a_full_page_of_categories_fits() {
+        let t = templates(PoliteParticle::Kha);
+        let name = "ข".repeat(Label::MAX_CHARS);
+        let action = |label: &Label| Action::Postback {
+            label: label.clone(),
+            data: format!("categories.up?c={}&n={}", i64::MAX, i64::MAX),
+            display_text: Some(label.as_str().to_owned()),
+        };
+        let cards: Vec<_> = (1..=CATEGORIES_PER_PAGE + 1)
+            .map(|rank| CategoryCard {
+                rank,
+                name: &name,
+                is_active: rank % 2 == 0,
+                products: 99_999,
+                up: Some(action(&labels::MOVE_UP)),
+                down: Some(action(&labels::MOVE_DOWN)),
+                rename: action(&labels::RENAME),
+                toggle: action(&labels::DEACTIVATE),
+                delete: action(&labels::DELETE),
+            })
+            .collect();
+        let more = |next| format!("categories?page={next}");
+        let page = t.categories(&cards, 0, more, add_category());
+        limits::check(slice::from_ref(&page)).unwrap();
+        let Body::Flex { alt_text, .. } = &page.body else {
+            panic!("not a card");
+        };
+        assert_eq!(alt_text, "หมวดหมู่");
+
+        let confirm = t.confirm_delete_category(&name, confirm_delete());
+        let items = &confirm.quick_reply.as_ref().unwrap().items;
+        let labels: Vec<_> = items
+            .iter()
+            .map(|item| item.action.label().as_str())
+            .collect();
+        assert_eq!(labels, ["ยืนยันลบ", "ยกเลิก"]);
     }
 
     #[test]

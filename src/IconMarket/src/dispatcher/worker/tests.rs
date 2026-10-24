@@ -29,7 +29,7 @@ use crate::line::{Action, QuickReply};
 use crate::notifications::templates::labels;
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::persistence::entity::user::MenuRoles;
-use crate::persistence::entity::{join_attempt, push_log, session, user};
+use crate::persistence::entity::{audit_log, category, join_attempt, push_log, session, user};
 use crate::persistence::{orm, testing};
 use crate::thai::Label;
 use crate::users::access::{Actor, Denied};
@@ -581,7 +581,7 @@ async fn input_is_routed_by_its_priority() {
             sent("a3", ALICE, sticker),
             sent("a4", ALICE, location),
             tapped("a5", ALICE, "Browse"),
-            tapped("a6", ALICE, "buy"),
+            tapped("a6", ALICE, "search"),
             said("a7", ALICE, "ขอไข่ 2 แผง"),
             said("a8", ALICE, "ยกเลิก"),
             event(
@@ -866,6 +866,128 @@ async fn my_data_is_shown_and_corrected_end_to_end() {
     // Bob hasn't consented yet
     assert_eq!(reply("b1"), json!([s.notice(&config, false)]));
     assert_eq!(replies.len(), 7);
+}
+
+/// AC (FR-ADM-05, FR-ADM-08, FR-SRCH-01): an admin moves a category up and deactivates another,
+/// and a buyer's "ซื้อของ" then offers the categories in the new order, without the
+/// deactivated one; deleting a category with products is refused. Each change is audited.
+#[tokio::test]
+async fn categories_set_by_an_admin_are_what_buyers_browse() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut admin = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    admin.is_admin = Set(true);
+    admin.menu_roles = Set(Some(MenuRoles::Admin));
+    admin.update(&s.db).await.unwrap();
+    onboarded(&s.db, BOB).await;
+    let mut added = Vec::new();
+    for (name, sort_order) in [("อาหาร", 1), ("ขนม/ของหวาน", 2), ("ไข่/นม", 3)]
+    {
+        let category = category::ActiveModel {
+            sort_order: Set(sort_order),
+            ..testing::new_category(name)
+        };
+        added.push(category.insert(&s.db).await.unwrap());
+    }
+    let [food, sweets, eggs] = added.try_into().unwrap();
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = testing::new_shop(seller.id).insert(&s.db).await.unwrap();
+    testing::new_product(shop.id, food.id, "ข้าวมันไก่", None)
+        .insert(&s.db)
+        .await
+        .unwrap();
+
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "categories"),
+            tapped(
+                "a2",
+                ALICE,
+                &format!("categories.up?c={}&n={}", sweets.id, food.id),
+            ),
+            tapped("a3", ALICE, &format!("categories.deactivate?c={}", eggs.id)),
+            tapped("a4", ALICE, &format!("categories.delete?c={}", food.id)),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 4).await;
+    // Bob browses once the admin is done
+    store(&s.db, [tapped("b1", BOB, "buy")]).await;
+    running.wakeup.notify();
+    settled(&s.db, 5).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    // The titles of the cards of "หมวดหมู่", the `at`th message of a reply
+    let titles = |id: &str, at: usize| -> Vec<String> {
+        let cards = reply(id)[at]["contents"]["contents"].clone();
+        let cards = cards.as_array().cloned().unwrap_or_default();
+        cards
+            .iter()
+            .map(|card| {
+                card["header"]["contents"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    };
+    assert_eq!(titles("a1", 0), ["1. อาหาร", "2. ขนม/ของหวาน", "3. ไข่/นม"]);
+    assert_eq!(titles("a2", 0), ["1. ขนม/ของหวาน", "2. อาหาร", "3. ไข่/นม"]);
+    assert_eq!(reply("a3")[0], json!(t.category_deactivated("ไข่/นม")));
+    let postback = |label: Label, data: String| Action::Postback {
+        display_text: Some(label.as_str().to_owned()),
+        label,
+        data,
+    };
+    let deactivate = postback(
+        labels::DEACTIVATE.clone(),
+        format!("categories.deactivate?c={}", food.id),
+    );
+    assert_eq!(
+        reply("a4"),
+        json!([t.category_in_use("อาหาร", Some(deactivate))])
+    );
+    let choice = |category: &category::Model| {
+        let data = format!("browse?category={}", category.id);
+        postback(Label::fit(category.name.as_str()), data)
+    };
+    assert_eq!(
+        reply("b1"),
+        json!([t.choose_category(vec![choice(&sweets), choice(&food)])])
+    );
+    assert_eq!(replies.len(), 5);
+
+    let exists = category::Entity::find_by_id(food.id).one(&s.db).await;
+    assert!(exists.unwrap().is_some(), "not deleted");
+    let audited: Vec<_> = audit_log::Entity::find()
+        .order_by_asc(audit_log::Column::Id)
+        .all(&s.db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.actor_id, row.action, row.target_id))
+        .collect();
+    assert_eq!(
+        audited,
+        [
+            (Some(alice), "category.moved".to_owned(), Some(sweets.id)),
+            (
+                Some(alice),
+                "category.deactivated".to_owned(),
+                Some(eggs.id)
+            ),
+        ]
+    );
 }
 
 /// NFR-REL-05: once stopped, the worker takes no more events.

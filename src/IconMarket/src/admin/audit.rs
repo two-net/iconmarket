@@ -8,7 +8,7 @@
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::{ConnectionTrait, DbErr, EntityTrait};
-use serde_json::json;
+use serde_json::{Map, Value};
 use tracing::info;
 
 use crate::persistence::entity::audit_log;
@@ -20,6 +20,14 @@ pub enum Action {
     AdminGranted,
     /// The admin role was taken from a user no longer listed
     AdminRevoked,
+    // Categories (FR-ADM-05)
+    CategoryAdded,
+    CategoryRenamed,
+    /// Moved up or down the order buyers see
+    CategoryMoved,
+    CategoryDeactivated,
+    CategoryActivated,
+    CategoryDeleted,
 }
 
 impl Action {
@@ -28,6 +36,12 @@ impl Action {
         match self {
             Self::AdminGranted => "admin.granted",
             Self::AdminRevoked => "admin.revoked",
+            Self::CategoryAdded => "category.added",
+            Self::CategoryRenamed => "category.renamed",
+            Self::CategoryMoved => "category.moved",
+            Self::CategoryDeactivated => "category.deactivated",
+            Self::CategoryActivated => "category.activated",
+            Self::CategoryDeleted => "category.deleted",
         }
     }
 }
@@ -36,6 +50,7 @@ impl Action {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     User(i64),
+    Category(i64),
 }
 
 impl Target {
@@ -43,6 +58,7 @@ impl Target {
     fn parts(self) -> (&'static str, i64) {
         match self {
             Self::User(id) => ("user", id),
+            Self::Category(id) => ("category", id),
         }
     }
 }
@@ -56,10 +72,22 @@ pub struct Entry {
     pub target: Target,
     /// Why: the admin's reason, or the system's
     pub reason: Option<String>,
+    /// What else says what was done, such as a category's name before and after a rename, so
+    /// the entry still reads once the target has changed or is gone
+    pub details: Map<String, Value>,
 }
 
-/// Writes `entries`, done at `now`, to the audit log. The reason goes in `details.reason`, and
-/// is not logged: an admin's reason can name people (NFR-PRIV-05).
+/// The details of an [`Entry`]: `details([("name", json!("ขนม"))])`.
+pub fn details<const N: usize>(pairs: [(&str, Value); N]) -> Map<String, Value> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
+}
+
+/// Writes `entries`, done at `now`, to the audit log. Their details go in `details`, with the
+/// reason as `details.reason`, and are not logged: an admin's reason can name people
+/// (NFR-PRIV-05).
 pub async fn record(
     db: &impl ConnectionTrait,
     now: DateTimeUtc,
@@ -71,16 +99,16 @@ pub async fn record(
     }
     let rows = entries.iter().map(|entry| {
         let (target_type, target_id) = entry.target.parts();
-        let details = match &entry.reason {
-            Some(reason) => json!({ "reason": reason }),
-            None => json!({}),
-        };
+        let mut details = entry.details.clone();
+        if let Some(reason) = &entry.reason {
+            details.insert("reason".to_owned(), Value::String(reason.clone()));
+        }
         audit_log::ActiveModel {
             actor_id: Set(entry.actor_id),
             action: Set(entry.action.as_str().to_owned()),
             target_type: Set(target_type.to_owned()),
             target_id: Set(Some(target_id)),
-            details: Set(details),
+            details: Set(Value::Object(details)),
             created_at: Set(now),
             ..Default::default()
         }
@@ -103,6 +131,7 @@ pub async fn record(
 mod tests {
     use sea_orm::prelude::Json;
     use sea_orm::{ActiveModelTrait, DatabaseConnection, QueryOrder, TransactionTrait};
+    use serde_json::json;
 
     use super::*;
     use crate::persistence::entity::user;
@@ -159,12 +188,14 @@ mod tests {
             action: Action::AdminRevoked,
             target: Target::User(target.id),
             reason: Some("ทดสอบระบบ".to_owned()),
+            details: Map::new(),
         };
         let by_system = Entry {
             actor_id: None,
             action: Action::AdminGranted,
             target: Target::User(target.id),
             reason: None,
+            details: Map::new(),
         };
 
         let txn = db.begin().await.unwrap();
@@ -200,5 +231,47 @@ mod tests {
         // Nothing to record writes nothing
         record(&db, at(), []).await.unwrap();
         assert_eq!(audited(&db).await.len(), 2);
+    }
+
+    /// The details say what was done, with the reason among them.
+    #[tokio::test]
+    async fn details_are_kept_with_the_reason() {
+        let (_container, pool) = testing::migrated().await;
+        let db = orm(pool);
+        let admin = user::ActiveModel {
+            is_admin: Set(true),
+            ..new_user("U-admin")
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        let renamed = |reason: Option<&str>| Entry {
+            actor_id: Some(admin.id),
+            action: Action::CategoryRenamed,
+            target: Target::Category(7),
+            reason: reason.map(str::to_owned),
+            details: details([("from", json!("ขนม")), ("to", json!("ขนม/ของหวาน"))]),
+        };
+        record(&db, at(), [renamed(None), renamed(Some("สะกดผิด"))])
+            .await
+            .unwrap();
+        let rows: Vec<_> = audited(&db)
+            .await
+            .into_iter()
+            .map(|(_, action, target_type, target_id, details, _)| {
+                (action, target_type, target_id, details)
+            })
+            .collect();
+        let row = |details| {
+            let (action, target_type) = ("category.renamed".to_owned(), "category".to_owned());
+            (action, target_type, Some(7), details)
+        };
+        assert_eq!(
+            rows,
+            [
+                row(json!({ "from": "ขนม", "to": "ขนม/ของหวาน" })),
+                row(json!({ "from": "ขนม", "to": "ขนม/ของหวาน", "reason": "สะกดผิด" })),
+            ]
+        );
     }
 }

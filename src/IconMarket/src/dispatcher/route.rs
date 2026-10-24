@@ -30,7 +30,9 @@ use super::pending;
 use super::postback::Postback;
 use super::worker::Context;
 use super::{Finished, Turn};
+use crate::admin::categories::{self, CategoryFlow};
 use crate::ai::Feature;
+use crate::catalog::browse;
 use crate::line::Message;
 use crate::notifications::Queued;
 use crate::notifications::templates::labels;
@@ -51,6 +53,8 @@ const ONBOARDING: &str = "onboarding.";
 const MY_DATA: &str = "my_data.";
 /// What the actions of the address flow's buttons start with (FR-ONB-04)
 const ADDRESS: &str = "address.";
+/// What the actions of the buttons of "หมวดหมู่" start with (FR-ADM-05)
+const CATEGORIES: &str = "categories.";
 
 /// The answer to an event, sent once its transaction commits.
 #[derive(Clone, Debug, PartialEq)]
@@ -440,8 +444,8 @@ fn step_name(step: &Step) -> &'static str {
 /// current step. `None` when the step doesn't take this kind of input, so routing goes on
 /// (FR-UI-14), or when this release has no such flow: it ends as if expired (FR-UI-15).
 ///
-/// Each flow adds its arm, as its issue builds it: the address (#20), shop applications and
-/// settings (#23, #24), products (#25, #26) and checkout (#32).
+/// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21), shop
+/// applications and settings (#23, #24), products (#25, #26) and checkout (#32).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -454,6 +458,10 @@ async fn answer_flow(
     let answered = match stored.flow() {
         AddressFlow::NAME => match stored.read::<AddressFlow>() {
             Some(session) => Some(address::answer(turn, config, session, input).await),
+            None => None,
+        },
+        CategoryFlow::NAME => match stored.read::<CategoryFlow>() {
+            Some(session) => Some(categories::answer(turn, session, input).await),
             None => None,
         },
         _ => None,
@@ -492,19 +500,30 @@ async fn tapped(
         action if action.starts_with(ADDRESS) => {
             return address::tapped(turn, &context.config, postback).await;
         }
+        action if action.starts_with(CATEGORIES) => {
+            return categories::tapped(turn, postback).await;
+        }
+        browse::CATEGORY => return Ok(not_built("browsing a category", 28, fallback(turn))),
         _ => {}
     }
-    Ok(match Item::from_action(postback.action()) {
-        Some(item) => menu_item(turn, item),
-        None => vec![turn.templates.denied(Denied::NotFound)],
-    })
+    match Item::from_action(postback.action()) {
+        Some(item) => menu_item(turn, item, postback).await,
+        None => Ok(vec![turn.templates.denied(Denied::NotFound)]),
+    }
 }
 
-/// A function of the main menu (FR-UI-05), by the issue that builds it.
-fn menu_item(turn: &Turn<'_>, item: Item) -> Vec<Message> {
+/// A function of the main menu (FR-UI-05), by the module that owns it, or the issue that builds
+/// it. `postback` is its button's, or that of "ดูเพิ่มเติม" under its list.
+async fn menu_item(
+    turn: &Turn<'_>,
+    item: Item,
+    postback: &Postback,
+) -> Result<Vec<Message>, DbErr> {
     use Item::*;
     let issue = match item {
-        Buy | Search => 28,
+        Buy => return browse::tapped(turn, postback).await,
+        Categories => return categories::tapped(turn, postback).await,
+        Search => 28,
         Cart => 29,
         MyOrders | ShopOrders => 34,
         MyShop | ApproveShops => 23,
@@ -514,11 +533,10 @@ fn menu_item(turn: &Turn<'_>, item: Item) -> Vec<Message> {
         OpenClose | ShopSettings => 24,
         Sales => 39,
         ReviewQueue | Users => 31,
-        Categories => 21,
         Stats => 38,
         Announcements => 49,
     };
-    not_built(item.action(), issue, fallback(turn))
+    Ok(not_built(item.action(), issue, fallback(turn)))
 }
 
 /// A global keyword (FR-UI-12 step 4).

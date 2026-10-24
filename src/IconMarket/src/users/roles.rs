@@ -15,6 +15,7 @@ use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseTransaction, DbErr, EntityTrait, QueryFilter, QueryOrder,
     QuerySelect, QueryTrait, TransactionSession, TransactionTrait, TryInsertResult,
 };
+use serde_json::Map;
 
 use crate::admin::audit::{self, Entry, Target};
 use crate::config::AdminConfig;
@@ -166,6 +167,7 @@ fn system_entry(action: audit::Action, user_id: i64, reason: &str) -> Entry {
         action,
         target: Target::User(user_id),
         reason: Some(reason.to_owned()),
+        details: Map::new(),
     }
 }
 
