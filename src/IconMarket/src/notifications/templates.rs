@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
 use crate::catalog::images::Rejected;
-use crate::config::{AppConfig, PoliteParticle};
+use crate::config::{AiProvider, AppConfig, PoliteParticle};
 use crate::dispatcher::menu::{Item, Tab};
 use crate::line::flex::{
     Bubble, BubbleSize, Button, ButtonHeight, ButtonStyle, Carousel, FlexBox, FlexContainer,
@@ -26,6 +26,8 @@ use crate::users::access::Denied;
 
 /// Builds messages in the configured voice and time zone.
 pub struct Templates {
+    /// `app.name`
+    app_name: String,
     particle: PoliteParticle,
     time_zone: Tz,
 }
@@ -33,6 +35,7 @@ pub struct Templates {
 impl Templates {
     pub fn new(app: &AppConfig) -> Self {
         Self {
+            app_name: app.name.clone(),
             particle: app.polite_particle,
             time_zone: app.time_zone,
         }
@@ -209,6 +212,179 @@ impl Templates {
             }
         }
     }
+
+    /// The answer to following the OA (FR-ONB-01), greeting the user by their LINE name if
+    /// known. What they have still to do follows.
+    pub fn welcome(&self, name: Option<&str>, village: &str) -> Message {
+        let (kha, app) = (self.kha(), &self.app_name);
+        let you = name.map(|name| format!(" คุณ{name}")).unwrap_or_default();
+        Message::text(format!(
+            "สวัสดี{kha}{you} ยินดีต้อนรับสู่ {app} ตลาดออนไลน์ของ{village} สั่งของจากร้านในหมู่บ้าน หรือเปิดร้านขายเองก็ได้{kha}"
+        ))
+    }
+
+    /// The answer to following the OA again once onboarded (FR-ONB-01). The main menu follows.
+    pub fn welcome_back(&self, name: Option<&str>, village: &str) -> Message {
+        let (kha, app) = (self.kha(), &self.app_name);
+        let you = name.map(|name| format!(" คุณ{name}")).unwrap_or_default();
+        Message::text(format!(
+            "ยินดีต้อนรับกลับมา{kha}{you} {app} ตลาดออนไลน์ของ{village} เลือกจากเมนูด้านล่างได้เลย{kha}"
+        ))
+    }
+
+    /// The privacy notice, which the user must accept before anything but help (FR-ONB-02):
+    /// the operator's text, then what is collected and why, how long it is kept, who receives
+    /// it and how to exercise one's rights (NFR-PRIV-02).
+    pub fn privacy_notice(&self, privacy: &PrivacyNotice<'_>) -> Message {
+        let kha = self.kha();
+        let accept = labels::ACCEPT.as_str();
+        let (headline, intro) = if privacy.updated {
+            (
+                "ประกาศความเป็นส่วนตัวฉบับใหม่",
+                format!(
+                    "เราปรับปรุงประกาศความเป็นส่วนตัว กรุณาอ่านแล้วกด \"{accept}\" อีกครั้งเพื่อใช้งานต่อ{kha}"
+                ),
+            )
+        } else {
+            (
+                "ประกาศความเป็นส่วนตัว",
+                format!("ก่อนเริ่มใช้งาน กรุณาอ่านแล้วกด \"{accept}\"{kha}"),
+            )
+        };
+        let ai: Vec<_> = privacy
+            .ai_providers
+            .iter()
+            .filter_map(|&provider| ai_provider_name(provider))
+            .collect();
+        let (my_data, delete) = (labels::MY_DATA.as_str(), labels::DELETE_ACCOUNT.as_str());
+
+        let mut collected =
+            "ข้อมูลที่เก็บ: ชื่อและรูปโปรไฟล์ LINE, ที่อยู่สำหรับส่งของ, เบอร์โทรและตำแหน่ง (ไม่บังคับ), คำสั่งซื้อ"
+                .to_owned();
+        let mut kept = "ระยะเวลาเก็บ: ข้อมูลบัญชีและที่อยู่เก็บจนกว่าคุณจะลบบัญชี".to_owned();
+        let mut receives = "ผู้ที่ได้รับข้อมูล: LINE ผู้ให้บริการแชตนี้".to_owned();
+        if let Some(days) = privacy.slip_days {
+            collected.push_str(", รูปสลิปโอนเงิน");
+            kept.push_str(&format!(", รูปสลิปเก็บ {days} วันหลังคำสั่งซื้อจบ"));
+        }
+        if !ai.is_empty() {
+            let (names, days) = (ai.join(" และ "), privacy.ai_message_days);
+            collected.push_str(", ข้อความและรูปที่ส่งถึงผู้ช่วย AI");
+            kept.push_str(&format!(", ข้อความที่คุยกับผู้ช่วย AI เก็บ {days} วัน"));
+            receives.push_str(&format!(
+                ", {names} ผู้ให้บริการ AI ซึ่งได้รับเฉพาะข้อความและรูปที่จำเป็นต่อการตอบ"
+            ));
+        }
+        collected.push_str(" เพื่อใช้ซื้อขายและส่งของกันในหมู่บ้าน");
+        kept.push_str(", ประวัติคำสั่งซื้อเก็บไว้ แต่ลบข้อมูลที่ระบุตัวคุณออกเมื่อลบบัญชี");
+        receives.push_str(", และผู้ซื้อหรือร้านค้าในคำสั่งซื้อเดียวกัน ซึ่งเห็นเฉพาะข้อมูลสำหรับส่งของและติดต่อ");
+        let details = [
+            intro,
+            privacy.text.to_owned(),
+            collected,
+            kept,
+            receives,
+            format!(
+                "สิทธิของคุณ: ดูและแก้ไขข้อมูลได้ที่ \"{my_data}\" ถอนความยินยอมและลบข้อมูลได้ที่ \"{delete}\""
+            ),
+            format!("ฉบับที่ {}", privacy.version),
+        ];
+
+        let mut buttons = vec![privacy.accept.clone()];
+        if let Some(url) = privacy.url {
+            buttons.push(Action::Uri {
+                label: labels::FULL_NOTICE.clone(),
+                uri: url.to_owned(),
+            });
+        }
+        notice(headline, &details, buttons).with_quick_reply(help_only())
+    }
+
+    /// Asks for `village.joinCode` (FR-ONB-03), and where to get it.
+    pub fn ask_join_code(&self, village: &str, admin_contact: Option<&str>) -> Message {
+        let kha = self.kha();
+        let ask = admin_contact.map_or_else(
+            || "สอบถามได้จากผู้ดูแลหมู่บ้าน".to_owned(),
+            |contact| format!("สอบถามได้ที่ {contact}"),
+        );
+        Message::text(format!(
+            "อีกขั้นเดียว{kha} พิมพ์รหัสเข้าร่วมของ{village}ได้เลย{kha} ถ้ายังไม่มีรหัส {ask}"
+        ))
+        .with_quick_reply(help_only())
+    }
+
+    /// A wrong join code, with how many tries are left before attempts are blocked (FR-ONB-03).
+    pub fn join_code_wrong(&self, tries_left: usize) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} รหัสไม่ถูกต้อง ลองพิมพ์ใหม่อีกครั้งได้เลย{kha} (ลองได้อีก {tries_left} ครั้ง)"
+        ))
+        .with_quick_reply(help_only())
+    }
+
+    /// Too many wrong join codes: attempts are blocked `until` (FR-ONB-03).
+    pub fn join_code_blocked(&self, until: DateTime<Utc>) -> Message {
+        let (kha, until) = (self.kha(), self.date_time(until));
+        Message::text(format!(
+            "ขอโทษ{kha} ใส่รหัสผิดหลายครั้งเกินไป ลองใหม่ได้ตั้งแต่ {until} หรือสอบถามรหัสจากผู้ดูแลหมู่บ้านได้เลย{kha}"
+        ))
+        .with_quick_reply(help_only())
+    }
+
+    /// Onboarding is complete (FR-ONB-02, FR-ONB-03). The main menu follows.
+    pub fn ready(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอบคุณ{kha} พร้อมใช้งานแล้ว เลือกจากเมนูด้านล่างได้เลย{kha}"
+        ))
+    }
+
+    /// The answer to `#myid` (FR-ONB-08): what it is for, then the ID alone, to copy.
+    pub fn my_id(&self, line_user_id: &str) -> Vec<Message> {
+        let kha = self.kha();
+        let what = format!(
+            "นี่คือ LINE user ID ของคุณ{kha} กดค้างที่ข้อความถัดไปเพื่อคัดลอก ผู้ดูแลระบบใช้เพิ่มผู้ดูแลใน admin.lineUserIds ได้{kha}"
+        );
+        vec![Message::text(what), Message::text(line_user_id)]
+    }
+}
+
+/// The privacy notice as shown before consent (FR-ONB-02, NFR-PRIV-02).
+pub struct PrivacyNotice<'a> {
+    /// `privacy.noticeText`
+    pub text: &'a str,
+    /// `privacy.noticeVersion`
+    pub version: &'a str,
+    /// `privacy.noticeUrl`: the full notice
+    pub url: Option<&'a str>,
+    /// The AI providers what users send the AI goes to; none while the AI is off
+    pub ai_providers: Vec<AiProvider>,
+    /// How long AI conversations are kept (`retention.aiMessageDays`)
+    pub ai_message_days: u32,
+    /// How long payment slips are kept once their order ends (`retention.slipDays`); `None`
+    /// while PromptPay is off, as there are no slips then
+    pub slip_days: Option<u32>,
+    /// Whether the user consented to an earlier version, so is asked again (NFR-PRIV-01)
+    pub updated: bool,
+    /// The button that consents to this version
+    pub accept: Action,
+}
+
+/// The company and product an AI provider is known by, as the privacy notice names it
+/// (NFR-PRIV-02). `None` for the mock provider, which sends nothing anywhere.
+pub fn ai_provider_name(provider: AiProvider) -> Option<&'static str> {
+    match provider {
+        AiProvider::Claude => Some("Anthropic (Claude)"),
+        AiProvider::Gemini => Some("Google (Gemini)"),
+        AiProvider::Gpt => Some("OpenAI (GPT)"),
+        AiProvider::Grok => Some("xAI (Grok)"),
+        AiProvider::Mock => None,
+    }
+}
+
+/// Help as a Quick Reply, for users who can use nothing else yet (FR-UI-12).
+fn help_only() -> QuickReply {
+    QuickReply::new([Action::message(labels::HELP.clone(), labels::HELP.as_str())])
 }
 
 /// Where to carry on when the assistant can't help: the main menu (FR-UI-05) and help
@@ -443,6 +619,14 @@ pub mod labels {
         ORDERS = "ออเดอร์",
         /// Cancels the flow and clears the AI's memory of the conversation (FR-AI-11)
         RESTART = "เริ่มใหม่",
+        /// Consents to the privacy notice (FR-ONB-02)
+        ACCEPT = "ยอมรับ",
+        /// Opens `privacy.noticeUrl` (FR-ONB-02)
+        FULL_NOTICE = "อ่านฉบับเต็ม",
+        /// Seeing and correcting one's personal data (FR-ONB-05)
+        MY_DATA = "ข้อมูลของฉัน",
+        /// Deleting one's account, which withdraws consent (FR-ONB-07, NFR-PRIV-03)
+        DELETE_ACCOUNT = "ลบบัญชี",
 
         // The menu's tabs and functions (§3.1.2)
         BUYER = "ผู้ซื้อ",
@@ -504,6 +688,7 @@ mod tests {
 
     fn templates(particle: PoliteParticle) -> Templates {
         Templates {
+            app_name: "IconMarket".to_owned(),
             particle,
             time_zone: chrono_tz::Asia::Bangkok,
         }
@@ -529,6 +714,12 @@ mod tests {
             text(&t.image_not_expected()).to_owned(),
             text(&t.location_not_expected()).to_owned(),
             text(&t.slow_down()).to_owned(),
+            text(&t.ask_join_code("หมู่บ้านไอคอน", None)).to_owned(),
+            text(&t.ask_join_code("หมู่บ้านไอคอน", Some("ลุงชัย 081-234-5678"))).to_owned(),
+            text(&t.join_code_wrong(3)).to_owned(),
+            text(&t.join_code_blocked(Utc.with_ymd_and_hms(2026, 10, 24, 9, 10, 0).unwrap()))
+                .to_owned(),
+            text(&t.ready()).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
@@ -835,6 +1026,151 @@ mod tests {
         };
         assert_eq!(card.footer, None);
         limits::check(&[plain]).unwrap();
+    }
+
+    /// The notice's lines, and its buttons.
+    fn notice_parts(message: &Message) -> (Vec<&str>, Vec<&Action>) {
+        let Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } = &message.body
+        else {
+            panic!("not a bubble");
+        };
+        let lines = card.body.as_ref().unwrap().contents.iter();
+        let lines = lines.map(|component| match component {
+            Component::Text(text) => text.text.as_str(),
+            other => panic!("not text: {other:?}"),
+        });
+        let buttons = card.footer.as_ref().unwrap().contents.iter();
+        let buttons = buttons.map(|component| match component {
+            Component::Button(button) => &button.action,
+            other => panic!("not a button: {other:?}"),
+        });
+        (lines.collect(), buttons.collect())
+    }
+
+    fn privacy_notice<'a>(text: &'a str, url: Option<&'a str>) -> PrivacyNotice<'a> {
+        PrivacyNotice {
+            text,
+            version: "2026-10",
+            url,
+            ai_providers: vec![AiProvider::Claude],
+            ai_message_days: 30,
+            slip_days: Some(90),
+            updated: false,
+            accept: Action::postback(labels::ACCEPT.clone(), "onboarding.accept?v=42"),
+        }
+    }
+
+    /// FR-ONB-02, NFR-PRIV-02: the operator's text, then what is collected, how long it is
+    /// kept, who receives it and the user's rights, and a button that accepts it.
+    #[test]
+    fn the_privacy_notice_says_what_happens_to_ones_data() {
+        let t = templates(PoliteParticle::Kha);
+        let message = t.privacy_notice(&privacy_notice("ตลาดนี้ดูแลโดยคณะกรรมการหมู่บ้าน", None));
+        let (lines, buttons) = notice_parts(&message);
+        assert_eq!(lines[0], "ประกาศความเป็นส่วนตัว");
+        assert!(lines[1].contains("กด \"ยอมรับ\""));
+        assert_eq!(lines[2], "ตลาดนี้ดูแลโดยคณะกรรมการหมู่บ้าน");
+        assert!(lines[3].starts_with("ข้อมูลที่เก็บ:") && lines[3].contains("รูปสลิป"));
+        assert!(lines[4].starts_with("ระยะเวลาเก็บ:"));
+        assert!(lines[4].contains("AI เก็บ 30 วัน") && lines[4].contains("สลิปเก็บ 90 วัน"));
+        assert!(lines[5].starts_with("ผู้ที่ได้รับข้อมูล: LINE"));
+        assert!(lines[5].contains("Anthropic (Claude) ผู้ให้บริการ AI"));
+        assert!(lines[5].contains("ผู้ซื้อหรือร้านค้าในคำสั่งซื้อเดียวกัน"));
+        assert!(lines[6].contains("\"ข้อมูลของฉัน\"") && lines[6].contains("\"ลบบัญชี\""));
+        assert_eq!(lines[7], "ฉบับที่ 2026-10");
+        let accept = Action::postback(labels::ACCEPT.clone(), "onboarding.accept?v=42");
+        assert_eq!(buttons, [&accept]);
+        let help = &message.quick_reply.as_ref().unwrap().items;
+        assert_eq!(help.len(), 1);
+        assert_eq!(
+            help[0].action,
+            Action::message(labels::HELP.clone(), "ช่วยเหลือ")
+        );
+        limits::check(&[message]).unwrap();
+    }
+
+    #[test]
+    fn the_privacy_notice_names_what_is_configured() {
+        let t = templates(PoliteParticle::Kha);
+        let url = "https://market.example.com/privacy";
+        let both = PrivacyNotice {
+            ai_providers: vec![AiProvider::Gpt, AiProvider::Gemini],
+            updated: true,
+            ..privacy_notice("ประกาศ", Some(url))
+        };
+        let message = t.privacy_notice(&both);
+        let (lines, buttons) = notice_parts(&message);
+        assert_eq!(lines[0], "ประกาศความเป็นส่วนตัวฉบับใหม่");
+        assert!(lines[1].contains("อีกครั้ง"));
+        assert!(lines[5].contains("OpenAI (GPT) และ Google (Gemini) ผู้ให้บริการ AI"));
+        let full = Action::Uri {
+            label: labels::FULL_NOTICE.clone(),
+            uri: url.to_owned(),
+        };
+        assert_eq!(buttons[1], &full);
+
+        // With the AI off, or only the mock, and PromptPay off, neither is mentioned
+        for ai_providers in [vec![], vec![AiProvider::Mock]] {
+            let neither = PrivacyNotice {
+                ai_providers,
+                slip_days: None,
+                ..privacy_notice("ประกาศ", None)
+            };
+            let message = t.privacy_notice(&neither);
+            let (lines, _) = notice_parts(&message);
+            for line in &lines[3..] {
+                assert!(!line.contains("AI") && !line.contains("สลิป"), "{line}");
+            }
+        }
+    }
+
+    /// The longest notice the config takes, in Thai, still fits one card (FR-LINE-11).
+    #[test]
+    fn the_longest_privacy_notice_fits() {
+        let t = templates(PoliteParticle::Khrap);
+        let longest = "ข".repeat(crate::config::NOTICE_TEXT_CHARS);
+        let url = format!(
+            "https://market.example.com/{}",
+            "p".repeat(limits::URI_CHARS - 27)
+        );
+        let notice = PrivacyNotice {
+            ai_providers: vec![AiProvider::Claude, AiProvider::Gemini],
+            updated: true,
+            ..privacy_notice(&longest, Some(&url))
+        };
+        limits::check(&[t.privacy_notice(&notice)]).unwrap();
+    }
+
+    /// FR-ONB-01, FR-ONB-08
+    #[test]
+    fn the_welcome_names_the_village_and_myid_gives_the_id_alone() {
+        let t = templates(PoliteParticle::Kha);
+        let welcome = t.welcome(Some("ป้าแดง"), "หมู่บ้านไอคอน");
+        assert!(text(&welcome).starts_with("สวัสดีค่ะ คุณป้าแดง ยินดีต้อนรับสู่ IconMarket"));
+        assert!(text(&welcome).contains("ตลาดออนไลน์ของหมู่บ้านไอคอน"));
+        assert!(text(&t.welcome(None, "หมู่บ้านไอคอน")).starts_with("สวัสดีค่ะ ยินดีต้อนรับ"));
+        assert!(text(&t.welcome_back(None, "หมู่บ้านไอคอน")).contains("หมู่บ้านไอคอน"));
+
+        let id = "U0123456789abcdef0123456789abcdef";
+        let my_id = t.my_id(id);
+        assert_eq!(text(&my_id[1]), id);
+        limits::check(&my_id).unwrap();
+    }
+
+    /// FR-ONB-03: how many tries are left, then until when attempts are blocked.
+    #[test]
+    fn join_code_answers_say_what_is_left() {
+        let t = templates(PoliteParticle::Kha);
+        assert!(text(&t.join_code_wrong(2)).contains("ลองได้อีก 2 ครั้ง"));
+        let until = Utc.with_ymd_and_hms(2026, 10, 24, 9, 10, 0).unwrap();
+        assert!(text(&t.join_code_blocked(until)).contains("ตั้งแต่ 24 ต.ค. 2569 16:10"));
+        assert!(
+            text(&t.ask_join_code("หมู่บ้านไอคอน", Some("ลุงชัย 081-234-5678")))
+                .contains("สอบถามได้ที่ ลุงชัย 081-234-5678")
+        );
     }
 
     #[test]

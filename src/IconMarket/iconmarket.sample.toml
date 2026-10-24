@@ -25,7 +25,8 @@ politeParticle = "ค่ะ"
 name = "หมู่บ้านไอคอน"
 # Offered as Quick Replies, e.g. ["ซอย 1", "ซอย 2", "หมู่ 5"]
 zones = []
-# Code required to register; empty turns it off
+# Code required to register, typed once after accepting the privacy notice; empty turns it
+# off. 5 wrong codes within an hour block further attempts for an hour
 joinCode = ""
 # Contact text shown in help
 adminContact = ""
@@ -180,9 +181,12 @@ defaultCategories = [
 prohibitedKeywords = []
 
 [privacy]
-# Required. Change it to require re-consent
+# Required. Change it whenever the notice changes, including a change of ai.provider, which
+# the notice names: everyone is then asked to accept it again
 noticeVersion = "1"
-# Required. Notice shown before consent
+# Required, at most 3000 characters. Notice shown before consent, e.g. who runs the market and
+# how to reach them. The system adds what is collected and why, how long it is kept, who
+# receives it (LINE, the AI provider by name, the other party of an order) and the user's rights
 noticeText = "change-me"
 # Optional link to the full notice
 noticeUrl = ""

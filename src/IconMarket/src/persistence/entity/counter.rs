@@ -1,5 +1,4 @@
-//! A daily counter, such as the order sequence (`order:20261022`), AI usage or join-code
-//! attempts.
+//! A daily counter, such as the order sequence (`order:20261022`) or AI usage.
 
 use sea_orm::entity::prelude::*;
 

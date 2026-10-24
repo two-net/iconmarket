@@ -57,7 +57,7 @@ fn digits(text: &str) -> Result<Digits, NumberError> {
     let text = text.trim();
     let text = text.strip_prefix('฿').unwrap_or(text).trim_start();
     let text = text.strip_suffix("บาท").unwrap_or(text).trim_end();
-    let text: String = text.chars().map(arabic).collect();
+    let text = arabic_digits(text);
 
     let (whole, fraction) = match text.split_once('.') {
         Some((whole, fraction)) if is_digits(fraction) => (whole, fraction),
@@ -68,6 +68,12 @@ fn digits(text: &str) -> Result<Digits, NumberError> {
         whole: ungroup(whole).ok_or(NumberError::NotANumber)?,
         fraction: fraction.trim_end_matches('0').to_owned(),
     })
+}
+
+/// `text` with its Thai digits `๐`–`๙` as `0`–`9`, such as a code typed in either:
+/// `๑๒๓๔` as `1234`.
+pub fn arabic_digits(text: &str) -> String {
+    text.chars().map(arabic).collect()
 }
 
 /// `๐`–`๙` as `0`–`9`; anything else unchanged.
@@ -119,6 +125,13 @@ mod tests {
         assert_eq!(money("12.50"), 1_250);
         assert_eq!(money("12.500"), 1_250);
         assert_eq!(money("0.01"), 1);
+    }
+
+    #[test]
+    fn thai_digits_become_arabic_and_the_rest_stays() {
+        assert_eq!(arabic_digits("๐๑๒๓๔๕๖๗๘๙"), "0123456789");
+        assert_eq!(arabic_digits("Icon๒๕๖๙ ซอย ๓"), "Icon2569 ซอย 3");
+        assert_eq!(arabic_digits(""), "");
     }
 
     #[test]

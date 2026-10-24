@@ -20,4 +20,4 @@ pub use money::Money;
     unused_imports,
     reason = "the flows that read numbers are built by later issues"
 )]
-pub use number::{NumberError, parse_money, parse_whole};
+pub use number::{NumberError, arabic_digits, parse_money, parse_whole};

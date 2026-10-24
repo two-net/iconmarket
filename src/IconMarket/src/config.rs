@@ -27,9 +27,10 @@ use toml::{Table, Value};
 use tracing::level_filters::LevelFilter;
 use url::Url;
 
+use crate::line::limits::URI_CHARS;
 use reader::{
     Reader, Report, at_least, boolean, https_url, line_id, list, non_empty, number, one_of, port,
-    secret, string, time_of_day, time_zone, web_url,
+    secret, string, string_up_to, time_of_day, time_zone, web_url, web_url_up_to,
 };
 
 /// Read from the working directory unless the first command-line argument names another file.
@@ -264,6 +265,10 @@ const DEFAULT_CATEGORIES: [&str; 10] = [
     "บริการ",
     "อื่นๆ",
 ];
+
+/// The longest `privacy.noticeText`: with what the system adds to it (NFR-PRIV-02), the notice
+/// still fits one LINE card.
+pub const NOTICE_TEXT_CHARS: usize = 3000;
 
 #[derive(Debug)]
 pub struct PrivacyConfig {
@@ -682,8 +687,9 @@ fn notification(r: &mut Reader) -> NotificationConfig {
 
 fn privacy(r: &mut Reader) -> Option<PrivacyConfig> {
     let notice_version = r.required("privacy.noticeVersion", string);
-    let notice_text = r.required("privacy.noticeText", string);
-    let notice_url = r.maybe("privacy.noticeUrl", web_url);
+    let notice_text = r.required("privacy.noticeText", string_up_to(NOTICE_TEXT_CHARS));
+    // Opened by a button of the notice
+    let notice_url = r.maybe("privacy.noticeUrl", web_url_up_to(URI_CHARS));
     Some(PrivacyConfig {
         notice_version: notice_version?,
         notice_text: notice_text?,

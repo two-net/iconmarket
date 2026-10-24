@@ -20,7 +20,7 @@
 
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::{DatabaseTransaction, DbErr};
-use tracing::{Span, debug, info};
+use tracing::{Span, debug, info, warn};
 
 use super::event::{Content, Event, Kind, Location, Source};
 use super::limit::{self, Verdict};
@@ -36,12 +36,15 @@ use crate::notifications::templates::labels;
 use crate::payments;
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
+use crate::users::onboarding::{self, Said};
 use crate::users::{self, roles};
 
 /// Typed by the operator to get their own LINE user ID, for `admin.lineUserIds` (FR-ONB-08)
 const MY_ID: &str = "#myid";
 /// Typed by an admin in the village group to get its ID, for `line.villageGroupId` (FR-NOT-07)
 const GROUP_ID: &str = "#groupid";
+/// What the actions of onboarding's buttons start with (FR-ONB-02)
+const ONBOARDING: &str = "onboarding.";
 
 /// The answer to an event, sent once its transaction commits.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,10 +165,10 @@ async fn user_event(
 ) -> Result<Finished, DbErr> {
     let input = match kind {
         Kind::Follow => {
-            let Some(turn) = load_turn(context, txn, line_user_id, now).await? else {
+            let Some(turn) = load_turn(context, txn, line_user_id, now, true).await? else {
                 return Ok(Default::default());
             };
-            let messages = not_built("following", 19, fallback(&turn));
+            let messages = onboarding::followed(&turn, &context.config).await?;
             return Ok(turn.finish(messages));
         }
         // Without registering anyone: a user who never wrote has nothing to update
@@ -194,7 +197,7 @@ async fn user_event(
         }
     }
 
-    let Some(mut turn) = load_turn(context, txn, line_user_id, now).await? else {
+    let Some(mut turn) = load_turn(context, txn, line_user_id, now, false).await? else {
         return Ok(Default::default());
     };
     let messages = route(context, &mut turn, input).await?;
@@ -203,15 +206,24 @@ async fn user_event(
 }
 
 /// The turn of the user with `line_user_id`, registered on their first event (FR-ONB-01) and
-/// loaded as they are now. `None` if they can't be loaded, which a concurrent account deletion
-/// could cause.
+/// loaded as they are now. Their LINE profile is fetched first when `follow`ing, and otherwise
+/// at most once a day (FR-LINE-10). `None` if they can't be loaded, which a concurrent account
+/// deletion could cause.
 async fn load_turn<'a>(
     context: &'a Context,
     txn: &'a DatabaseTransaction,
     line_user_id: &str,
     now: DateTimeUtc,
+    follow: bool,
 ) -> Result<Option<Turn<'a>>, DbErr> {
     let user = roles::register(txn, &context.config.admin, line_user_id, now).await?;
+    if follow || users::profile_refresh_due(user.profile_refreshed_at, now) {
+        match context.line.profile(line_user_id).await {
+            Ok(profile) => users::store_profile(txn, user.id, profile, now).await?,
+            // Tried again at the next event; the user is answered all the same
+            Err(e) => warn!(error = %e, "cannot fetch the user's LINE profile"),
+        }
+    }
     let Some(actor) = Actor::load(txn, user.id).await? else {
         return Ok(None);
     };
@@ -309,7 +321,7 @@ fn open_before_onboarding(action: &str) -> bool {
         || action
             .strip_prefix(help)
             .is_some_and(|rest| rest.starts_with('.'))
-        || action.starts_with("onboarding.")
+        || action.starts_with(ONBOARDING)
 }
 
 /// Where `input` goes, by the routing priority (FR-UI-12).
@@ -356,8 +368,9 @@ async fn route(
     turn: &mut Turn<'_>,
     input: Input,
 ) -> Result<Vec<Message>, DbErr> {
+    let config = &context.config;
     let state = State {
-        onboarded: users::onboarded(&turn.actor.user, &context.config.privacy),
+        onboarded: users::pending(&turn.actor.user, &config.privacy, &config.village).is_none(),
         in_flow: turn.flow.is_some(),
         assistant: context.ai.is_enabled(Feature::Assistant),
         voice: context.ai.is_enabled(Feature::Voice),
@@ -379,9 +392,16 @@ async fn route(
 
     let templates = turn.templates;
     Ok(match step {
-        Step::Postback(postback) => return tapped(turn, &postback).await,
+        Step::Postback(postback) => return tapped(context, turn, &postback).await,
         Step::BadPostback => vec![templates.denied(Denied::NotFound)],
-        Step::Onboarding => not_built("onboarding", 19, fallback(turn)),
+        Step::Onboarding => {
+            // Keywords other than help and `#myid` are never taken for a join code
+            let said = match &input {
+                Input::Text(text) if Keyword::parse(text).is_none() => Said::Text(text),
+                _ => Said::Other,
+            };
+            return onboarding::answer(turn, config, said).await;
+        }
         Step::Flow => unreachable!("decided again without the flow"),
         Step::Keyword(keyword) => return typed(turn, keyword).await,
         Step::Assistant => not_built("the AI assistant", 37, fallback(turn)),
@@ -414,8 +434,8 @@ fn step_name(step: &Step) -> &'static str {
 /// current step. `None` when the step doesn't take this kind of input, so routing goes on
 /// (FR-UI-14), or when this release has no such flow: it ends as if expired (FR-UI-15).
 ///
-/// Each flow adds its arm, as its issue builds it: onboarding (#19), the address (#20), shop
-/// applications and settings (#23, #24), products (#25, #26) and checkout (#32).
+/// Each flow adds its arm, as its issue builds it: the address (#20), shop applications and
+/// settings (#23, #24), products (#25, #26) and checkout (#32).
 #[allow(
     clippy::match_single_binding,
     reason = "the flows are added by later issues"
@@ -439,11 +459,18 @@ async fn answer_flow(turn: &mut Turn<'_>, input: &Input) -> Result<Option<Vec<Me
 
 /// A postback (FR-UI-12 step 1, FR-UI-13): handled by the module owning its action, which
 /// checks the user may still do it. Each module adds its actions as its issue builds it.
-async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
+async fn tapped(
+    context: &Context,
+    turn: &Turn<'_>,
+    postback: &Postback,
+) -> Result<Vec<Message>, DbErr> {
     match postback.action() {
         pending::CONFIRM => return pending::tapped(turn, postback).await,
         // LINE has switched to the tab's rich menu (FR-UI-10)
         menu::SWITCH_TAB => return Ok(Vec::new()),
+        action if action.starts_with(ONBOARDING) => {
+            return onboarding::tapped(turn, &context.config, postback).await;
+        }
         _ => {}
     }
     Ok(match Item::from_action(postback.action()) {
@@ -483,7 +510,7 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
         Keyword::Cart => not_built("cart", 29, fallback(turn)),
         Keyword::Orders => not_built("orders", 34, fallback(turn)),
         Keyword::Help => not_built("help", 22, fallback(turn)),
-        Keyword::MyId => not_built(MY_ID, 19, fallback(turn)),
+        Keyword::MyId => onboarding::my_id(turn),
     })
 }
 

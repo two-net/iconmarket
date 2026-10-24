@@ -210,6 +210,17 @@ pub fn string(value: &Value) -> Result<String, String> {
     }
 }
 
+/// A non-empty string of at most `max` characters.
+pub fn string_up_to(max: usize) -> impl Fn(&Value) -> Result<String, String> {
+    move |value| {
+        let text = string(value)?;
+        if text.chars().count() > max {
+            return Err(format!("must be at most {max} characters"));
+        }
+        Ok(text)
+    }
+}
+
 pub fn secret(value: &Value) -> Result<Secret, String> {
     string(value).map(Secret)
 }
@@ -328,6 +339,17 @@ pub fn web_url(value: &Value) -> Result<Url, String> {
         &["http", "https"],
         "must be an http:// or https:// URL",
     )
+}
+
+/// A [`web_url`] of at most `max` characters, such as one a LINE button opens.
+pub fn web_url_up_to(max: usize) -> impl Fn(&Value) -> Result<Url, String> {
+    move |value| {
+        let url = web_url(value)?;
+        if url.as_str().chars().count() > max {
+            return Err(format!("must be at most {max} characters"));
+        }
+        Ok(url)
+    }
 }
 
 fn url_with_scheme(value: &Value, schemes: &[&str], message: &str) -> Result<Url, String> {

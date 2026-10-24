@@ -114,8 +114,8 @@ pub async fn sync_admins(
 /// active, following buyer. A user listed in `admins` is created with the admin role, so a
 /// listed user who follows after startup gets it then (FR-ADM-01).
 ///
-/// An existing user is returned as they are; following again and the profile are the follow
-/// handler's (#19).
+/// An existing user is returned as they are; following again is
+/// [`onboarding::followed`](super::onboarding::followed)'s, and the profile the dispatcher's.
 pub async fn register(
     db: &impl TransactionTrait,
     admins: &AdminConfig,

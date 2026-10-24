@@ -24,7 +24,7 @@ use crate::config::{AdminConfig, CatalogConfig};
 use crate::thai::Money;
 
 /// The entities of §5.1, the schema versions (MIG-09) and the jobs (FR-JOB-03), by table name.
-const TABLES: [&str; 22] = [
+const TABLES: [&str; 23] = [
     "ai_call_logs",
     "ai_messages",
     "audit_logs",
@@ -33,6 +33,7 @@ const TABLES: [&str; 22] = [
     "counters",
     "images",
     "jobs",
+    "join_attempts",
     "order_events",
     "order_items",
     "orders",
@@ -153,6 +154,7 @@ fn personal_data_is_marked() {
         unmarked::<counter::Entity>(&[]),
         unmarked::<image::Entity>(image::Entity::FIELDS),
         unmarked::<job::Entity>(&[]),
+        unmarked::<join_attempt::Entity>(&[]),
         unmarked::<order::Entity>(order::Entity::FIELDS),
         unmarked::<order_event::Entity>(&[]),
         unmarked::<order_item::Entity>(&[]),
@@ -301,6 +303,7 @@ async fn every_attribute_can_be_stored() {
             status: user::Status::Suspended,
             consent_version: Some("2026-10".to_owned()),
             consented_at: Some(at),
+            joined_at: Some(at),
             zone: Some("ซอย 3".to_owned()),
             house_number: Some("45/2".to_owned()),
             landmark_note: Some("ตรงข้ามวัด".to_owned()),
@@ -597,6 +600,15 @@ async fn every_attribute_can_be_stored() {
         counter::Model {
             key: "order:20261022".to_owned(),
             value: 7,
+        },
+    )
+    .await;
+    assert_stored::<join_attempt::Entity>(
+        &db,
+        join_attempt::Model {
+            id: 1,
+            user_id: 1,
+            at,
         },
     )
     .await;

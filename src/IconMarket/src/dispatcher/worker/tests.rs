@@ -25,9 +25,10 @@ use crate::dispatcher::menu::Tab;
 use crate::line::testing::{Answer, Fake, PUSH, REPLY};
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::persistence::entity::user::MenuRoles;
-use crate::persistence::entity::{push_log, session, user};
+use crate::persistence::entity::{join_attempt, push_log, session, user};
 use crate::persistence::{orm, testing};
 use crate::users::access::Denied;
+use crate::users::onboarding;
 
 const ALICE: &str = "Ua1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const BOB: &str = "Ub2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
@@ -157,6 +158,22 @@ impl Setup {
     fn fallback(&self) -> Vec<Message> {
         vec![self.templates.fallback(), self.menu()]
     }
+
+    /// The privacy notice of the config's version (FR-ONB-02); `updated` for a user who
+    /// accepted an earlier one.
+    fn notice(&self, config: &Config, updated: bool) -> Message {
+        onboarding::notice(&self.templates, config, updated)
+    }
+
+    /// The users, by their LINE user ID.
+    async fn user(&self, line_user_id: &str) -> user::Model {
+        user::Entity::find()
+            .filter(user::Column::LineUserId.eq(line_user_id))
+            .one(&self.db)
+            .await
+            .unwrap()
+            .expect("registered")
+    }
 }
 
 /// LINE's event `id` of type `kind` from `source`, with its `fields`.
@@ -268,10 +285,12 @@ async fn replied(setup: &Setup, n: usize) {
     }
 }
 
-/// A user who has consented, so is past onboarding.
+/// A user who has consented, so is past onboarding, and whose LINE profile is fresh, so isn't
+/// fetched (FR-LINE-10).
 async fn onboarded(db: &DatabaseConnection, line_user_id: &str) -> i64 {
     let mut user = testing::new_user(line_user_id);
     user.consent_version = Set(Some(config(20).privacy.notice_version));
+    user.profile_refreshed_at = Set(Some(Utc::now()));
     user.insert(db).await.unwrap().id
 }
 
@@ -358,6 +377,7 @@ async fn events_left_by_a_crash_are_handled_after_a_restart() {
 #[tokio::test]
 async fn a_user_over_the_rate_limit_gets_exactly_one_notice() {
     let setup = setup().await;
+    onboarded(&setup.db, ALICE).await;
     let ids: Vec<_> = (1..=6).map(|i| format!("a{i}")).collect();
     let mut events: Vec<_> = ids.iter().map(|id| said(id, ALICE, "ขอไข่")).collect();
     events.insert(4, tapped("b1", BOB, "buy"));
@@ -587,6 +607,7 @@ async fn input_is_routed_by_its_priority() {
     running.stop().await;
 
     let menu = setup.menu();
+    let notice = setup.notice(&config(20), false);
     let expected = [
         ("a1", vec![t.step_expired(15), menu.clone()]),
         ("a2", vec![t.image_not_expected()]),
@@ -596,23 +617,12 @@ async fn input_is_routed_by_its_priority() {
         ("a6", setup.fallback()),
         ("a7", setup.fallback()),
         ("a8", vec![menu.clone()]),
-        // Bob hasn't consented yet, so gets onboarding, which is #19's
-        ("b1", setup.fallback()),
-        ("b2", setup.fallback()),
+        // Bob hasn't consented yet, so gets onboarding
+        ("b1", vec![t.welcome(None, "หมู่บ้านไอคอน"), notice.clone()]),
+        ("b2", vec![notice]),
         ("a9", vec![t.step_expired(15), t.fallback(), menu.clone()]),
     ];
-    let mut replies = setup.replies();
-    replies.sort_by_key(|(token, _)| {
-        expected
-            .iter()
-            .position(|(id, _)| *token == self::token(id))
-            .unwrap()
-    });
-    for ((id, messages), (token, got)) in expected.iter().zip(&replies) {
-        assert_eq!(*token, self::token(id));
-        assert_eq!(*got, json!(messages), "{id}");
-    }
-    assert_eq!(replies.len(), expected.len());
+    assert_replies(setup.replies(), &expected);
     let bob = user::Entity::find()
         .all(&setup.db)
         .await
@@ -620,6 +630,147 @@ async fn input_is_routed_by_its_priority() {
         .into_iter()
         .any(|user| user.line_user_id.as_deref() == Some(BOB));
     assert!(bob, "registered on following");
+}
+
+/// Sorts `replies` into the order of `expected`, by their tokens, and checks each against it.
+fn assert_replies(mut replies: Vec<(String, Value)>, expected: &[(&str, Vec<Message>)]) {
+    replies.sort_by_key(|(token, _)| {
+        expected
+            .iter()
+            .position(|(id, _)| *token == self::token(id))
+            .unwrap_or_else(|| panic!("unexpected reply {token}"))
+    });
+    for ((id, messages), (token, got)) in expected.iter().zip(&replies) {
+        assert_eq!(*token, self::token(id));
+        assert_eq!(*got, json!(messages), "{id}");
+    }
+    assert_eq!(replies.len(), expected.len());
+}
+
+/// AC (FR-ONB-01 – 03, FR-ONB-08): a new follower is welcomed and can use only help and
+/// `#myid` until they accept the privacy notice and enter the join code.
+#[tokio::test]
+async fn a_new_follower_can_use_only_help_and_myid_until_onboarded() {
+    let s = setup().await;
+    let t = &s.templates;
+    let mut context = s.context(&s.pool, 20);
+    let config = Arc::get_mut(&mut context.config).unwrap();
+    config.village.join_code = Some("ICON2569".to_owned());
+    let accept = onboarding::accept(&config.privacy).to_string();
+    let (notice, village) = (s.notice(config, false), config.village.name.clone());
+    let profile = format!("/v2/bot/profile/{BOB}");
+    let picture = "https://profile.line-scdn.net/0hbob";
+    s.line.script(
+        &profile,
+        [Answer::json(
+            200,
+            json!({ "userId": BOB, "displayName": "บ๊อบ", "pictureUrl": picture }),
+        )],
+    );
+    store(
+        &s.db,
+        [
+            event(
+                "b1",
+                "follow",
+                user(BOB),
+                json!({ "follow": { "isUnblocked": false } }),
+            ),
+            said("b2", BOB, "เมนู"),
+            tapped("b3", BOB, "buy"),
+            said("b4", BOB, "#myid"),
+            said("b5", BOB, "ช่วยเหลือ"),
+            tapped("b6", BOB, &accept),
+            said("b7", BOB, "เมนู"),
+            said("b8", BOB, "icon๒๕๖๙"),
+            said("b9", BOB, "เมนู"),
+        ],
+    )
+    .await;
+
+    let running = s.run_with(context, 2);
+    settled(&s.db, 9).await;
+    running.stop().await;
+
+    let ask = t.ask_join_code(&village, None);
+    let expected = [
+        ("b1", vec![t.welcome(Some("บ๊อบ"), &village), notice.clone()]),
+        ("b2", vec![notice.clone()]),
+        ("b3", vec![notice]),
+        ("b4", t.my_id(BOB)),
+        // Help is #22's; until then it gets the fallback, not the notice
+        ("b5", s.fallback()),
+        ("b6", vec![ask.clone()]),
+        // A keyword is no attempt at the code
+        ("b7", vec![ask]),
+        ("b8", vec![t.ready(), s.menu()]),
+        ("b9", vec![s.menu()]),
+    ];
+    assert_replies(s.replies(), &expected);
+
+    let bob = s.user(BOB).await;
+    assert_eq!(bob.display_name.as_deref(), Some("บ๊อบ"));
+    assert_eq!(bob.picture_url.as_deref(), Some(picture));
+    assert!(bob.profile_refreshed_at.is_some());
+    assert_eq!(bob.consent_version.as_deref(), Some("1"));
+    assert!(bob.consented_at.is_some() && bob.joined_at.is_some());
+    assert!(bob.is_following);
+    let attempts = join_attempt::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(attempts, []);
+    // Fetched on following, then not again that day (FR-LINE-10)
+    let fetched = s
+        .line
+        .requests()
+        .iter()
+        .filter(|r| r.path == profile)
+        .count();
+    assert_eq!(fetched, 1);
+}
+
+/// AC (NFR-PRIV-01): a new `privacy.noticeVersion` asks users who accepted the old one again
+/// at their next message, and a tap on the old notice accepts nothing.
+#[tokio::test]
+async fn bumping_the_notice_version_asks_again() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let old = onboarding::accept(&config(20).privacy).to_string();
+    let mut context = s.context(&s.pool, 20);
+    let config = Arc::get_mut(&mut context.config).unwrap();
+    config.privacy.notice_version = "2".to_owned();
+    let new = onboarding::accept(&config.privacy).to_string();
+    let notice = s.notice(config, true);
+    store(
+        &s.db,
+        [
+            said("a1", ALICE, "เมนู"),
+            tapped("a2", ALICE, &old),
+            tapped("a3", ALICE, &new),
+            said("a4", ALICE, "เมนู"),
+            tapped("a5", ALICE, &new),
+        ],
+    )
+    .await;
+
+    let running = s.run_with(context, 2);
+    settled(&s.db, 5).await;
+    running.stop().await;
+
+    let expected = [
+        ("a1", vec![notice.clone()]),
+        ("a2", vec![notice]),
+        ("a3", vec![t.ready(), s.menu()]),
+        ("a4", vec![s.menu()]),
+        // A repeated tap has no further effect
+        ("a5", vec![s.menu()]),
+    ];
+    assert_replies(s.replies(), &expected);
+    let user = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.consent_version.as_deref(), Some("2"));
 }
 
 /// NFR-REL-05: once stopped, the worker takes no more events.

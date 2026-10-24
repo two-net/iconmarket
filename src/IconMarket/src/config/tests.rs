@@ -176,6 +176,33 @@ fn missing_password_is_named_and_no_secret_is_printed() {
     assert_no_secrets(&invalid.to_string());
 }
 
+/// The privacy notice must fit one LINE card, and its link a LINE button.
+#[test]
+fn the_privacy_notice_fits_a_card() {
+    let notice = |text: &str, url: &str| {
+        let privacy = format!(
+            "[privacy]\nnoticeVersion = \"1\"\nnoticeText = \"{text}\"\nnoticeUrl = \"{url}\"\n"
+        );
+        MINIMAL.replace(
+            "[privacy]\nnoticeVersion = \"1\"\nnoticeText = \"Notice\"\n",
+            &privacy,
+        )
+    };
+    let longest = "ข".repeat(NOTICE_TEXT_CHARS);
+    let url = format!("https://market.example.com/{}", "p".repeat(URI_CHARS - 27));
+    let privacy = valid(&notice(&longest, &url)).config.privacy;
+    assert_eq!(privacy.notice_text, longest);
+    assert_eq!(privacy.notice_url.unwrap().as_str(), url);
+
+    assert_eq!(
+        problems(&notice(&format!("{longest}ข"), &format!("{url}p"))),
+        [
+            "privacy.noticeText: must be at most 3000 characters",
+            "privacy.noticeUrl: must be at most 1000 characters",
+        ]
+    );
+}
+
 #[test]
 fn every_problem_is_reported_in_one_run() {
     let text = r#"

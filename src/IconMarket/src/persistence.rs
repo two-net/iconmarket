@@ -144,6 +144,7 @@ fn add_entities<T: FromEntities>(models: T) -> T {
         .add(push_log::Entity)
         .add(audit_log::Entity)
         .add(counter::Entity)
+        .add(join_attempt::Entity)
         .add(job::Entity)
         .add(schema_version::Entity)
 }

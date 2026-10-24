@@ -33,6 +33,55 @@ fn profiles_are_refreshed_at_most_once_a_day() {
     assert!(profile_refresh_due(Some(now - TimeDelta::days(30)), now));
 }
 
+/// FR-UI-12, FR-ONB-02, FR-ONB-03, NFR-PRIV-01: consent to the current notice, then the join
+/// code if one is set.
+#[test]
+fn onboarding_is_consent_then_the_join_code() {
+    let mut config = crate::config::sample();
+    let at = at();
+    let mut user = user::Model {
+        id: 1,
+        line_user_id: Some("U0123456789abcdef0123456789abcdef".to_owned()),
+        display_name: None,
+        picture_url: None,
+        profile_refreshed_at: None,
+        is_admin: false,
+        menu_roles: None,
+        is_following: true,
+        status: user::Status::Active,
+        consent_version: None,
+        consented_at: None,
+        joined_at: None,
+        zone: None,
+        house_number: None,
+        landmark_note: None,
+        phone: None,
+        latitude: None,
+        longitude: None,
+        created_at: at,
+        updated_at: at,
+    };
+    let pending = |user: &user::Model, config: &crate::config::Config| {
+        pending(user, &config.privacy, &config.village)
+    };
+
+    assert_eq!(pending(&user, &config), Some(Pending::Consent));
+    user.consent_version = Some(config.privacy.notice_version.clone());
+    assert_eq!(pending(&user, &config), None);
+
+    // A code set later is asked for from everyone who hasn't entered one
+    config.village.join_code = Some("ICON2569".to_owned());
+    assert_eq!(pending(&user, &config), Some(Pending::JoinCode));
+    user.joined_at = Some(at);
+    assert_eq!(pending(&user, &config), None);
+
+    // A new notice is asked for again, before anything else
+    config.privacy.notice_version = "2".to_owned();
+    assert_eq!(pending(&user, &config), Some(Pending::Consent));
+    user.joined_at = None;
+    assert_eq!(pending(&user, &config), Some(Pending::Consent));
+}
+
 async fn database() -> (ContainerAsync<Postgres>, DatabaseConnection) {
     let (container, pool) = testing::migrated().await;
     (container, orm(pool))

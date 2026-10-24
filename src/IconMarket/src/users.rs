@@ -1,23 +1,27 @@
 //! Users & onboarding (SRS §2.1): consent, registration, profile, roles and account
 //! deletion. Built by #12, #19, #20 and #36.
 //!
-//! [`roles`] holds who is a buyer, seller and admin, and [`access`] the one authorization check
-//! every action goes through.
+//! [`roles`] holds who is a buyer, seller and admin, [`access`] the one authorization check
+//! every action goes through, and [`onboarding`] what a user does before anything else.
 
 #![allow(
     dead_code,
-    reason = "follow, profile, menu and account handling are built by #17, #19 and #36"
+    reason = "profile and account handling are built by #20 and #36"
 )]
 
 pub mod access;
+pub mod onboarding;
 pub mod roles;
 #[cfg(test)]
 mod tests;
 
 use chrono::TimeDelta;
+use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::DateTimeUtc;
+use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter};
 
-use crate::config::PrivacyConfig;
+use crate::config::{PrivacyConfig, VillageConfig};
+use crate::line::Profile;
 use crate::persistence::entity::user;
 
 /// How long a fetched LINE profile is kept before it is fetched again (FR-LINE-10).
@@ -29,9 +33,54 @@ pub fn profile_refresh_due(refreshed_at: Option<DateTimeUtc>, now: DateTimeUtc) 
     refreshed_at.is_none_or(|at| now - at >= PROFILE_REFRESH)
 }
 
-/// Whether `user` has finished onboarding, and so may use more than help and `#myid`
-/// (FR-UI-12): they consented to the current privacy notice, so a new `privacy.noticeVersion`
-/// asks everyone again (FR-ONB-02, NFR-PRIV-01). Onboarding (#19) adds the join code.
-pub fn onboarded(user: &user::Model, privacy: &PrivacyConfig) -> bool {
-    user.consent_version.as_deref() == Some(privacy.notice_version.as_str())
+/// Stores the display name and picture fetched from LINE at `now` for user `user_id`. `None`,
+/// when LINE wouldn't say, keeps what was stored, but counts as fetched, so it is asked for
+/// again only tomorrow (FR-LINE-10).
+pub async fn store_profile(
+    db: &impl ConnectionTrait,
+    user_id: i64,
+    profile: Option<Profile>,
+    now: DateTimeUtc,
+) -> Result<(), DbErr> {
+    let mut row = user::ActiveModel {
+        profile_refreshed_at: Set(Some(now)),
+        ..Default::default()
+    };
+    if let Some(profile) = profile {
+        row.display_name = Set(Some(profile.display_name));
+        row.picture_url = Set(profile.picture_url);
+    }
+    user::Entity::update_many()
+        .set(row)
+        .filter(user::Column::Id.eq(user_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+/// What a user has still to do before they may use more than help and `#myid` (FR-UI-12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pending {
+    /// Consent to the current privacy notice (FR-ONB-02)
+    Consent,
+    /// Enter `village.joinCode` (FR-ONB-03)
+    JoinCode,
+}
+
+/// What `user` has still to do, in order: `None` once they are onboarded. Consent is to the
+/// current privacy notice, so a new `privacy.noticeVersion` asks everyone again (NFR-PRIV-01).
+/// The join code is asked for once, after consent, from everyone who hasn't entered it while
+/// one is set.
+pub fn pending(
+    user: &user::Model,
+    privacy: &PrivacyConfig,
+    village: &VillageConfig,
+) -> Option<Pending> {
+    if user.consent_version.as_deref() != Some(privacy.notice_version.as_str()) {
+        Some(Pending::Consent)
+    } else if village.join_code.is_some() && user.joined_at.is_none() {
+        Some(Pending::JoinCode)
+    } else {
+        None
+    }
 }

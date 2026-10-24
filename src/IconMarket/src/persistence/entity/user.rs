@@ -29,6 +29,9 @@ pub struct Model {
     /// The privacy notice version consented to (FR-ONB-02)
     pub consent_version: Option<String>,
     pub consented_at: Option<DateTimeUtc>,
+    /// When the user entered `village.joinCode` (FR-ONB-03); `None` until they have, or while
+    /// no code is set
+    pub joined_at: Option<DateTimeUtc>,
     /// The address, captured when first needed (FR-ONB-04)
     pub zone: Option<String>,
     pub house_number: Option<String>,
