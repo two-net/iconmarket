@@ -18,6 +18,8 @@ pub mod limits;
 mod message;
 mod rich_menu;
 #[cfg(test)]
+pub mod testing;
+#[cfg(test)]
 mod tests;
 
 pub use client::Client;

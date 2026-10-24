@@ -2,6 +2,7 @@
 
 use std::future::IntoFuture;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use tokio::net::TcpListener;
@@ -11,7 +12,8 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::http::{self, AppState};
-use crate::{ai, line, notifications, persistence, scheduler, shutdown, webhook};
+use crate::notifications::templates::Templates;
+use crate::{ai, dispatcher, line, notifications, persistence, scheduler, shutdown, webhook};
 
 /// Runs the steps after config loading and validation, which `main` has already done.
 ///
@@ -53,9 +55,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         "seed data applied"
     );
 
-    // Turns off, with a warning, the AI features the model can't serve (FR-AIP-04). The
-    // dispatcher (#14) takes it over.
-    let _ai = ai::Gateway::new(&config.ai, config.app.time_zone, db.clone());
+    // Turns off, with a warning, the AI features the model can't serve (FR-AIP-04)
+    let ai = ai::Gateway::new(&config.ai, config.app.time_zone, db.clone());
 
     let line = line::Client::new(&config.line)?;
 
@@ -78,14 +79,26 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let stop = CancellationToken::new();
     let jobs = TaskTracker::new();
     scheduler::start(&jobs, stop.clone(), db.clone(), config.app.time_zone).await;
-
+    // The dispatcher keeps what it needs of the config, the rest of which is read by now
     let port = config.app.listen_port;
+    let webhook = webhook::Verifier::new(&config.line.channel_secret);
+    let wakeup = dispatcher::Wakeup::default();
+    let context = dispatcher::Context {
+        db: orm,
+        line,
+        ai,
+        templates: Templates::new(&config.app),
+        config: Arc::new(config),
+    };
+    dispatcher::start(&jobs, stop.clone(), context, wakeup.clone());
+
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
         .await
         .with_context(|| format!("cannot listen on port {port}"))?;
     let app = http::router(AppState {
         db: db.clone(),
-        webhook: webhook::Verifier::new(&config.line.channel_secret),
+        webhook,
+        wakeup,
     });
     let mut server = tokio::spawn(
         axum::serve(listener, app)

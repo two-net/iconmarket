@@ -1,6 +1,6 @@
 //! Webhook receiver (SRS §2.1, §3.2): verifies LINE signatures (FR-LINE-02), stores events in
 //! the inbox and only then acknowledges LINE (FR-LINE-03, NFR-REL-01). A redelivered event is
-//! stored once (FR-LINE-04). The dispatcher processes the inbox.
+//! stored once (FR-LINE-04). The dispatcher processes the inbox, woken once events are stored.
 
 mod inbox;
 mod signature;
@@ -43,7 +43,10 @@ async fn receive(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         return StatusCode::OK;
     }
     match inbox::store(&state.db, events).await {
-        Ok(()) => StatusCode::OK,
+        Ok(()) => {
+            state.wakeup.notify();
+            StatusCode::OK
+        }
         Err(e) => {
             error!(error = %e, "cannot store webhook events; LINE will redeliver them");
             StatusCode::SERVICE_UNAVAILABLE

@@ -18,6 +18,7 @@ use tower::ServiceExt;
 
 use super::*;
 use crate::config::Secret;
+use crate::dispatcher;
 use crate::http::{self, AppState};
 use crate::persistence::entity::webhook_event::{self, Status};
 use crate::persistence::{orm, testing};
@@ -28,6 +29,7 @@ fn app(db: PgPool) -> Router {
     http::router(AppState {
         db,
         webhook: Verifier::new(&Secret::new(SECRET)),
+        wakeup: dispatcher::Wakeup::default(),
     })
 }
 

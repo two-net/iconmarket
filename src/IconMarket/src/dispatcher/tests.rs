@@ -1,5 +1,6 @@
 //! The conversation framework (#13) against a database: guided flows, cancelling and
-//! confirmations. Each test starts a throwaway PostgreSQL, so they need Docker.
+//! confirmations. Each event is handled in a transaction committed once it is handled, as the
+//! worker handles them. Each test starts a throwaway PostgreSQL, so they need Docker.
 
 use chrono::{TimeDelta, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
@@ -8,7 +9,7 @@ use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{
     ActiveModelTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, IntoActiveModel,
-    QueryOrder, QuerySelect,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -60,17 +61,24 @@ async fn new_user(db: &DatabaseConnection, line_user_id: &str) -> i64 {
     testing::new_user(line_user_id).insert(db).await.unwrap().id
 }
 
-/// User `user_id`'s event at `now`, with the user loaded afresh as for each event.
-async fn turn<'a>(
-    db: &'a DatabaseConnection,
-    templates: &'a Templates,
+/// Handles user `user_id`'s event at `now` with `handle`, as the worker does: in a transaction
+/// that commits once it is handled, with the user loaded afresh as for each event.
+async fn in_turn<T>(
+    db: &DatabaseConnection,
+    templates: &Templates,
     user_id: i64,
     now: DateTimeUtc,
-) -> Turn<'a> {
-    let actor = Actor::load(db, user_id).await.unwrap().expect("a user");
-    Turn::new(db, templates, &SESSION, actor, now)
+    handle: impl AsyncFnOnce(&mut Turn<'_>) -> T,
+) -> T {
+    let txn = db.begin().await.unwrap();
+    let actor = Actor::load(&txn, user_id).await.unwrap().expect("a user");
+    let mut turn = Turn::new(&txn, templates, &SESSION, actor, now)
         .await
-        .unwrap()
+        .unwrap();
+    let handled = handle(&mut turn).await;
+    drop(turn);
+    txn.commit().await.unwrap();
+    handled
 }
 
 fn texts(messages: &[Message]) -> Vec<&str> {
@@ -196,8 +204,10 @@ async fn proposed<P: Proposal>(
     user_id: i64,
     proposal: &P,
 ) -> Uuid {
-    let turn = turn(db, templates, user_id, t0()).await;
-    let postback = propose(&turn, proposal).await.unwrap();
+    let postback = in_turn(db, templates, user_id, t0(), async |turn| {
+        propose(turn, proposal).await.unwrap()
+    })
+    .await;
     let postback = Postback::parse(&postback.to_string()).unwrap();
     assert_eq!(postback.action(), CONFIRM);
     assert_eq!(postback.name("k"), Some(P::KIND));
@@ -212,8 +222,10 @@ async fn tap<P: Proposal>(
     id: Uuid,
     now: DateTimeUtc,
 ) -> Vec<String> {
-    let turn = turn(db, templates, user_id, now).await;
-    let reply = confirm::<P>(&turn, id).await.unwrap();
+    let reply = in_turn(db, templates, user_id, now, async |turn| {
+        confirm::<P>(turn, id).await.unwrap()
+    })
+    .await;
     texts(&reply).into_iter().map(str::to_owned).collect()
 }
 
@@ -253,13 +265,15 @@ async fn taps_arriving_together_apply_once() {
     let buyer = new_user(&db, "U-buyer").await;
     let id = proposed(&db, &t, buyer, &Bump::default()).await;
 
+    // In two transactions at once: the second waits for the first to commit
     let now = t0() + minutes(1);
-    let (one, other) = (
-        turn(&db, &t, buyer, now).await,
-        turn(&db, &t, buyer, now).await,
-    );
-    let (one, other) = tokio::join!(confirm::<Bump>(&one, id), confirm::<Bump>(&other, id));
-    let mut replies = [one.unwrap(), other.unwrap()].map(|reply| texts(&reply).join(""));
+    let tap = || {
+        in_turn(&db, &t, buyer, now, async |turn| {
+            confirm::<Bump>(turn, id).await.unwrap()
+        })
+    };
+    let (one, other) = tokio::join!(tap(), tap());
+    let mut replies = [one, other].map(|reply| texts(&reply).join(""));
     replies.sort();
     assert_eq!(replies, ["Confirmed at 1, stored true", "bumped to 1"]);
     assert_eq!(bumps(&db).await, 1);
@@ -384,16 +398,18 @@ async fn a_tap_on_an_unknown_kind_finds_nothing() {
     let (_container, db) = database().await;
     let t = templates();
     let buyer = new_user(&db, "U-buyer").await;
-    let turn = turn(&db, &t, buyer, t0()).await;
-    for data in [
-        format!("confirm?k=test.gone&pa={}", random_id()),
-        "confirm?k=test.bump".to_owned(),
-        "confirm".to_owned(),
-    ] {
-        let postback = Postback::parse(&data).unwrap();
-        let reply = pending::tapped(&turn, &postback).await.unwrap();
-        assert_eq!(reply, [t.denied(Denied::NotFound)], "{data}");
-    }
+    in_turn(&db, &t, buyer, t0(), async |turn| {
+        for data in [
+            format!("confirm?k=test.gone&pa={}", random_id()),
+            "confirm?k=test.bump".to_owned(),
+            "confirm".to_owned(),
+        ] {
+            let postback = Postback::parse(&data).unwrap();
+            let reply = pending::tapped(turn, &postback).await.unwrap();
+            assert_eq!(reply, [t.denied(Denied::NotFound)], "{data}");
+        }
+    })
+    .await;
 }
 
 // Guided flows
@@ -441,12 +457,14 @@ async fn stored(db: &DatabaseConnection, user_id: i64) -> Option<session::Model>
 
 /// Starts the listing flow for `user_id` at t0.
 async fn start_listing(db: &DatabaseConnection, templates: &Templates, user_id: i64) {
-    let turn = turn(db, templates, user_id, t0()).await;
     let session = Session {
         step: Step::Name,
         draft: Listing::default(),
     };
-    let reply = flow::start(&turn, session, ask("ชื่อสินค้า")).await.unwrap();
+    let reply = in_turn(db, templates, user_id, t0(), async |turn| {
+        flow::start(turn, session, ask("ชื่อสินค้า")).await.unwrap()
+    })
+    .await;
     assert_eq!(quick_replies(&reply), [cancel_button()]);
 }
 
@@ -463,35 +481,43 @@ async fn an_idle_flow_says_it_expired_on_the_next_message() {
 
     // An answer the step doesn't take, just before the timeout
     let answered_at = t0() + timeout - second;
-    let answering = turn(&db, &t, seller, answered_at).await;
-    let flow = answering.flow.as_ref().expect("still in progress");
-    assert_eq!(flow.flow(), Listing::NAME);
-    assert_eq!(flow.read::<Listing>().unwrap().step, Step::Name);
-    let again = Answer::<Listing>::Again(ask("ชื่อยาวเกินไป"));
-    let reply = flow::answered(&answering, again).await.unwrap();
-    assert_eq!(quick_replies(&reply), [cancel_button()]);
-    assert_eq!(
-        answering.reply(reply.clone()),
-        reply,
-        "no notice while active"
-    );
+    in_turn(&db, &t, seller, answered_at, async |answering| {
+        let flow = answering.flow.as_ref().expect("still in progress");
+        assert_eq!(flow.flow(), Listing::NAME);
+        assert_eq!(flow.read::<Listing>().unwrap().step, Step::Name);
+        let again = Answer::<Listing>::Again(ask("ชื่อยาวเกินไป"));
+        let reply = flow::answered(answering, again).await.unwrap();
+        assert_eq!(quick_replies(&reply), [cancel_button()]);
+        assert_eq!(
+            answering.reply(reply.clone()),
+            reply,
+            "no notice while active"
+        );
+    })
+    .await;
 
     // Still in progress after the first timeout, as it was answered
-    let still = turn(&db, &t, seller, t0() + timeout + second).await;
-    assert!(still.flow.is_some());
+    let still = t0() + timeout + second;
+    let in_progress = in_turn(&db, &t, seller, still, async |turn| turn.flow.is_some()).await;
+    assert!(in_progress);
 
     let expiry = answered_at + timeout;
-    let next = turn(&db, &t, seller, expiry).await;
-    assert!(next.flow.is_none());
+    let (in_progress, menu, reply) = in_turn(&db, &t, seller, expiry, async |next| {
+        let menu = menu::main_menu(&next.actor);
+        (next.flow.is_some(), menu.clone(), next.reply(vec![menu]))
+    })
+    .await;
+    assert!(!in_progress);
     assert_eq!(stored(&db, seller).await, None);
-    let menu = menu::main_menu(&next.actor);
-    let reply = next.reply(vec![menu.clone()]);
     assert_eq!(reply, [t.step_expired(15), menu.clone()]);
     assert!(texts(&reply)[0].contains("หมดเวลา"));
 
     // Told once
-    let after = turn(&db, &t, seller, expiry + second).await;
-    assert_eq!(after.reply(vec![menu.clone()]), [menu]);
+    let after = in_turn(&db, &t, seller, expiry + second, async |turn| {
+        turn.reply(vec![menu.clone()])
+    })
+    .await;
+    assert_eq!(after, [menu]);
 }
 
 #[tokio::test]
@@ -501,14 +527,14 @@ async fn answers_move_a_flow_on_until_it_is_done() {
     let seller = new_user(&db, "U-seller").await;
     start_listing(&db, &t, seller).await;
 
-    let turn_at = |minute| turn(&db, &t, seller, t0() + minutes(minute));
-    let named = turn_at(1).await;
-    let mut session = named.flow.as_ref().unwrap().read::<Listing>().unwrap();
-    session.step = Step::Price;
-    session.draft.name = Some("ไข่ไก่".to_owned());
-    let reply = flow::answered(&named, Answer::Next(session.clone(), ask("ราคาเท่าไร")))
-        .await
-        .unwrap();
+    let (session, reply) = in_turn(&db, &t, seller, t0() + minutes(1), async |named| {
+        let mut session = named.flow.as_ref().unwrap().read::<Listing>().unwrap();
+        session.step = Step::Price;
+        session.draft.name = Some("ไข่ไก่".to_owned());
+        let next = Answer::Next(session.clone(), ask("ราคาเท่าไร"));
+        (session, flow::answered(named, next).await.unwrap())
+    })
+    .await;
     assert_eq!(quick_replies(&reply), [cancel_button()]);
     let row = stored(&db, seller).await.unwrap();
     assert_eq!(
@@ -517,13 +543,13 @@ async fn answers_move_a_flow_on_until_it_is_done() {
     );
     assert_eq!(row.expires_at, t0() + minutes(1 + 15));
 
-    let priced = turn_at(2).await;
-    assert_eq!(
-        priced.flow.as_ref().unwrap().read::<Listing>(),
-        Some(session)
-    );
-    let done = Answer::<Listing>::Done(ask("ลงขายแล้ว"));
-    let reply = flow::answered(&priced, done).await.unwrap();
+    let (read, reply) = in_turn(&db, &t, seller, t0() + minutes(2), async |priced| {
+        let read = priced.flow.as_ref().unwrap().read::<Listing>();
+        let done = Answer::<Listing>::Done(ask("ลงขายแล้ว"));
+        (read, flow::answered(priced, done).await.unwrap())
+    })
+    .await;
+    assert_eq!(read, Some(session));
     assert_eq!(texts(&reply), ["ลงขายแล้ว"]);
     assert_eq!(stored(&db, seller).await, None);
 }
@@ -544,12 +570,15 @@ async fn a_flow_that_cant_be_read_ends_as_expired() {
     };
     row.insert(&db).await.unwrap();
 
-    let mut turn = turn(&db, &t, seller, t0()).await;
-    assert_eq!(turn.flow.as_ref().unwrap().read::<Listing>(), None);
-    turn.expire_flow().await.unwrap();
-    assert!(turn.flow.is_none());
+    let reply = in_turn(&db, &t, seller, t0(), async |turn| {
+        assert_eq!(turn.flow.as_ref().unwrap().read::<Listing>(), None);
+        turn.expire_flow().await.unwrap();
+        assert!(turn.flow.is_none());
+        turn.reply(Vec::new())
+    })
+    .await;
     assert_eq!(stored(&db, seller).await, None);
-    assert_eq!(turn.reply(Vec::new()), [t.step_expired(15)]);
+    assert_eq!(reply, [t.step_expired(15)]);
 }
 
 /// FR-UI-04: `ยกเลิก` discards the flow's draft and the changes awaiting confirmation, and shows
@@ -567,9 +596,11 @@ async fn cancelling_discards_the_draft_and_shows_the_main_menu() {
 
     assert!(flow::is_cancel(" ยกเลิก "));
     assert!(!flow::is_cancel("ยกเลิกออเดอร์"));
-    let cancelling = turn(&db, &t, buyer, t0() + minutes(2)).await;
-    let reply = flow::cancel(&cancelling).await.unwrap();
-    let menu = menu::main_menu(&cancelling.actor);
+    let (reply, menu) = in_turn(&db, &t, buyer, t0() + minutes(2), async |cancelling| {
+        let reply = flow::cancel(cancelling).await.unwrap();
+        (reply, menu::main_menu(&cancelling.actor))
+    })
+    .await;
     assert_eq!(reply, [t.cancelled(), menu.clone()]);
     assert_eq!(stored(&db, buyer).await, None);
     assert_eq!(consumed(&db, open).await, None, "discarded");
@@ -586,8 +617,11 @@ async fn cancelling_discards_the_draft_and_shows_the_main_menu() {
     assert_eq!(again, ["Confirmed at 1, stored true"]);
 
     // Nothing left to cancel: just the menu
-    let idle = turn(&db, &t, buyer, t0() + minutes(4)).await;
-    assert_eq!(flow::cancel(&idle).await.unwrap(), [menu]);
+    let idle = in_turn(&db, &t, buyer, t0() + minutes(4), async |idle| {
+        flow::cancel(idle).await.unwrap()
+    })
+    .await;
+    assert_eq!(idle, [menu]);
 }
 
 // Clean-up

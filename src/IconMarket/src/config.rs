@@ -384,6 +384,14 @@ pub fn load(path: &Path) -> anyhow::Result<Loaded> {
     load_str(&text).map_err(|invalid| anyhow!("invalid config file {}:{invalid}", path.display()))
 }
 
+/// The sample file's config, for tests to adjust.
+#[cfg(test)]
+pub fn sample() -> Config {
+    load_str(include_str!("../iconmarket.sample.toml"))
+        .unwrap_or_else(|invalid| panic!("the sample file is invalid:{invalid}"))
+        .config
+}
+
 fn load_str(text: &str) -> Result<Loaded, Invalid> {
     let table = parse(text).map_err(|problem| Invalid {
         problems: vec![problem],

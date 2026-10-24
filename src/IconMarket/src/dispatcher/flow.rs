@@ -5,8 +5,8 @@
 //! says so, once ([`Turn::new`]).
 //!
 //! A flow is a type implementing [`Flow`], in the module that owns what the flow makes. That
-//! module answers the flow's steps: the dispatcher (#14) finds it by [`Stored::flow`] and hands
-//! it the input, and [`answered`] stores what the step made of it.
+//! module answers the flow's steps: the dispatcher finds it by [`Stored::flow`] and hands it
+//! the [`Input`](super::Input), and [`answered`] stores what the step made of it.
 
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::{DateTimeUtc, Json};

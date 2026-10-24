@@ -12,8 +12,8 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::sea_query::{Condition, Expr};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait,
-    QueryFilter, QueryOrder, QuerySelect, QueryTrait, TransactionTrait, TryInsertResult,
+    ColumnTrait, ConnectionTrait, DatabaseTransaction, DbErr, EntityTrait, QueryFilter, QueryOrder,
+    QuerySelect, QueryTrait, TransactionSession, TransactionTrait, TryInsertResult,
 };
 
 use crate::admin::audit::{self, Entry, Target};
@@ -106,7 +106,7 @@ pub async fn sync_admins(
 /// An existing user is returned as they are; following again and the profile are the follow
 /// handler's (#19).
 pub async fn register(
-    db: &DatabaseConnection,
+    db: &impl TransactionTrait,
     admins: &AdminConfig,
     line_user_id: &str,
     now: DateTimeUtc,

@@ -9,12 +9,14 @@ use serde::Serialize;
 use sqlx::PgPool;
 use tower_http::services::ServeFile;
 
-use crate::{catalog, persistence, webhook};
+use crate::{catalog, dispatcher, persistence, webhook};
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
     pub webhook: webhook::Verifier,
+    /// Wakes the dispatcher once the webhook has stored events
+    pub wakeup: dispatcher::Wakeup,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -77,6 +79,7 @@ mod tests {
         router(AppState {
             db: testing::unreachable(),
             webhook: webhook::Verifier::new(&Secret::new("channel-secret")),
+            wakeup: dispatcher::Wakeup::default(),
         })
     }
 

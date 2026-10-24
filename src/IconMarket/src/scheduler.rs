@@ -40,9 +40,9 @@ const RETRY_AFTER: TimeDelta = TimeDelta::minutes(1);
 /// instance rescheduled, or the system clock being changed.
 const MAX_WAIT: TimeDelta = TimeDelta::minutes(1);
 
-/// A background job (FR-JOB-02). The others are added by their issues: the webhook inbox
-/// (#14), push retries (#15), retention (#16), pending-order expiry (#33), and the summary and
-/// digest (#47, #48).
+/// A background job (FR-JOB-02). The others are added by their issues: push retries (#15),
+/// retention (#16), pending-order expiry (#33), and the summary and digest (#47, #48). The
+/// webhook inbox, processed continuously, has a worker of its own in the dispatcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Job {
     /// Deletes expired sessions and pending actions (§5.4)

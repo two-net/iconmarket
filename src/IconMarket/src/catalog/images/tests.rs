@@ -19,7 +19,7 @@ use super::*;
 use crate::config::Secret;
 use crate::persistence::testing::{self, market, new_order};
 use crate::persistence::{entity::order, orm};
-use crate::{http, webhook};
+use crate::{dispatcher, http, webhook};
 
 fn config() -> ImageConfig {
     ImageConfig {
@@ -298,6 +298,7 @@ fn app(db: &DatabaseConnection) -> axum::Router {
     http::router(AppState {
         db: db.get_postgres_connection_pool().clone(),
         webhook: webhook::Verifier::new(&Secret::new("channel-secret")),
+        wakeup: dispatcher::Wakeup::default(),
     })
 }
 

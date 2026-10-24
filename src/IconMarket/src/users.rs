@@ -6,7 +6,7 @@
 
 #![allow(
     dead_code,
-    reason = "follow, postback and menu handling are built by #14, #17 and #19"
+    reason = "follow, profile, menu and account handling are built by #17, #19 and #36"
 )]
 
 pub mod access;
@@ -17,6 +17,9 @@ mod tests;
 use chrono::TimeDelta;
 use sea_orm::prelude::DateTimeUtc;
 
+use crate::config::PrivacyConfig;
+use crate::persistence::entity::user;
+
 /// How long a fetched LINE profile is kept before it is fetched again (FR-LINE-10).
 const PROFILE_REFRESH: TimeDelta = TimeDelta::days(1);
 
@@ -24,4 +27,11 @@ const PROFILE_REFRESH: TimeDelta = TimeDelta::days(1);
 /// interaction, then at most once a day (FR-LINE-10). A `follow` always fetches them.
 pub fn profile_refresh_due(refreshed_at: Option<DateTimeUtc>, now: DateTimeUtc) -> bool {
     refreshed_at.is_none_or(|at| now - at >= PROFILE_REFRESH)
+}
+
+/// Whether `user` has finished onboarding, and so may use more than help and `#myid`
+/// (FR-UI-12): they consented to the current privacy notice, so a new `privacy.noticeVersion`
+/// asks everyone again (FR-ONB-02, NFR-PRIV-01). Onboarding (#19) adds the join code.
+pub fn onboarded(user: &user::Model, privacy: &PrivacyConfig) -> bool {
+    user.consent_version.as_deref() == Some(privacy.notice_version.as_str())
 }

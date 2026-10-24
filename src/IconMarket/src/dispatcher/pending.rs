@@ -51,7 +51,8 @@ pub trait Proposal: Serialize + DeserializeOwned + Send + Sync {
     fn requires(&self) -> access::Action;
 
     /// Applies it in `txn`, the pending action `id` having just been consumed there: everything
-    /// it changes goes through `txn`, which commits only on [`Applied::Done`]. Before changing
+    /// it changes goes through `txn`, a savepoint of the event's transaction that is kept only
+    /// on [`Applied::Done`]. Before changing
     /// anything it re-checks that what it acts on still exists, in the state and at the prices
     /// proposed (FR-UI-13); if not, it returns [`Applied::Changed`].
     fn apply(
@@ -61,8 +62,8 @@ pub trait Proposal: Serialize + DeserializeOwned + Send + Sync {
         turn: &Turn<'_>,
     ) -> impl Future<Output = Result<Applied, DbErr>> + Send;
 
-    /// The current state of what it acts on, shown instead of acting. Runs outside any
-    /// transaction, so it may [`propose`] again, e.g. an updated summary.
+    /// The current state of what it acts on, shown instead of acting. Runs after the savepoint
+    /// is undone, so it may [`propose`] again, e.g. an updated summary.
     fn current_state(
         stale: Stale<Self>,
         turn: &Turn<'_>,
@@ -134,14 +135,14 @@ pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>
     }
 }
 
-/// Confirms pending action `id` as a `P` (FR-UI-13). In one transaction it consumes the action,
+/// Confirms pending action `id` as a `P` (FR-UI-13). In one savepoint it consumes the action,
 /// checks the user's authorization and applies the proposal, so that it applies at most once
 /// however often or however concurrently it is tapped, and not at all if anything fails or
 /// changed. Otherwise the reply is the current state.
 pub async fn confirm<P: Proposal>(turn: &Turn<'_>, id: Uuid) -> Result<Vec<Message>, DbErr> {
     let user_id = turn.actor.user.id;
     let txn = turn.db.begin().await?;
-    // A second tap waits here for the first to end, then finds the action consumed
+    // A second tap waits here until the first's event commits, then finds the action consumed
     let taken = pending_action::Entity::update_many()
         .col_expr(pending_action::Column::ConsumedAt, Expr::value(turn.now))
         .filter(pending_action::Column::Id.eq(id))

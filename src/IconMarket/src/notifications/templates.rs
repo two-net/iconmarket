@@ -125,6 +125,50 @@ impl Templates {
         Message::text(format!("ยกเลิกแล้ว{kha} เลือกเมนูที่ต้องการได้เลย{kha}"))
     }
 
+    /// The last resort of routing (FR-UI-12): what to do instead. The main menu follows.
+    pub fn fallback(&self) -> Message {
+        let (kha, help) = (self.kha(), labels::HELP.as_str());
+        Message::text(format!(
+            "ขอโทษ{kha} ยังไม่เข้าใจข้อความนี้ เลือกจากเมนูด้านล่าง หรือพิมพ์ \"{help}\" เพื่อดูวิธีใช้ได้เลย{kha}"
+        ))
+    }
+
+    /// Stickers, videos, files, and voice messages while voice is off (FR-UI-09). The main
+    /// menu follows.
+    pub fn unsupported(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ข้อความแบบนี้ยังใช้ไม่ได้ พิมพ์เป็นข้อความ หรือเลือกจากเมนูด้านล่างได้เลย{kha}"
+        ))
+    }
+
+    /// A photo nothing asked for (FR-UI-14).
+    pub fn image_not_expected(&self) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "ได้รับรูปแล้ว{kha} ตอนนี้ยังไม่ต้องใช้รูป ถ้าต้องใช้ ระบบจะขอเอง ระหว่างนี้เลือกจากเมนูด้านล่างได้เลย{kha}"
+        );
+        Message::text(text).with_quick_reply(menus())
+    }
+
+    /// A location no step asked for (FR-UI-14).
+    pub fn location_not_expected(&self) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "ได้รับตำแหน่งแล้ว{kha} ตอนนี้ยังไม่ต้องใช้ตำแหน่ง ถ้าต้องใช้ ระบบจะขอเอง ระหว่างนี้เลือกจากเมนูด้านล่างได้เลย{kha}"
+        );
+        Message::text(text).with_quick_reply(menus())
+    }
+
+    /// The user sends more than `limits.messagesPerUserPerMinute` (NFR-SEC-05). Sent once; what
+    /// they send until they slow down is ignored.
+    pub fn slow_down(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ส่งข้อความเร็วเกินไปนิดหนึ่ง{kha} รอสักครู่แล้วค่อยส่งใหม่นะ{kha_question}"
+        ))
+    }
+
     /// Why a typed number was not accepted, and how to type it.
     pub fn number_problem(&self, error: NumberError) -> String {
         let (kha, kha_question) = (self.kha(), self.kha_question());
@@ -346,6 +390,10 @@ pub mod labels {
         EDIT = "แก้ไข",
         /// Help topics (FR-HELP-01)
         HELP = "ช่วยเหลือ",
+        /// The user's orders, as typed (FR-UI-12)
+        ORDERS = "ออเดอร์",
+        /// Cancels the flow and clears the AI's memory of the conversation (FR-AI-11)
+        RESTART = "เริ่มใหม่",
 
         // The menu's tabs and functions (§3.1.2)
         BUYER = "ผู้ซื้อ",
@@ -427,6 +475,11 @@ mod tests {
             text(&t.ai_unavailable()).to_owned(),
             text(&t.step_expired(15)).to_owned(),
             text(&t.cancelled()).to_owned(),
+            text(&t.fallback()).to_owned(),
+            text(&t.unsupported()).to_owned(),
+            text(&t.image_not_expected()).to_owned(),
+            text(&t.location_not_expected()).to_owned(),
+            text(&t.slow_down()).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));

@@ -54,7 +54,7 @@ impl Tab {
     }
 }
 
-/// A function of the menu. Each is a postback naming its action; the dispatcher (#14) routes it
+/// A function of the menu. Each is a postback naming its action; the dispatcher routes it
 /// to the module that owns the function, which checks the user may use it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {

@@ -152,7 +152,7 @@ fn add_entities<T: FromEntities>(models: T) -> T {
 /// from the OS random source (NFR-SEC-04). A v4 UUID would have only 122 random bits.
 #[allow(
     dead_code,
-    reason = "pending actions are created once the dispatcher (#14) runs"
+    reason = "the flows that propose changes and upload images are built by later issues"
 )]
 pub fn random_id() -> Uuid {
     let mut bytes = [0; 16];

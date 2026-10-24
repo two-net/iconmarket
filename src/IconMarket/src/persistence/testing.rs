@@ -7,13 +7,14 @@ use chrono::{TimeDelta, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::{ActiveModelTrait, DatabaseConnection};
+use serde_json::Value;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ContainerRequest, ImageExt};
 
-use super::entity::{category, order, product, shop, user};
+use super::entity::{category, order, product, shop, user, webhook_event};
 use super::{connect, migrate};
 use crate::config::{DatabaseConfig, Secret};
 use crate::thai::Money;
@@ -141,6 +142,26 @@ pub fn new_order(
         payment_status: Set(order::PaymentStatus::Unpaid),
         created_at: Set(at()),
         updated_at: Set(at()),
+        ..Default::default()
+    }
+}
+
+/// Event `payload` from the LINE source `user_key`, received at `received_at` and waiting in the
+/// inbox, as the webhook stores it.
+pub fn new_event(
+    user_key: &str,
+    payload: Value,
+    received_at: DateTimeUtc,
+) -> webhook_event::ActiveModel {
+    let field = |name: &str| payload[name].as_str().unwrap_or_default().to_owned();
+    webhook_event::ActiveModel {
+        event_id: Set(field("webhookEventId")),
+        user_key: Set(user_key.to_owned()),
+        event_type: Set(field("type")),
+        payload: Set(payload),
+        received_at: Set(received_at),
+        status: Set(webhook_event::Status::Pending),
+        attempts: Set(0),
         ..Default::default()
     }
 }
