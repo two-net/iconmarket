@@ -41,7 +41,8 @@ use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
 use crate::users::address::{self, AddressFlow};
 use crate::users::onboarding::{self, Said};
-use crate::users::{self, profile, roles};
+use crate::users::report::{self, ReportFlow};
+use crate::users::{self, help, profile, roles};
 
 /// Typed by the operator to get their own LINE user ID, for `admin.lineUserIds` (FR-ONB-08)
 const MY_ID: &str = "#myid";
@@ -325,12 +326,9 @@ impl Keyword {
 /// Whether a postback for `action` works before onboarding is complete: onboarding's own
 /// buttons, help (FR-UI-12) and the rich menu's tabs, which only LINE acts on.
 fn open_before_onboarding(action: &str) -> bool {
-    let help = Item::Help.action();
-    action == help
+    action == Item::Help.action()
         || action == menu::SWITCH_TAB
-        || action
-            .strip_prefix(help)
-            .is_some_and(|rest| rest.starts_with('.'))
+        || action.starts_with(help::PREFIX)
         || action.starts_with(ONBOARDING)
 }
 
@@ -444,8 +442,9 @@ fn step_name(step: &Step) -> &'static str {
 /// current step. `None` when the step doesn't take this kind of input, so routing goes on
 /// (FR-UI-14), or when this release has no such flow: it ends as if expired (FR-UI-15).
 ///
-/// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21), shop
-/// applications and settings (#23, #24), products (#25, #26) and checkout (#32).
+/// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21),
+/// problem reports (#22), shop applications and settings (#23, #24), products (#25, #26) and
+/// checkout (#32).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -462,6 +461,10 @@ async fn answer_flow(
         },
         CategoryFlow::NAME => match stored.read::<CategoryFlow>() {
             Some(session) => Some(categories::answer(turn, session, input).await),
+            None => None,
+        },
+        ReportFlow::NAME => match stored.read::<ReportFlow>() {
+            Some(session) => Some(report::answer(turn, session, input).await),
             None => None,
         },
         _ => None,
@@ -503,11 +506,18 @@ async fn tapped(
         action if action.starts_with(CATEGORIES) => {
             return categories::tapped(turn, postback).await;
         }
+        action if action.starts_with(help::PREFIX) => {
+            return help::tapped(turn, &context.config, &context.ai, postback).await;
+        }
+        report::REPORT => return report::tapped(turn, postback).await,
         browse::CATEGORY => return Ok(not_built("browsing a category", 28, fallback(turn))),
+        users::DELETE_ACCOUNT => {
+            return Ok(not_built("deleting the account", 36, fallback(turn)));
+        }
         _ => {}
     }
     match Item::from_action(postback.action()) {
-        Some(item) => menu_item(turn, item, postback).await,
+        Some(item) => menu_item(context, turn, item, postback).await,
         None => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }
@@ -515,6 +525,7 @@ async fn tapped(
 /// A function of the main menu (FR-UI-05), by the module that owns it, or the issue that builds
 /// it. `postback` is its button's, or that of "ดูเพิ่มเติม" under its list.
 async fn menu_item(
+    context: &Context,
     turn: &Turn<'_>,
     item: Item,
     postback: &Postback,
@@ -523,11 +534,11 @@ async fn menu_item(
     let issue = match item {
         Buy => return browse::tapped(turn, postback).await,
         Categories => return categories::tapped(turn, postback).await,
+        Help => return help::tapped(turn, &context.config, &context.ai, postback).await,
         Search => 28,
         Cart => 29,
         MyOrders | ShopOrders => 34,
         MyShop | ApproveShops => 23,
-        Help => 22,
         AddProduct => 25,
         MyProducts => 26,
         OpenClose | ShopSettings => 24,
@@ -548,7 +559,7 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
         Keyword::Restart => return flow::cancel(turn).await,
         Keyword::Cart => not_built("cart", 29, fallback(turn)),
         Keyword::Orders => not_built("orders", 34, fallback(turn)),
-        Keyword::Help => not_built("help", 22, fallback(turn)),
+        Keyword::Help => return help::show(turn).await,
         Keyword::MyId => onboarding::my_id(turn),
     })
 }
@@ -786,6 +797,8 @@ mod tests {
             "my_orders",
             "onboarding",
             "confirm",
+            "report",
+            "delete_account",
         ] {
             assert!(!open_before_onboarding(action), "{action}");
         }

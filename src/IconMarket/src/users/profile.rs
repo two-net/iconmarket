@@ -5,7 +5,7 @@
 //! are listed with how long they are kept (§5.4).
 //!
 //! Like every function but help, it needs onboarding complete (FR-UI-12), and is open to
-//! suspended users too (NFR-PRIV-03). Help adds it to its topics (FR-HELP-01, #22).
+//! suspended users too (NFR-PRIV-03). Help offers it among its topics (FR-HELP-01).
 
 #[cfg(test)]
 mod tests;

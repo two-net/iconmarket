@@ -34,7 +34,7 @@ use crate::dispatcher::Turn;
 use crate::dispatcher::menu;
 use crate::dispatcher::postback::Postback;
 use crate::line::Message;
-use crate::notifications::templates::{PrivacyNotice, Templates, labels};
+use crate::notifications::templates::{PrivacyFacts, PrivacyNotice, Templates, labels};
 use crate::persistence::entity::{join_attempt, user};
 use crate::thai;
 
@@ -159,6 +159,16 @@ pub fn accept(privacy: &PrivacyConfig) -> Postback {
 /// send the AI goes to, with a button that accepts this version. `updated` when the user
 /// accepted an earlier one, and so is asked again (NFR-PRIV-01).
 pub fn notice(templates: &Templates, config: &Config, updated: bool) -> Message {
+    templates.privacy_notice(&PrivacyNotice {
+        facts: privacy_facts(config),
+        updated,
+        accept: accept(&config.privacy).button(labels::ACCEPT.clone()),
+    })
+}
+
+/// What the privacy notice says (NFR-PRIV-02), as configured: help's "ความเป็นส่วนตัว" says
+/// the same (FR-HELP-01).
+pub fn privacy_facts(config: &Config) -> PrivacyFacts<'_> {
     let privacy = &config.privacy;
     let mut ai_providers = Vec::new();
     for endpoint in config.ai.primary.iter().chain(&config.ai.fallback) {
@@ -167,16 +177,14 @@ pub fn notice(templates: &Templates, config: &Config, updated: bool) -> Message 
         }
     }
     let slips = config.payment.methods.contains(&PaymentMethod::PromptPay);
-    templates.privacy_notice(&PrivacyNotice {
+    PrivacyFacts {
         text: &privacy.notice_text,
         version: &privacy.notice_version,
         url: privacy.notice_url.as_ref().map(|url| url.as_str()),
         ai_providers,
         ai_message_days: config.retention.ai_message_days,
         slip_days: slips.then_some(config.retention.slip_days),
-        updated,
-        accept: accept(privacy).button(labels::ACCEPT.clone()),
-    })
+    }
 }
 
 /// Records that the user accepted the current notice now (FR-ONB-02), then asks for the join

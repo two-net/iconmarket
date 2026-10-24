@@ -29,10 +29,14 @@ use crate::line::{Action, QuickReply};
 use crate::notifications::templates::labels;
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::persistence::entity::user::MenuRoles;
-use crate::persistence::entity::{audit_log, category, join_attempt, push_log, session, user};
+use crate::persistence::entity::{
+    audit_log, category, join_attempt, push_log, report, session, user,
+};
 use crate::persistence::{orm, testing};
 use crate::thai::Label;
 use crate::users::access::{Actor, Denied};
+use crate::users::help::Topic;
+use crate::users::roles::Roles;
 use crate::users::{onboarding, profile};
 
 const ALICE: &str = "Ua1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
@@ -703,8 +707,8 @@ async fn a_new_follower_can_use_only_help_and_myid_until_onboarded() {
         ("b2", vec![notice.clone()]),
         ("b3", vec![notice]),
         ("b4", t.my_id(BOB)),
-        // Help is #22's; until then it gets the fallback, not the notice
-        ("b5", s.fallback()),
+        // Help works before onboarding
+        ("b5", vec![t.help(Topic::for_roles(Roles::default()))]),
         ("b6", vec![ask.clone()]),
         // A keyword is no attempt at the code
         ("b7", vec![ask]),
@@ -987,6 +991,111 @@ async fn categories_set_by_an_admin_are_what_buyers_browse() {
                 Some(eggs.id)
             ),
         ]
+    );
+}
+
+/// AC (FR-HELP-01, FR-HELP-02): "ช่วยเหลือ" offers each user their roles' topics, and a buyer's
+/// report on a product, once its reason is given, is filed and pushed to the admins after the
+/// reply.
+#[tokio::test]
+async fn help_and_a_report_end_to_end() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let bob = onboarded(&s.db, BOB).await;
+    let mut admin = user::Entity::find_by_id(bob)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    admin.is_admin = Set(true);
+    admin.menu_roles = Set(Some(MenuRoles::Admin));
+    admin.update(&s.db).await.unwrap();
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = testing::new_shop(seller.id).insert(&s.db).await.unwrap();
+    let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let product = testing::new_product(shop.id, eggs.id, "ไข่ไก่เบอร์ 2", Some(8));
+    let product = product.insert(&s.db).await.unwrap();
+
+    store(
+        &s.db,
+        [
+            said("a1", ALICE, "ช่วยเหลือ"),
+            tapped("a2", ALICE, "help.report"),
+            tapped("a3", ALICE, &format!("report?p={}", product.id)),
+            said("a4", ALICE, "ไข่เน่า ทั้งแผง"),
+            tapped("b1", BOB, "help"),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 5).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !s.line.requests().iter().any(|request| request.path == PUSH) {
+        assert!(Instant::now() < deadline, "the admins were never alerted");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    let admin = Roles {
+        seller: false,
+        admin: true,
+    };
+    assert_eq!(
+        reply("a1"),
+        json!([t.help(Topic::for_roles(Roles::default()))])
+    );
+    assert!(
+        reply("a2")[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("กด \"แจ้งปัญหา\" ที่สินค้าหรือร้านนั้น")
+    );
+    let asked = reply("a3")[0]["text"].as_str().unwrap().to_owned();
+    assert!(asked.contains("สินค้า \"ไข่ไก่เบอร์ 2\" ของร้านป้าแดง"), "{asked}");
+    let what = templates::Reported::Product {
+        name: "ไข่ไก่เบอร์ 2",
+        shop: "ร้านป้าแดง",
+    };
+    assert_eq!(reply("a4"), json!([t.report_received(&what), s.menu()]));
+    assert_eq!(reply("b1"), json!([t.help(Topic::for_roles(admin))]));
+    assert_eq!(replies.len(), 5);
+
+    let reports = report::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        (
+            reports[0].reporter_id,
+            reports[0].target_id,
+            reports[0].reason.as_str()
+        ),
+        (Some(alice), product.id, "ไข่เน่า ทั้งแผง")
+    );
+    // Pushed to the admin, once the reporter was answered
+    let sent: Vec<_> = s
+        .line
+        .requests()
+        .into_iter()
+        .map(|request| {
+            let body = request.json();
+            let to = body["to"].as_str().or(body["replyToken"].as_str());
+            (request.path, to.map(str::to_owned))
+        })
+        .collect();
+    let at = |wanted: &(String, Option<String>)| sent.iter().position(|got| got == wanted);
+    let answered = at(&(REPLY.to_owned(), Some(token("a4")))).unwrap();
+    let alerted = at(&(PUSH.to_owned(), Some(BOB.to_owned()))).unwrap();
+    assert!(answered < alerted, "{sent:?}");
+    assert_eq!(sent.iter().filter(|(path, _)| path == PUSH).count(), 1);
+    let logs = push_log::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(
+        logs.iter()
+            .map(|log| (log.push_type.as_str(), log.status))
+            .collect::<Vec<_>>(),
+        [("admin.user_report", push_log::Status::Sent)]
     );
 }
 

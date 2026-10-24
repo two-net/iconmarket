@@ -1,19 +1,22 @@
-//! Users & onboarding (SRS §2.1): consent, registration, profile, roles and account
-//! deletion. Built by #12, #19, #20 and #36.
+//! Users & onboarding (SRS §2.1): consent, registration, profile, roles, help and account
+//! deletion. Built by #12, #19, #20, #22 and #36.
 //!
 //! [`roles`] holds who is a buyer, seller and admin, [`access`] the one authorization check
 //! every action goes through, [`onboarding`] what a user does before anything else,
-//! [`address`] the address asked for when first needed, and [`profile`] "ข้อมูลของฉัน".
+//! [`address`] the address asked for when first needed, [`profile`] "ข้อมูลของฉัน", [`help`]
+//! "ช่วยเหลือ", and [`report`] the problems users report.
 
 #![allow(
     dead_code,
-    reason = "account deletion is built by #36; shop applications (#23) and checkout (#32) first ask for the address"
+    reason = "account deletion is built by #36; shop applications (#23) and checkout (#32) first ask for the address; product and shop cards (#24, #28) carry the report button"
 )]
 
 pub mod access;
 pub mod address;
+pub mod help;
 pub mod onboarding;
 pub mod profile;
+pub mod report;
 pub mod roles;
 #[cfg(test)]
 mod tests;
@@ -26,6 +29,10 @@ use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter};
 use crate::config::{PrivacyConfig, VillageConfig};
 use crate::line::Profile;
 use crate::persistence::entity::user;
+
+/// The action of the button that deletes the user's account, after confirmation (FR-ONB-07,
+/// #36). Help's "ลบบัญชี" offers it.
+pub const DELETE_ACCOUNT: &str = "delete_account";
 
 /// How long a fetched LINE profile is kept before it is fetched again (FR-LINE-10).
 const PROFILE_REFRESH: TimeDelta = TimeDelta::days(1);

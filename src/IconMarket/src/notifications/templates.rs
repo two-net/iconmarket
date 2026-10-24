@@ -23,6 +23,7 @@ use crate::line::flex::{
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
 use crate::thai::{self, Label, NumberError};
 use crate::users::access::Denied;
+use crate::users::help::Topic;
 
 /// Builds messages in the configured voice and time zone.
 pub struct Templates {
@@ -251,47 +252,13 @@ impl Templates {
                 format!("ก่อนเริ่มใช้งาน กรุณาอ่านแล้วกด \"{accept}\"{kha}"),
             )
         };
-        let ai: Vec<_> = privacy
-            .ai_providers
-            .iter()
-            .filter_map(|&provider| ai_provider_name(provider))
-            .collect();
-        let (my_data, delete) = (labels::MY_DATA.as_str(), labels::DELETE_ACCOUNT.as_str());
-
-        let mut collected =
-            "ข้อมูลที่เก็บ: ชื่อและรูปโปรไฟล์ LINE, ที่อยู่สำหรับส่งของ, เบอร์โทรและตำแหน่ง (ไม่บังคับ), คำสั่งซื้อ"
-                .to_owned();
-        let mut kept = "ระยะเวลาเก็บ: ข้อมูลบัญชีและที่อยู่เก็บจนกว่าคุณจะลบบัญชี".to_owned();
-        let mut receives = "ผู้ที่ได้รับข้อมูล: LINE ผู้ให้บริการแชตนี้".to_owned();
-        if let Some(days) = privacy.slip_days {
-            collected.push_str(", รูปสลิปโอนเงิน");
-            kept.push_str(&format!(", รูปสลิปเก็บ {days} วันหลังคำสั่งซื้อจบ"));
-        }
-        if !ai.is_empty() {
-            let (names, days) = (ai.join(" และ "), privacy.ai_message_days);
-            collected.push_str(", ข้อความและรูปที่ส่งถึงผู้ช่วย AI");
-            kept.push_str(&format!(", ข้อความที่คุยกับผู้ช่วย AI เก็บ {days} วัน"));
-            receives.push_str(&format!(
-                ", {names} ผู้ให้บริการ AI ซึ่งได้รับเฉพาะข้อความและรูปที่จำเป็นต่อการตอบ"
-            ));
-        }
-        collected.push_str(" เพื่อใช้ซื้อขายและส่งของกันในหมู่บ้าน");
-        kept.push_str(", ประวัติคำสั่งซื้อเก็บไว้ แต่ลบข้อมูลที่ระบุตัวคุณออกเมื่อลบบัญชี");
-        receives.push_str(", และผู้ซื้อหรือร้านค้าในคำสั่งซื้อเดียวกัน ซึ่งเห็นเฉพาะข้อมูลสำหรับส่งของและติดต่อ");
-        let details = [
-            intro,
-            privacy.text.to_owned(),
-            collected,
-            kept,
-            receives,
-            format!(
-                "สิทธิของคุณ: ดูและแก้ไขข้อมูลได้ที่ \"{my_data}\" ถอนความยินยอมและลบข้อมูลได้ที่ \"{delete}\""
-            ),
-            format!("ฉบับที่ {}", privacy.version),
-        ];
+        let facts = &privacy.facts;
+        let mut details = vec![intro, facts.text.to_owned()];
+        details.extend(privacy_lines(facts));
+        details.push(format!("ฉบับที่ {}", facts.version));
 
         let mut buttons = vec![privacy.accept.clone()];
-        if let Some(url) = privacy.url {
+        if let Some(url) = facts.url {
             buttons.push(Action::Uri {
                 label: labels::FULL_NOTICE.clone(),
                 uri: url.to_owned(),
@@ -726,6 +693,323 @@ impl Templates {
             "ตอนนี้ยังไม่มีหมวดสินค้าให้เลือก{kha} ลองใหม่ภายหลัง หรือเลือกจากเมนูด้านล่างได้เลย{kha}"
         ))
     }
+
+    /// "ช่วยเหลือ" (FR-HELP-01): a button for each of `topics`, those of the user's roles.
+    pub fn help(&self, topics: impl IntoIterator<Item = Topic>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let title = Text {
+            size: Some(Size::Lg),
+            weight: Some(Weight::Bold),
+            ..Text::new(labels::HELP.as_str())
+        };
+        let intro = Text {
+            size: Some(Size::Sm),
+            wrap: Some(true),
+            ..Text::new(format!("อยากรู้เรื่องไหน{kha_question} เลือกได้เลย{kha}"))
+        };
+        let buttons = topics.into_iter().map(|topic| {
+            let label = topic_label(topic).clone();
+            let button = Button {
+                style: Some(ButtonStyle::Secondary),
+                height: Some(ButtonHeight::Sm),
+                ..Button::new(topic.postback().button(label))
+            };
+            button.into()
+        });
+        let card = Bubble {
+            size: Some(BubbleSize::Mega),
+            header: Some(FlexBox::vertical([title.into()])),
+            body: Some(FlexBox {
+                spacing: Some(Spacing::Sm),
+                ..FlexBox::vertical(std::iter::once(intro.into()).chain(buttons))
+            }),
+            ..Bubble::default()
+        };
+        Message::flex(labels::HELP.as_str(), card)
+    }
+
+    /// A help topic (FR-HELP-01): its `article`, with buttons for `next`, what to do about it,
+    /// and back to the topics and the menu.
+    pub fn help_topic(&self, article: String, next: Vec<Action>) -> Message {
+        let back = [&labels::HELP, &labels::MENU]
+            .map(|label| Action::message(label.clone(), label.as_str()));
+        Message::text(article).with_quick_reply(QuickReply::new(next.into_iter().chain(back)))
+    }
+
+    /// The text of help topic `topic` (FR-HELP-01) for a user and configuration as `facts`
+    /// says. It is all the AI assistant may answer a how-to question from (FR-AI-14), so it
+    /// is plain text, complete on its own.
+    pub fn help_article(&self, topic: Topic, facts: &HelpFacts<'_>) -> String {
+        let kha = self.kha();
+        let quoted = |label: &Label| format!("\"{}\"", label.as_str());
+        let (buy, search, cart, my_orders) = (
+            quoted(&labels::BUY),
+            quoted(&labels::SEARCH),
+            quoted(&labels::CART),
+            quoted(&labels::MY_ORDERS),
+        );
+        let mut lines = Vec::new();
+        match topic {
+            Topic::Ordering => {
+                lines.push(format!("วิธีสั่งซื้อ{kha}"));
+                lines.push(format!(
+                    "1. กด {buy} แล้วเลือกหมวด หรือกด {search} แล้วพิมพ์ชื่อสินค้า"
+                ));
+                lines.push("2. กด \"ใส่ตะกร้า\" ที่สินค้า แล้วเลือกจำนวน".to_owned());
+                lines.push(format!(
+                    "3. เปิด {cart} แล้วสั่งซื้อทีละร้าน เลือกรับเองหรือให้ร้านไปส่ง และเลือกวิธีชำระเงิน"
+                ));
+                lines.push("4. ตรวจสรุปแล้วกด \"ยืนยันสั่งซื้อ\"".to_owned());
+                let told = if facts.status_pushes {
+                    "ระบบจะแจ้งในแชตนี้ทุกครั้งที่สถานะเปลี่ยน "
+                } else {
+                    ""
+                };
+                lines.push(format!(
+                    "จากนั้นรอร้านรับออเดอร์ {told}ดูออเดอร์ทั้งหมดได้ที่ {my_orders} และยกเลิกเองได้ก่อนร้านรับออเดอร์{kha}"
+                ));
+                if facts.assistant {
+                    lines.push(format!(
+                        "จะพิมพ์บอกสิ่งที่อยากได้ก็ได้{kha} เช่น \"อยากได้ไข่ไก่ 2 แผง\" ผู้ช่วยจะหาให้ แต่จะใส่ตะกร้าหรือสั่งซื้อก็ต่อเมื่อคุณกดยืนยันเอง{kha}"
+                    ));
+                }
+            }
+            Topic::Selling if facts.seller => {
+                lines.push(format!("วิธีลงสินค้าและดูแลร้าน{kha}"));
+                lines.push(format!(
+                    "- {}: ใส่รูป ชื่อ ราคา หน่วย หมวด และจำนวน แล้วกด \"ยืนยันลงขาย\"",
+                    quoted(&labels::ADD_PRODUCT)
+                ));
+                if facts.listing {
+                    lines.push(
+                        "- หรือส่งรูปสินค้าพร้อมข้อความสั้นๆ เช่น \"ขนมครก กล่องละ 20 มี 30 กล่อง\" ผู้ช่วยจะร่างให้ตรวจก่อนลงขาย"
+                            .to_owned(),
+                    );
+                }
+                lines.push(format!(
+                    "- {}: แก้ราคา เติมจำนวน ซ่อน หรือลบสินค้า",
+                    quoted(&labels::MY_PRODUCTS)
+                ));
+                lines.push(format!(
+                    "- {}: ปิดร้านชั่วคราวได้ ออเดอร์ที่มีอยู่ยังดำเนินต่อ",
+                    quoted(&labels::OPEN_CLOSE)
+                ));
+                lines.push(format!(
+                    "- {}: กดรับหรือปฏิเสธออเดอร์ใหม่ภายใน {} นาที ไม่อย่างนั้นออเดอร์จะหมดเวลา",
+                    quoted(&labels::SHOP_ORDERS),
+                    facts.pending_minutes
+                ));
+                lines.push(format!(
+                    "สินค้าหรือร้านที่แก้ไขอาจถูกพักไว้ให้ผู้ดูแลตรวจก่อน ระบบจะแจ้งให้ทราบ{kha}"
+                ));
+            }
+            Topic::Selling => {
+                lines.push(format!("วิธีเปิดร้านและลงสินค้า{kha}"));
+                lines.push(format!(
+                    "1. กด {} แล้วกรอกชื่อร้าน คำอธิบาย ที่รับของ เบอร์ติดต่อ และเลือกว่ารับเองหรือส่งได้",
+                    quoted(&labels::OPEN_SHOP)
+                ));
+                lines.push(if facts.require_approval {
+                    "2. รอผู้ดูแลอนุมัติ ระบบจะแจ้งผลในแชตนี้".to_owned()
+                } else {
+                    "2. ร้านเปิดได้ทันที".to_owned()
+                });
+                lines.push(format!(
+                    "3. จากนั้นจะมีเมนู {} ให้กด {} ใส่รูป ชื่อ ราคา หน่วย หมวด และจำนวน แล้วกด \"ยืนยันลงขาย\"",
+                    quoted(&labels::SELLER),
+                    quoted(&labels::ADD_PRODUCT)
+                ));
+                lines.push(format!("หนึ่งคนเปิดร้านได้ 1 ร้าน{kha}"));
+            }
+            Topic::Payment => {
+                lines.push(format!(
+                    "การชำระเงิน{kha} ผู้ซื้อจ่ายเงินให้ร้านโดยตรง ระบบไม่ได้รับหรือถือเงินไว้"
+                ));
+                if facts.cash {
+                    lines.push("- เงินสด: จ่ายตอนรับของที่ร้าน หรือตอนร้านมาส่ง".to_owned());
+                }
+                if facts.promptpay {
+                    lines.push(
+                        "- โอนพร้อมเพย์: เมื่อร้านรับออเดอร์ ระบบจะส่งเลขพร้อมเพย์ของร้านและยอดที่ต้องโอน โอนแล้วกด \"ส่งสลิป\" และส่งรูปสลิปในแชตนี้"
+                            .to_owned(),
+                    );
+                }
+                lines.push(format!(
+                    "ดูสถานะการชำระเงินได้ที่ {my_orders}{kha}"
+                ));
+                if facts.seller {
+                    let mut shop = "สำหรับร้าน: ได้รับเงินแล้วกด \"ได้รับเงินแล้ว\" ที่ออเดอร์".to_owned();
+                    if facts.promptpay {
+                        shop.push_str(&format!(
+                            " ใส่เลขพร้อมเพย์ของร้านได้ที่ {}",
+                            quoted(&labels::SHOP_SETTINGS)
+                        ));
+                    }
+                    shop.push_str(&format!(
+                        " ถ้าออเดอร์ที่จ่ายแล้วถูกยกเลิก ให้คืนเงินกับลูกค้าโดยตรง แล้วกด \"คืนเงินแล้ว\"{kha}"
+                    ));
+                    lines.push(shop);
+                }
+            }
+            Topic::MyData => {
+                lines.push(format!(
+                    "{} แสดงข้อมูลส่วนตัวทั้งหมดที่ระบบเก็บไว้เกี่ยวกับคุณ{kha} ทั้งชื่อ รูปโปรไฟล์ ที่อยู่ เบอร์โทร ตำแหน่ง และข้อมูลร้าน พร้อมบอกว่าเก็บไว้นานเท่าไร",
+                    quoted(&labels::MY_DATA)
+                ));
+                lines.push(format!(
+                    "แก้ที่อยู่ เบอร์โทร หรือตำแหน่งได้จากปุ่มในหน้านั้น เบอร์โทรและตำแหน่งไม่บังคับ จะลบออกก็ได้{kha}"
+                ));
+            }
+            Topic::Privacy => {
+                let privacy = &facts.privacy;
+                lines.push(format!("ความเป็นส่วนตัว{kha}"));
+                lines.push(privacy.text.to_owned());
+                lines.extend(privacy_lines(privacy));
+                let full = if privacy.url.is_some() {
+                    format!(" อ่านฉบับเต็มได้จากปุ่ม {}", quoted(&labels::FULL_NOTICE))
+                } else {
+                    String::new()
+                };
+                lines.push(format!(
+                    "ประกาศความเป็นส่วนตัวฉบับที่ {}{full}{kha}",
+                    privacy.version
+                ));
+            }
+            Topic::Report => {
+                lines.push(format!(
+                    "เจอสินค้าหรือร้านที่ไม่เหมาะสม แจ้งผู้ดูแลได้{kha} เช่น ข้อมูลไม่ตรงความจริง ขายของต้องห้าม หรือหลอกลวง"
+                ));
+                lines.push(format!(
+                    "กด {} ที่สินค้าหรือร้านนั้น แล้วเลือกหรือพิมพ์ว่าเกิดอะไรขึ้น ผู้ดูแลจะได้รับเรื่องและตรวจสอบ",
+                    quoted(&labels::REPORT)
+                ));
+                lines.push(format!(
+                    "ถ้าเป็นเรื่องอื่น กด {} ได้เลย{kha}",
+                    quoted(&labels::CONTACT_ADMINS)
+                ));
+            }
+            Topic::Contact => match facts.admin_contact {
+                Some(contact) => {
+                    lines.push(format!("ติดต่อผู้ดูแลได้ที่นี่{kha}"));
+                    lines.push(contact.to_owned());
+                }
+                None => lines.push(format!(
+                    "ติดต่อผู้ดูแลหมู่บ้านได้โดยตรง{kha} ถ้าเป็นปัญหาของสินค้าหรือร้าน กด {} ที่สินค้าหรือร้านนั้นได้เลย{kha}",
+                    quoted(&labels::REPORT)
+                )),
+            },
+            Topic::DeleteAccount => {
+                lines.push(format!(
+                    "{} คือการถอนความยินยอมและลบข้อมูลที่ระบุตัวคุณ{kha}",
+                    quoted(&labels::DELETE_ACCOUNT)
+                ));
+                lines.push(
+                    "- ลบได้เมื่อไม่มีออเดอร์ที่ยังไม่จบ ทั้งที่คุณสั่งซื้อและของร้านคุณ".to_owned(),
+                );
+                lines.push(
+                    "- ลบชื่อ รูปโปรไฟล์ เบอร์โทร ที่อยู่ ตำแหน่ง และบัญชี LINE ที่ผูกไว้".to_owned(),
+                );
+                lines.push("- ถ้ามีร้าน ร้านจะปิดถาวรและสินค้าทั้งหมดถูกลบ".to_owned());
+                lines.push("- ประวัติคำสั่งซื้อยังอยู่ แต่ไม่ระบุว่าเป็นคุณ".to_owned());
+                lines.push(format!(
+                    "ลบแล้วกู้คืนไม่ได้ ระบบจะถามยืนยันอีกครั้งก่อนลบ{kha}"
+                ));
+            }
+            Topic::Admin => {
+                lines.push(format!(
+                    "งานของผู้ดูแล{kha} ทำได้จากเมนู {}",
+                    quoted(&labels::ADMIN)
+                ));
+                lines.push(format!(
+                    "- {}: ดูคำขอเปิดร้าน แล้วอนุมัติ หรือไม่อนุมัติพร้อมเหตุผล",
+                    quoted(&labels::APPROVE_SHOPS)
+                ));
+                lines.push(format!(
+                    "- {}: สินค้าและร้านที่ถูกพัก และเรื่องที่ผู้ใช้แจ้งปัญหา อนุมัติ นำออก ระงับร้าน หรือปิดเรื่อง",
+                    quoted(&labels::REVIEW_QUEUE)
+                ));
+                lines.push(format!(
+                    "- {}: ค้นหาจากชื่อ เบอร์โทร หรือเลขออเดอร์ แล้วระงับหรือยกเลิกการระงับ",
+                    quoted(&labels::USERS)
+                ));
+                lines.push(format!(
+                    "- {}: เพิ่ม เปลี่ยนชื่อ เรียงลำดับ และปิดใช้งานหมวด",
+                    quoted(&labels::CATEGORIES)
+                ));
+                lines.push(format!(
+                    "- {} และ {}: ดูภาพรวมของตลาด และส่งประกาศถึงทุกคน",
+                    quoted(&labels::STATS),
+                    quoted(&labels::ANNOUNCEMENTS)
+                ));
+                if facts.admin_alerts {
+                    lines.push(
+                        "ระบบจะแจ้งเตือนเมื่อมีคำขอเปิดร้าน สินค้าถูกพัก หรือมีผู้แจ้งปัญหา".to_owned(),
+                    );
+                }
+                lines.push(format!(
+                    "ทุกอย่างที่ผู้ดูแลทำถูกบันทึกไว้ และทำได้จากเมนูเท่านั้น ผู้ช่วย AI ทำแทนไม่ได้{kha}"
+                ));
+            }
+        }
+        lines.join("\n")
+    }
+
+    /// Asks what is wrong with `what`, reported (FR-HELP-02), in at most `max_chars`.
+    /// `reasons` are common ones, sent as if typed.
+    pub fn ask_report_reason(
+        &self,
+        what: &Reported<'_>,
+        max_chars: usize,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "แจ้งปัญหา{} เกิดอะไรขึ้น{kha_question} เลือกด้านล่าง หรือพิมพ์เล่ามาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha}",
+            what.named()
+        );
+        Message::text(text).with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// The user has already reported `what`, and admins have yet to look into it.
+    pub fn already_reported(&self, what: &Reported<'_>) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "คุณแจ้งปัญหา{} ไว้แล้ว{kha} ผู้ดูแลกำลังตรวจสอบ ไม่ต้องแจ้งซ้ำ{kha}",
+            what.named()
+        );
+        Message::text(text).with_quick_reply(menus())
+    }
+
+    /// A report on `what` was received (FR-HELP-02). The main menu follows.
+    pub fn report_received(&self, what: &Reported<'_>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ได้รับเรื่องแล้ว ขอบคุณที่แจ้ง{kha} ผู้ดูแลจะตรวจสอบ{} โดยเร็ว{kha}",
+            what.named()
+        ))
+    }
+
+    /// Tells the admins a user reported `what` at `at`, for `reason` (Table 4.8-A). `review`
+    /// opens the review queue. It doesn't say who reported it; the queue does.
+    pub fn report_alert(
+        &self,
+        what: &Reported<'_>,
+        reason: &str,
+        at: DateTime<Utc>,
+        review: Action,
+    ) -> Message {
+        let headline = format!("มีผู้แจ้งปัญหาใหม่{}", self.kha());
+        let what = match what {
+            Reported::Product { name, shop } => format!("สินค้า: {name} ({shop})"),
+            Reported::Shop { name } => format!("ร้าน: {name}"),
+        };
+        let details = [
+            what,
+            format!("เหตุผล: {reason}"),
+            format!("แจ้งเมื่อ {}", self.date_time(at)),
+        ];
+        notice(&headline, &details, vec![review])
+    }
 }
 
 /// What "ข้อมูลของฉัน" shows for a value the user hasn't given
@@ -916,8 +1200,60 @@ pub struct CategoryCard<'a> {
     pub delete: Action,
 }
 
+/// What the help topics say depends on (FR-HELP-01): the user's roles, and what is configured.
+pub struct HelpFacts<'a> {
+    /// The user owns an `APPROVED` shop
+    pub seller: bool,
+    pub admin: bool,
+    /// The AI assistant understands typed requests (FR-AI-01)
+    pub assistant: bool,
+    /// The AI drafts listings from a photo and a message (FR-PROD-02)
+    pub listing: bool,
+    /// `shop.requireApproval`
+    pub require_approval: bool,
+    /// `order.pendingTimeoutMinutes`
+    pub pending_minutes: u32,
+    /// Whether `payment.methods` has cash, and PromptPay
+    pub cash: bool,
+    pub promptpay: bool,
+    /// `notification.orderStatusToBuyer`
+    pub status_pushes: bool,
+    /// `notification.adminAlerts`
+    pub admin_alerts: bool,
+    /// `village.adminContact`
+    pub admin_contact: Option<&'a str>,
+    pub privacy: PrivacyFacts<'a>,
+}
+
+/// What a report is about (FR-HELP-02), as the reporter and the admins see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reported<'a> {
+    Product { name: &'a str, shop: &'a str },
+    Shop { name: &'a str },
+}
+
+impl Reported<'_> {
+    /// ` สินค้า "ไข่ไก่" ของร้านป้าแดง`, or ` ร้าน "ร้านป้าแดง"`, after a verb.
+    fn named(&self) -> String {
+        match self {
+            Self::Product { name, shop } => format!(" สินค้า \"{name}\" ของ{shop}"),
+            Self::Shop { name } => format!(" ร้าน \"{name}\""),
+        }
+    }
+}
+
 /// The privacy notice as shown before consent (FR-ONB-02, NFR-PRIV-02).
 pub struct PrivacyNotice<'a> {
+    pub facts: PrivacyFacts<'a>,
+    /// Whether the user consented to an earlier version, so is asked again (NFR-PRIV-01)
+    pub updated: bool,
+    /// The button that consents to this version
+    pub accept: Action,
+}
+
+/// What the privacy notice says (NFR-PRIV-02), which help's "ความเป็นส่วนตัว" repeats
+/// (FR-HELP-01).
+pub struct PrivacyFacts<'a> {
     /// `privacy.noticeText`
     pub text: &'a str,
     /// `privacy.noticeVersion`
@@ -931,10 +1267,40 @@ pub struct PrivacyNotice<'a> {
     /// How long payment slips are kept once their order ends (`retention.slipDays`); `None`
     /// while PromptPay is off, as there are no slips then
     pub slip_days: Option<u32>,
-    /// Whether the user consented to an earlier version, so is asked again (NFR-PRIV-01)
-    pub updated: bool,
-    /// The button that consents to this version
-    pub accept: Action,
+}
+
+/// What the privacy notice says about the user's data (NFR-PRIV-02): what is collected and why,
+/// how long it is kept, who receives it, and the user's rights.
+pub fn privacy_lines(facts: &PrivacyFacts<'_>) -> [String; 4] {
+    let ai: Vec<_> = facts
+        .ai_providers
+        .iter()
+        .filter_map(|&provider| ai_provider_name(provider))
+        .collect();
+    let (my_data, delete) = (labels::MY_DATA.as_str(), labels::DELETE_ACCOUNT.as_str());
+
+    let mut collected =
+        "ข้อมูลที่เก็บ: ชื่อและรูปโปรไฟล์ LINE, ที่อยู่สำหรับส่งของ, เบอร์โทรและตำแหน่ง (ไม่บังคับ), คำสั่งซื้อ".to_owned();
+    let mut kept = "ระยะเวลาเก็บ: ข้อมูลบัญชีและที่อยู่เก็บจนกว่าคุณจะลบบัญชี".to_owned();
+    let mut receives = "ผู้ที่ได้รับข้อมูล: LINE ผู้ให้บริการแชตนี้".to_owned();
+    if let Some(days) = facts.slip_days {
+        collected.push_str(", รูปสลิปโอนเงิน");
+        kept.push_str(&format!(", รูปสลิปเก็บ {days} วันหลังคำสั่งซื้อจบ"));
+    }
+    if !ai.is_empty() {
+        let (names, days) = (ai.join(" และ "), facts.ai_message_days);
+        collected.push_str(", ข้อความและรูปที่ส่งถึงผู้ช่วย AI");
+        kept.push_str(&format!(", ข้อความที่คุยกับผู้ช่วย AI เก็บ {days} วัน"));
+        receives.push_str(&format!(
+            ", {names} ผู้ให้บริการ AI ซึ่งได้รับเฉพาะข้อความและรูปที่จำเป็นต่อการตอบ"
+        ));
+    }
+    collected.push_str(" เพื่อใช้ซื้อขายและส่งของกันในหมู่บ้าน");
+    kept.push_str(", ประวัติคำสั่งซื้อเก็บไว้ แต่ลบข้อมูลที่ระบุตัวคุณออกเมื่อลบบัญชี");
+    receives.push_str(", และผู้ซื้อหรือร้านค้าในคำสั่งซื้อเดียวกัน ซึ่งเห็นเฉพาะข้อมูลสำหรับส่งของและติดต่อ");
+    let rights =
+        format!("สิทธิของคุณ: ดูและแก้ไขข้อมูลได้ที่ \"{my_data}\" ถอนความยินยอมและลบข้อมูลได้ที่ \"{delete}\"");
+    [collected, kept, receives, rights]
 }
 
 /// The company and product an AI provider is known by, as the privacy notice names it
@@ -1040,6 +1406,21 @@ pub(super) fn item_label(item: Item, has_shop: bool) -> &'static Label {
         Item::Categories => &labels::CATEGORIES,
         Item::Stats => &labels::STATS,
         Item::Announcements => &labels::ANNOUNCEMENTS,
+    }
+}
+
+/// The label of help topic `topic` (FR-HELP-01).
+pub fn topic_label(topic: Topic) -> &'static Label {
+    match topic {
+        Topic::Ordering => &labels::HOW_TO_ORDER,
+        Topic::Selling => &labels::SELLING,
+        Topic::Payment => &labels::PAYMENT,
+        Topic::MyData => &labels::MY_DATA,
+        Topic::Privacy => &labels::PRIVACY,
+        Topic::Report => &labels::REPORT,
+        Topic::Contact => &labels::CONTACT_ADMINS,
+        Topic::DeleteAccount => &labels::DELETE_ACCOUNT,
+        Topic::Admin => &labels::ADMIN_WORK,
     }
 }
 
@@ -1241,6 +1622,23 @@ pub mod labels {
         ACTIVATE = "เปิดใช้งาน",
         DELETE = "ลบ",
         CONFIRM_DELETE = "ยืนยันลบ",
+
+        // Help topics (FR-HELP-01), with MY_DATA and DELETE_ACCOUNT
+        HOW_TO_ORDER = "วิธีสั่งซื้อ",
+        SELLING = "เปิดร้านและลงสินค้า",
+        PAYMENT = "การชำระเงิน",
+        PRIVACY = "ความเป็นส่วนตัว",
+        /// Reports a product or shop (FR-HELP-02)
+        REPORT = "แจ้งปัญหา",
+        CONTACT_ADMINS = "ติดต่อผู้ดูแล",
+        /// The admins' own topic
+        ADMIN_WORK = "งานผู้ดูแล",
+
+        // Common reasons for a report, sent as typed (FR-HELP-02)
+        REASON_WRONG_INFO = "ข้อมูลไม่ตรง",
+        REASON_PROHIBITED = "สินค้าต้องห้าม",
+        REASON_SCAM = "หลอกลวง/โกง",
+        REASON_RUDE = "ไม่สุภาพ",
     }
 }
 
@@ -1344,12 +1742,20 @@ mod tests {
             text(&t.categories(&[], 0, |_| unreachable!(), add_category())).to_owned(),
             text(&t.choose_category(vec![add_category()])).to_owned(),
             text(&t.nothing_to_browse()).to_owned(),
+            text(&t.ask_report_reason(&REPORTED, 300, Vec::new())).to_owned(),
+            text(&t.already_reported(&REPORTED)).to_owned(),
+            text(&t.report_received(&REPORTED)).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
         texts.extend(DENIALS.map(|denied| text(&t.denied(denied)).to_owned()));
         texts
     }
+
+    const REPORTED: Reported<'static> = Reported::Product {
+        name: "ไข่ไก่เบอร์ 2",
+        shop: "ร้านป้าแดง",
+    };
 
     fn confirm_delete() -> Action {
         Action::postback(
@@ -1689,14 +2095,20 @@ mod tests {
         (lines.collect(), buttons.collect())
     }
 
-    fn privacy_notice<'a>(text: &'a str, url: Option<&'a str>) -> PrivacyNotice<'a> {
-        PrivacyNotice {
+    fn privacy_facts<'a>(text: &'a str, url: Option<&'a str>) -> PrivacyFacts<'a> {
+        PrivacyFacts {
             text,
             version: "2026-10",
             url,
             ai_providers: vec![AiProvider::Claude],
             ai_message_days: 30,
             slip_days: Some(90),
+        }
+    }
+
+    fn privacy_notice(facts: PrivacyFacts<'_>) -> PrivacyNotice<'_> {
+        PrivacyNotice {
+            facts,
             updated: false,
             accept: Action::postback(labels::ACCEPT.clone(), "onboarding.accept?v=42"),
         }
@@ -1707,7 +2119,8 @@ mod tests {
     #[test]
     fn the_privacy_notice_says_what_happens_to_ones_data() {
         let t = templates(PoliteParticle::Kha);
-        let message = t.privacy_notice(&privacy_notice("ตลาดนี้ดูแลโดยคณะกรรมการหมู่บ้าน", None));
+        let facts = privacy_facts("ตลาดนี้ดูแลโดยคณะกรรมการหมู่บ้าน", None);
+        let message = t.privacy_notice(&privacy_notice(facts));
         let (lines, buttons) = notice_parts(&message);
         assert_eq!(lines[0], "ประกาศความเป็นส่วนตัว");
         assert!(lines[1].contains("กด \"ยอมรับ\""));
@@ -1736,9 +2149,11 @@ mod tests {
         let t = templates(PoliteParticle::Kha);
         let url = "https://market.example.com/privacy";
         let both = PrivacyNotice {
-            ai_providers: vec![AiProvider::Gpt, AiProvider::Gemini],
             updated: true,
-            ..privacy_notice("ประกาศ", Some(url))
+            ..privacy_notice(PrivacyFacts {
+                ai_providers: vec![AiProvider::Gpt, AiProvider::Gemini],
+                ..privacy_facts("ประกาศ", Some(url))
+            })
         };
         let message = t.privacy_notice(&both);
         let (lines, buttons) = notice_parts(&message);
@@ -1753,11 +2168,11 @@ mod tests {
 
         // With the AI off, or only the mock, and PromptPay off, neither is mentioned
         for ai_providers in [vec![], vec![AiProvider::Mock]] {
-            let neither = PrivacyNotice {
+            let neither = privacy_notice(PrivacyFacts {
                 ai_providers,
                 slip_days: None,
-                ..privacy_notice("ประกาศ", None)
-            };
+                ..privacy_facts("ประกาศ", None)
+            });
             let message = t.privacy_notice(&neither);
             let (lines, _) = notice_parts(&message);
             for line in &lines[3..] {
@@ -1776,9 +2191,11 @@ mod tests {
             "p".repeat(limits::URI_CHARS - 27)
         );
         let notice = PrivacyNotice {
-            ai_providers: vec![AiProvider::Claude, AiProvider::Gemini],
             updated: true,
-            ..privacy_notice(&longest, Some(&url))
+            ..privacy_notice(PrivacyFacts {
+                ai_providers: vec![AiProvider::Claude, AiProvider::Gemini],
+                ..privacy_facts(&longest, Some(&url))
+            })
         };
         limits::check(&[t.privacy_notice(&notice)]).unwrap();
     }
