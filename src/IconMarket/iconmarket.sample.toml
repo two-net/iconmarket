@@ -40,7 +40,8 @@ channelAccessToken = "change-me"
 villageGroupId = ""
 
 [line.richMenu]
-# Create or update rich menus at startup
+# Create or update rich menus at startup. When false, the IconMarket menus already at LINE are
+# linked as they are
 autoProvision = true
 
 [ai]

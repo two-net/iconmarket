@@ -1,12 +1,17 @@
 //! The main menu (FR-UI-05, §3.1.2): the functions of the rich menus, a tab for each role, and
-//! the message `เมนู` shows for clients without a rich menu. The rich menus (#17) use the same
-//! items and postbacks, so a function is reached the same way from either.
+//! the message `เมนู` shows for clients without a rich menu. The
+//! [rich menus](crate::notifications::RichMenus) use the same items and postbacks, so a function
+//! is reached the same way from either.
 
 use super::postback::Postback;
 use crate::line::Message;
 use crate::notifications::templates;
 use crate::users::access::Actor;
 use crate::users::roles::Roles;
+
+/// The action of the postback a rich menu's tab sends when tapped (FR-UI-10). LINE has already
+/// switched to the tab's menu by then, so it needs no answer.
+pub const SWITCH_TAB: &str = "tab";
 
 /// A tab of the menu: one per role, shown to the users who hold it (FR-UI-10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +23,20 @@ pub enum Tab {
 }
 
 impl Tab {
+    /// Its name in postbacks and in the names of the rich menus.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Buyer => "buyer",
+            Self::Seller => "seller",
+            Self::Admin => "admin",
+        }
+    }
+
+    /// The postback its tab in a rich menu sends.
+    pub fn switch_postback(self) -> Postback {
+        Postback::new(SWITCH_TAB).with_name("to", self.key())
+    }
+
     /// Its functions, in the order of §3.1.2.
     pub fn items(self) -> [Item; 6] {
         use Item::*;
@@ -242,5 +261,16 @@ mod tests {
             assert_eq!(Postback::parse(&data), Some(item.postback()));
         }
         assert_eq!(Item::from_action("confirm"), None);
+        assert_eq!(Item::from_action(SWITCH_TAB), None);
+    }
+
+    #[test]
+    fn a_tab_sends_its_own_postback() {
+        for tab in [Tab::Buyer, Tab::Seller, Tab::Admin] {
+            let data = tab.switch_postback().to_string();
+            let postback = Postback::parse(&data).unwrap();
+            assert_eq!(postback.action(), SWITCH_TAB);
+            assert_eq!(postback.name("to"), Some(tab.key()));
+        }
     }
 }

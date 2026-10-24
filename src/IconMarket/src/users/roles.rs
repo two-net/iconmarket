@@ -53,6 +53,17 @@ impl Roles {
             (true, true) => Some(MenuRoles::SellerAdmin),
         }
     }
+
+    /// The roles the rich menu for `menu` has tabs for: the inverse of [`menu`](Self::menu).
+    pub fn of_menu(menu: Option<MenuRoles>) -> Self {
+        let (seller, admin) = match menu {
+            None => (false, false),
+            Some(MenuRoles::Seller) => (true, false),
+            Some(MenuRoles::Admin) => (false, true),
+            Some(MenuRoles::SellerAdmin) => (true, true),
+        };
+        Self { seller, admin }
+    }
 }
 
 /// Grants the admin role to the users listed in `admins` and removes it from everyone else,
@@ -210,7 +221,8 @@ pub async fn outdated_menus(
 }
 
 /// Records that the rich menu linked to user `user_id` is now the one for `menu`, so they are
-/// no longer outdated. The rich-menu module (#17) calls it once LINE has linked the menu.
+/// no longer outdated. [`relink_rich_menus`](crate::notifications::relink_rich_menus) calls it
+/// once LINE has linked the menu.
 pub async fn menu_linked(
     db: &impl ConnectionTrait,
     user_id: i64,
@@ -227,6 +239,21 @@ pub async fn menu_linked(
     Ok(())
 }
 
+/// Records that the rich menus for `menu` were replaced at LINE. Deleting the old ones falls
+/// the users linked to them back to the default menu, so they are outdated until relinked to
+/// the new ones. Returns how many users that was.
+pub async fn menus_replaced(db: &impl ConnectionTrait, menu: MenuRoles) -> Result<u64, DbErr> {
+    let result = user::Entity::update_many()
+        .set(user::ActiveModel {
+            menu_roles: Set(None),
+            ..Default::default()
+        })
+        .filter(user::Column::MenuRoles.eq(menu))
+        .exec(db)
+        .await?;
+    Ok(result.rows_affected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +265,9 @@ mod tests {
         assert_eq!(menu(true, false), Some(MenuRoles::Seller));
         assert_eq!(menu(false, true), Some(MenuRoles::Admin));
         assert_eq!(menu(true, true), Some(MenuRoles::SellerAdmin));
+        for (seller, admin) in [(false, false), (true, false), (false, true), (true, true)] {
+            let roles = Roles { seller, admin };
+            assert_eq!(Roles::of_menu(roles.menu()), roles);
+        }
     }
 }

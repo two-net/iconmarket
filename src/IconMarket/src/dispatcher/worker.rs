@@ -4,7 +4,8 @@
 //!
 //! An event is handled in one transaction, which also marks it `DONE`, and answered once that
 //! commits, so it takes effect at most once (NFR-REL-02). Its notifications, queued in the same
-//! transaction, are pushed after the reply. Each attempt is counted before it
+//! transaction, are pushed after the reply, and then the rich menus of users whose roles it
+//! changed are relinked (FR-UI-10). Each attempt is counted before it
 //! starts, in a transaction of its own, so one cut short by a crash or a shutdown counts too. A
 //! failed attempt changes nothing and is tried again shortly; after [`MAX_ATTEMPTS`] the event
 //! fails for good and its user is told something went wrong. The source's next event waits
@@ -41,7 +42,7 @@ use super::route::{self, Handled, Reply};
 use crate::config::Config;
 use crate::line::{self, Delivery, Importance, Message};
 use crate::notifications::templates::Templates;
-use crate::notifications::{self, Queued};
+use crate::notifications::{self, Queued, RichMenus};
 use crate::persistence::entity::webhook_event::{self, Status};
 use crate::{ai, logging};
 
@@ -79,6 +80,8 @@ pub struct Context {
     pub ai: ai::Gateway,
     pub templates: Templates,
     pub config: Arc<Config>,
+    /// `None` when provisioning them failed at startup: relinking waits for the next start
+    pub rich_menus: Option<RichMenus>,
 }
 
 /// Wakes the worker when the webhook has stored events. Cheap to clone: clones wake the same
@@ -144,7 +147,7 @@ enum Next {
     Elsewhere,
 }
 
-/// What to send once an event is done with: a reply, notifications, or both.
+/// What to send once an event is done with: a reply, notifications or rich menus.
 #[derive(Debug)]
 struct Answer {
     handled: Handled,
@@ -316,7 +319,10 @@ impl Worker {
         let error = match result {
             Ok(handled) => {
                 debug!(event_type = %row.event_type, attempt, "event handled");
-                return Ok(if handled.reply.is_none() && handled.pushes.is_empty() {
+                let nothing = handled.reply.is_none()
+                    && handled.pushes.is_empty()
+                    && handled.relink.is_empty();
+                return Ok(if nothing {
                     Settled::Silent
                 } else {
                     Settled::Answer(handled)
@@ -349,14 +355,20 @@ impl Worker {
                 messages: vec![Message::text(sorry)],
             }),
             pushes: Queued::default(),
+            relink: Vec::new(),
         }))
     }
 
     /// Sends `answer`: its reply first, while the reply token is fresh, then its notifications
-    /// (FR-NOT-04).
+    /// (FR-NOT-04), then the rich menus (FR-UI-10).
     async fn send(&self, answer: Answer) {
         let Answer {
-            handled: Handled { reply, pushes },
+            handled:
+                Handled {
+                    reply,
+                    pushes,
+                    relink,
+                },
             received_at,
             span,
         } = answer;
@@ -369,6 +381,24 @@ impl Worker {
                 .instrument(span.clone())
                 .await;
             span.in_scope(|| debug!(pushes = count, "notifications sent"));
+        }
+        if !relink.is_empty() {
+            self.relink(&relink).instrument(span).await;
+        }
+    }
+
+    /// Links `users` the rich menus for their roles. A user whose link fails stays outdated, so
+    /// their next event or the next start tries again.
+    async fn relink(&self, users: &[i64]) {
+        let Some(menus) = &self.context.rich_menus else {
+            debug!("no rich menus to link");
+            return;
+        };
+        let (db, line) = (&self.context.db, &self.context.line);
+        for &user in users {
+            if let Err(e) = notifications::relink_rich_menus(db, line, menus, Some(user)).await {
+                warn!(user_id = user, error = %e, "cannot relink the user's rich menu");
+            }
         }
     }
 

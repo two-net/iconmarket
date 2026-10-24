@@ -268,7 +268,7 @@ fn menu_card(tab: Tab, has_shop: bool) -> Bubble {
     }
 }
 
-fn tab_title(tab: Tab) -> &'static Label {
+pub(super) fn tab_title(tab: Tab) -> &'static Label {
     match tab {
         Tab::Buyer => &labels::BUYER,
         Tab::Seller => &labels::SELLER,
@@ -276,7 +276,7 @@ fn tab_title(tab: Tab) -> &'static Label {
     }
 }
 
-fn item_label(item: Item, has_shop: bool) -> &'static Label {
+pub(super) fn item_label(item: Item, has_shop: bool) -> &'static Label {
     match item {
         Item::Buy => &labels::BUY,
         Item::Search => &labels::SEARCH,

@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use chrono::{TimeDelta, Utc};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryOrder};
+use sea_orm::{
+    ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryOrder,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use testcontainers_modules::postgres::Postgres;
@@ -21,7 +23,8 @@ use super::*;
 use crate::config::{self, Config};
 use crate::dispatcher::menu::Tab;
 use crate::line::testing::{Answer, Fake, PUSH, REPLY};
-use crate::notifications::{Kind, Outbox, To, templates};
+use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
+use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{push_log, session, user};
 use crate::persistence::{orm, testing};
 use crate::users::access::Denied;
@@ -90,13 +93,18 @@ impl Setup {
             ai: ai::Gateway::new(&config.ai, chrono_tz::Asia::Bangkok, pool.clone()),
             templates: Templates::new(&config.app),
             config: Arc::new(config),
+            rich_menus: None,
         }
     }
 
     /// Starts a worker on `pool` with a rate limit of `per_minute`, handling up to `sources`
     /// sources at a time.
     fn run_on(&self, pool: &PgPool, per_minute: u32, sources: usize) -> Running {
-        let context = self.context(pool, per_minute);
+        self.run_with(self.context(pool, per_minute), sources)
+    }
+
+    /// Starts a worker with `context`, handling up to `sources` sources at a time.
+    fn run_with(&self, context: Context, sources: usize) -> Running {
         let (tracker, stop, wakeup) = (
             TaskTracker::new(),
             CancellationToken::new(),
@@ -667,6 +675,7 @@ async fn an_events_notifications_are_pushed_after_its_reply() {
             handled: Handled {
                 reply: Some(reply),
                 pushes,
+                relink: Vec::new(),
             },
             received_at: Utc::now(),
             span: Span::none(),
@@ -695,4 +704,41 @@ async fn an_events_notifications_are_pushed_after_its_reply() {
         (logs[0].status, logs[0].push_type.as_str()),
         (push_log::Status::Sent, "order.new")
     );
+}
+
+/// FR-UI-10: a user whose rich menu doesn't match their roles, like an admin listed before their
+/// first message, is linked the right one once their event is answered, and only once.
+#[tokio::test]
+async fn an_outdated_menu_is_relinked_after_the_reply() {
+    let s = setup().await;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut admin = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    admin.is_admin = Set(true);
+    admin.update(&s.db).await.unwrap();
+    store(&s.db, [said("e1", ALICE, "เมนู"), said("e2", ALICE, "เมนู")]).await;
+
+    let mut context = s.context(&s.pool, 20);
+    context.rich_menus = Some(RichMenus::for_test(vec![
+        (MenuRoles::Seller, "richmenu-seller".to_owned()),
+        (MenuRoles::Admin, "richmenu-admin".to_owned()),
+        (MenuRoles::SellerAdmin, "richmenu-both".to_owned()),
+    ]));
+    let running = s.run_with(context, 2);
+    settled(&s.db, 2).await;
+    running.stop().await;
+
+    let paths: Vec<_> = s.line.requests().into_iter().map(|r| r.path).collect();
+    let link = format!("/v2/bot/user/{ALICE}/richmenu/richmenu-admin");
+    assert_eq!(paths, [REPLY, link.as_str(), REPLY]);
+    let user = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.menu_roles, Some(MenuRoles::Admin));
 }

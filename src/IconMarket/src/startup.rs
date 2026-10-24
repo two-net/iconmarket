@@ -60,20 +60,24 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     let line = line::Client::new(&config.line)?;
 
-    // A rich-menu failure is logged and startup continues
-    if let Err(e) = notifications::provision_rich_menus(&line).await {
-        warn!(
-            error = format!("{e:#}"),
-            "rich-menu provisioning failed, continuing"
-        );
-    }
-    // Users whose roles changed, by the admin sync or while the app was down, get their menu
+    // A rich-menu failure is logged and startup continues, without relinking until next time
     let orm = persistence::orm(db.clone());
-    if let Err(e) = notifications::relink_rich_menus(&orm, &line, None).await {
-        warn!(
-            error = format!("{e:#}"),
-            "rich-menu relinking failed, continuing"
-        );
+    let auto_provision = config.line.rich_menu.auto_provision;
+    let rich_menus = match notifications::provision_rich_menus(&orm, &line, auto_provision).await {
+        Ok(menus) => Some(menus),
+        Err(e) => {
+            warn!(
+                error = format!("{e:#}"),
+                "rich-menu provisioning failed, continuing"
+            );
+            None
+        }
+    };
+    // Users whose roles changed, by the admin sync or while the app was down, get their menu
+    if let Some(menus) = &rich_menus
+        && let Err(e) = notifications::relink_rich_menus(&orm, &line, menus, None).await
+    {
+        warn!(error = %e, "rich-menu relinking failed, continuing");
     }
 
     let stop = CancellationToken::new();
@@ -97,6 +101,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         ai,
         templates: Templates::new(&config.app),
         config: Arc::new(config),
+        rich_menus,
     };
     dispatcher::start(&jobs, stop.clone(), context, wakeup.clone());
 

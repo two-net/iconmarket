@@ -1,0 +1,133 @@
+{
+  "size": { "width": 2500, "height": 1686 },
+  "menus": [
+    {
+      "image": "buyer.png",
+      "tab": "buyer",
+      "tabs": [],
+      "cells": [
+        { "action": "buy", "lines": ["ซื้อของ"], "bounds": { "x": 0, "y": 0, "width": 833, "height": 843 } },
+        { "action": "search", "lines": ["ค้นหา"], "bounds": { "x": 833, "y": 0, "width": 833, "height": 843 } },
+        { "action": "cart", "lines": ["ตะกร้า"], "bounds": { "x": 1666, "y": 0, "width": 834, "height": 843 } },
+        { "action": "my_orders", "lines": ["คำสั่งซื้อของฉัน"], "bounds": { "x": 0, "y": 843, "width": 833, "height": 843 } },
+        { "action": "my_shop", "lines": ["เปิดร้าน /", "ร้านของฉัน"], "bounds": { "x": 833, "y": 843, "width": 833, "height": 843 } },
+        { "action": "help", "lines": ["ช่วยเหลือ"], "bounds": { "x": 1666, "y": 843, "width": 834, "height": 843 } }
+      ]
+    },
+    {
+      "image": "seller.buyer.png",
+      "tab": "buyer",
+      "tabs": [
+        { "tab": "buyer", "label": "ผู้ซื้อ", "active": true, "bounds": { "x": 0, "y": 0, "width": 1250, "height": 236 } },
+        { "tab": "seller", "label": "ผู้ขาย", "active": false, "bounds": { "x": 1250, "y": 0, "width": 1250, "height": 236 } }
+      ],
+      "cells": [
+        { "action": "buy", "lines": ["ซื้อของ"], "bounds": { "x": 0, "y": 236, "width": 833, "height": 725 } },
+        { "action": "search", "lines": ["ค้นหา"], "bounds": { "x": 833, "y": 236, "width": 833, "height": 725 } },
+        { "action": "cart", "lines": ["ตะกร้า"], "bounds": { "x": 1666, "y": 236, "width": 834, "height": 725 } },
+        { "action": "my_orders", "lines": ["คำสั่งซื้อของฉัน"], "bounds": { "x": 0, "y": 961, "width": 833, "height": 725 } },
+        { "action": "my_shop", "lines": ["ร้านของฉัน"], "bounds": { "x": 833, "y": 961, "width": 833, "height": 725 } },
+        { "action": "help", "lines": ["ช่วยเหลือ"], "bounds": { "x": 1666, "y": 961, "width": 834, "height": 725 } }
+      ]
+    },
+    {
+      "image": "seller.seller.png",
+      "tab": "seller",
+      "tabs": [
+        { "tab": "buyer", "label": "ผู้ซื้อ", "active": false, "bounds": { "x": 0, "y": 0, "width": 1250, "height": 236 } },
+        { "tab": "seller", "label": "ผู้ขาย", "active": true, "bounds": { "x": 1250, "y": 0, "width": 1250, "height": 236 } }
+      ],
+      "cells": [
+        { "action": "shop_orders", "lines": ["ออเดอร์ร้าน"], "bounds": { "x": 0, "y": 236, "width": 833, "height": 725 } },
+        { "action": "add_product", "lines": ["เพิ่มสินค้า"], "bounds": { "x": 833, "y": 236, "width": 833, "height": 725 } },
+        { "action": "my_products", "lines": ["สินค้าของฉัน"], "bounds": { "x": 1666, "y": 236, "width": 834, "height": 725 } },
+        { "action": "open_close", "lines": ["เปิด/ปิดร้าน"], "bounds": { "x": 0, "y": 961, "width": 833, "height": 725 } },
+        { "action": "sales", "lines": ["ยอดขาย"], "bounds": { "x": 833, "y": 961, "width": 833, "height": 725 } },
+        { "action": "shop_settings", "lines": ["ตั้งค่าร้าน"], "bounds": { "x": 1666, "y": 961, "width": 834, "height": 725 } }
+      ]
+    },
+    {
+      "image": "admin.buyer.png",
+      "tab": "buyer",
+      "tabs": [
+        { "tab": "buyer", "label": "ผู้ซื้อ", "active": true, "bounds": { "x": 0, "y": 0, "width": 1250, "height": 236 } },
+        { "tab": "admin", "label": "ผู้ดูแล", "active": false, "bounds": { "x": 1250, "y": 0, "width": 1250, "height": 236 } }
+      ],
+      "cells": [
+        { "action": "buy", "lines": ["ซื้อของ"], "bounds": { "x": 0, "y": 236, "width": 833, "height": 725 } },
+        { "action": "search", "lines": ["ค้นหา"], "bounds": { "x": 833, "y": 236, "width": 833, "height": 725 } },
+        { "action": "cart", "lines": ["ตะกร้า"], "bounds": { "x": 1666, "y": 236, "width": 834, "height": 725 } },
+        { "action": "my_orders", "lines": ["คำสั่งซื้อของฉัน"], "bounds": { "x": 0, "y": 961, "width": 833, "height": 725 } },
+        { "action": "my_shop", "lines": ["เปิดร้าน /", "ร้านของฉัน"], "bounds": { "x": 833, "y": 961, "width": 833, "height": 725 } },
+        { "action": "help", "lines": ["ช่วยเหลือ"], "bounds": { "x": 1666, "y": 961, "width": 834, "height": 725 } }
+      ]
+    },
+    {
+      "image": "admin.admin.png",
+      "tab": "admin",
+      "tabs": [
+        { "tab": "buyer", "label": "ผู้ซื้อ", "active": false, "bounds": { "x": 0, "y": 0, "width": 1250, "height": 236 } },
+        { "tab": "admin", "label": "ผู้ดูแล", "active": true, "bounds": { "x": 1250, "y": 0, "width": 1250, "height": 236 } }
+      ],
+      "cells": [
+        { "action": "approve_shops", "lines": ["อนุมัติร้าน"], "bounds": { "x": 0, "y": 236, "width": 833, "height": 725 } },
+        { "action": "review_queue", "lines": ["รายการรอตรวจ"], "bounds": { "x": 833, "y": 236, "width": 833, "height": 725 } },
+        { "action": "users", "lines": ["ผู้ใช้"], "bounds": { "x": 1666, "y": 236, "width": 834, "height": 725 } },
+        { "action": "categories", "lines": ["หมวดหมู่"], "bounds": { "x": 0, "y": 961, "width": 833, "height": 725 } },
+        { "action": "stats", "lines": ["สถิติ"], "bounds": { "x": 833, "y": 961, "width": 833, "height": 725 } },
+        { "action": "announcements", "lines": ["ประกาศ"], "bounds": { "x": 1666, "y": 961, "width": 834, "height": 725 } }
+      ]
+    },
+    {
+      "image": "seller_admin.buyer.png",
+      "tab": "buyer",
+      "tabs": [
+        { "tab": "buyer", "label": "ผู้ซื้อ", "active": true, "bounds": { "x": 0, "y": 0, "width": 833, "height": 236 } },
+        { "tab": "seller", "label": "ผู้ขาย", "active": false, "bounds": { "x": 833, "y": 0, "width": 833, "height": 236 } },
+        { "tab": "admin", "label": "ผู้ดูแล", "active": false, "bounds": { "x": 1666, "y": 0, "width": 834, "height": 236 } }
+      ],
+      "cells": [
+        { "action": "buy", "lines": ["ซื้อของ"], "bounds": { "x": 0, "y": 236, "width": 833, "height": 725 } },
+        { "action": "search", "lines": ["ค้นหา"], "bounds": { "x": 833, "y": 236, "width": 833, "height": 725 } },
+        { "action": "cart", "lines": ["ตะกร้า"], "bounds": { "x": 1666, "y": 236, "width": 834, "height": 725 } },
+        { "action": "my_orders", "lines": ["คำสั่งซื้อของฉัน"], "bounds": { "x": 0, "y": 961, "width": 833, "height": 725 } },
+        { "action": "my_shop", "lines": ["ร้านของฉัน"], "bounds": { "x": 833, "y": 961, "width": 833, "height": 725 } },
+        { "action": "help", "lines": ["ช่วยเหลือ"], "bounds": { "x": 1666, "y": 961, "width": 834, "height": 725 } }
+      ]
+    },
+    {
+      "image": "seller_admin.seller.png",
+      "tab": "seller",
+      "tabs": [
+        { "tab": "buyer", "label": "ผู้ซื้อ", "active": false, "bounds": { "x": 0, "y": 0, "width": 833, "height": 236 } },
+        { "tab": "seller", "label": "ผู้ขาย", "active": true, "bounds": { "x": 833, "y": 0, "width": 833, "height": 236 } },
+        { "tab": "admin", "label": "ผู้ดูแล", "active": false, "bounds": { "x": 1666, "y": 0, "width": 834, "height": 236 } }
+      ],
+      "cells": [
+        { "action": "shop_orders", "lines": ["ออเดอร์ร้าน"], "bounds": { "x": 0, "y": 236, "width": 833, "height": 725 } },
+        { "action": "add_product", "lines": ["เพิ่มสินค้า"], "bounds": { "x": 833, "y": 236, "width": 833, "height": 725 } },
+        { "action": "my_products", "lines": ["สินค้าของฉัน"], "bounds": { "x": 1666, "y": 236, "width": 834, "height": 725 } },
+        { "action": "open_close", "lines": ["เปิด/ปิดร้าน"], "bounds": { "x": 0, "y": 961, "width": 833, "height": 725 } },
+        { "action": "sales", "lines": ["ยอดขาย"], "bounds": { "x": 833, "y": 961, "width": 833, "height": 725 } },
+        { "action": "shop_settings", "lines": ["ตั้งค่าร้าน"], "bounds": { "x": 1666, "y": 961, "width": 834, "height": 725 } }
+      ]
+    },
+    {
+      "image": "seller_admin.admin.png",
+      "tab": "admin",
+      "tabs": [
+        { "tab": "buyer", "label": "ผู้ซื้อ", "active": false, "bounds": { "x": 0, "y": 0, "width": 833, "height": 236 } },
+        { "tab": "seller", "label": "ผู้ขาย", "active": false, "bounds": { "x": 833, "y": 0, "width": 833, "height": 236 } },
+        { "tab": "admin", "label": "ผู้ดูแล", "active": true, "bounds": { "x": 1666, "y": 0, "width": 834, "height": 236 } }
+      ],
+      "cells": [
+        { "action": "approve_shops", "lines": ["อนุมัติร้าน"], "bounds": { "x": 0, "y": 236, "width": 833, "height": 725 } },
+        { "action": "review_queue", "lines": ["รายการรอตรวจ"], "bounds": { "x": 833, "y": 236, "width": 833, "height": 725 } },
+        { "action": "users", "lines": ["ผู้ใช้"], "bounds": { "x": 1666, "y": 236, "width": 834, "height": 725 } },
+        { "action": "categories", "lines": ["หมวดหมู่"], "bounds": { "x": 0, "y": 961, "width": 833, "height": 725 } },
+        { "action": "stats", "lines": ["สถิติ"], "bounds": { "x": 833, "y": 961, "width": 833, "height": 725 } },
+        { "action": "announcements", "lines": ["ประกาศ"], "bounds": { "x": 1666, "y": 961, "width": 834, "height": 725 } }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,5 @@
 /target
 # Holds credentials (CFG-09); iconmarket.sample.toml is the committed template
 /iconmarket.toml
+# Fonts render.py downloads to draw the rich-menu images
+/assets/rich-menus/.fonts/

@@ -83,6 +83,18 @@ pub struct Turn<'a> {
     /// What handling the event notifies, pushed once it commits. Behind a lock so that handlers,
     /// which share the turn, can add to it.
     notifications: Mutex<Outbox>,
+    /// The users whose roles handling the event changed, behind a lock likewise
+    roles_changed: Mutex<Vec<i64>>,
+}
+
+/// What a turn leaves to do once its event takes effect.
+#[derive(Debug, Default)]
+pub struct Finished {
+    /// The reply
+    pub messages: Vec<Message>,
+    pub outbox: Outbox,
+    /// The users whose rich menus to relink, in ID order (FR-UI-10)
+    pub relink: Vec<i64>,
 }
 
 impl<'a> Turn<'a> {
@@ -109,6 +121,7 @@ impl<'a> Turn<'a> {
             session,
             expired,
             notifications: Mutex::new(Outbox::default()),
+            roles_changed: Mutex::new(Vec::new()),
         })
     }
 
@@ -142,14 +155,39 @@ impl<'a> Turn<'a> {
             .add(kind, to, messages);
     }
 
-    /// Ends the turn: its [reply](Self::reply) of `messages`, and what it notifies.
-    pub fn finish(self, messages: Vec<Message>) -> (Vec<Message>, Outbox) {
+    /// Relinks the rich menu of user `user_id` once the event takes effect, as handling it
+    /// changed their roles (FR-UI-10): a shop approved or suspended, say.
+    pub fn roles_changed(&self, user_id: i64) {
+        self.roles_changed
+            .lock()
+            .expect("no panic while held")
+            .push(user_id);
+    }
+
+    /// Ends the turn: its [reply](Self::reply) of `messages`, what it notifies, and the rich
+    /// menus to relink. The actor's own is relinked too if it doesn't match the roles they had
+    /// at the start: they were listed as an admin before their first event, say, or an earlier
+    /// relink failed.
+    pub fn finish(self, messages: Vec<Message>) -> Finished {
         let messages = self.reply(messages);
         let outbox = self
             .notifications
             .into_inner()
             .expect("no panic while held");
-        (messages, outbox)
+        let mut relink = self
+            .roles_changed
+            .into_inner()
+            .expect("no panic while held");
+        if self.actor.roles().menu() != self.actor.user.menu_roles {
+            relink.push(self.actor.user.id);
+        }
+        relink.sort_unstable();
+        relink.dedup();
+        Finished {
+            messages,
+            outbox,
+            relink,
+        }
     }
 
     /// When a flow answered now expires, unless answered again (FR-UI-15).

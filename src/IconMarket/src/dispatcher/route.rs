@@ -28,11 +28,11 @@ use super::menu::{self, Item};
 use super::pending;
 use super::postback::Postback;
 use super::worker::Context;
-use super::{Turn, flow};
+use super::{Finished, Turn, flow};
 use crate::ai::Feature;
 use crate::line::Message;
+use crate::notifications::Queued;
 use crate::notifications::templates::labels;
-use crate::notifications::{Outbox, Queued};
 use crate::payments;
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
@@ -58,6 +58,8 @@ pub struct Handled {
     pub reply: Option<Reply>,
     /// The notifications it queued (FR-NOT-04)
     pub pushes: Queued,
+    /// The users whose rich menus to relink (FR-UI-10)
+    pub relink: Vec<i64>,
 }
 
 /// What a user sent, as handed to the module that handles it.
@@ -103,8 +105,8 @@ impl Input {
 }
 
 /// Handles `event`, stored as `row`, at `now`. Everything it changes goes through `txn`, in which
-/// what it notifies is queued too; the reply, if there is one, and the notifications are sent once
-/// `txn` commits.
+/// what it notifies is queued too; the reply, if there is one, the notifications and the rich
+/// menus of users whose roles changed are sent once `txn` commits.
 pub async fn handle(
     context: &Context,
     txn: &DatabaseTransaction,
@@ -117,16 +119,20 @@ pub async fn handle(
         source,
         kind,
     } = event;
-    let (messages, outbox) = match source {
+    let Finished {
+        messages,
+        outbox,
+        relink,
+    } = match source {
         Source::User(line_user_id) => {
             user_event(context, txn, row, &line_user_id, kind, now).await?
         }
         Source::Group { .. } => {
             group_event(context, &kind);
-            Default::default()
+            Finished::default()
         }
         // Multi-person chats, and events from no chat, are ignored
-        Source::Room | Source::Unknown => Default::default(),
+        Source::Room | Source::Unknown => Finished::default(),
     };
     let pushes = outbox.queue(txn, &context.config.notification, now).await?;
     let reply = match reply_token {
@@ -137,10 +143,15 @@ pub async fn handle(
         }),
         _ => None,
     };
-    Ok(Handled { reply, pushes })
+    Ok(Handled {
+        reply,
+        pushes,
+        relink,
+    })
 }
 
-/// An event in a user's one-to-one chat (FR-LINE-06): the reply, and what it notifies.
+/// An event in a user's one-to-one chat (FR-LINE-06): the reply, what it notifies, and the rich
+/// menus to relink.
 async fn user_event(
     context: &Context,
     txn: &DatabaseTransaction,
@@ -148,7 +159,7 @@ async fn user_event(
     line_user_id: &str,
     kind: Kind,
     now: DateTimeUtc,
-) -> Result<(Vec<Message>, Outbox), DbErr> {
+) -> Result<Finished, DbErr> {
     let input = match kind {
         Kind::Follow => {
             let Some(turn) = load_turn(context, txn, line_user_id, now).await? else {
@@ -172,7 +183,10 @@ async fn user_event(
         Verdict::Allowed => {}
         Verdict::Notice => {
             info!(per_minute, "user over the rate limit; told to slow down");
-            return Ok((vec![context.templates.slow_down()], Outbox::default()));
+            return Ok(Finished {
+                messages: vec![context.templates.slow_down()],
+                ..Finished::default()
+            });
         }
         Verdict::Ignored => {
             debug!(per_minute, "user over the rate limit; event ignored");
@@ -287,10 +301,11 @@ impl Keyword {
 }
 
 /// Whether a postback for `action` works before onboarding is complete: onboarding's own
-/// buttons and help (FR-UI-12).
+/// buttons, help (FR-UI-12) and the rich menu's tabs, which only LINE acts on.
 fn open_before_onboarding(action: &str) -> bool {
     let help = Item::Help.action();
     action == help
+        || action == menu::SWITCH_TAB
         || action
             .strip_prefix(help)
             .is_some_and(|rest| rest.starts_with('.'))
@@ -425,8 +440,11 @@ async fn answer_flow(turn: &mut Turn<'_>, input: &Input) -> Result<Option<Vec<Me
 /// A postback (FR-UI-12 step 1, FR-UI-13): handled by the module owning its action, which
 /// checks the user may still do it. Each module adds its actions as its issue builds it.
 async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
-    if postback.action() == pending::CONFIRM {
-        return pending::tapped(turn, postback).await;
+    match postback.action() {
+        pending::CONFIRM => return pending::tapped(turn, postback).await,
+        // LINE has switched to the tab's rich menu (FR-UI-10)
+        menu::SWITCH_TAB => return Ok(Vec::new()),
+        _ => {}
     }
     Ok(match Item::from_action(postback.action()) {
         Some(item) => menu_item(turn, item),
@@ -607,6 +625,8 @@ mod tests {
             decide(&postback("onboarding.accept"), new),
             tap("onboarding.accept")
         );
+        // A listed admin can have tabs before onboarding
+        assert_eq!(decide(&postback("tab?to=admin"), new), tap("tab?to=admin"));
         for input in [
             text("เมนู"),
             text("ยกเลิก"),
@@ -684,7 +704,13 @@ mod tests {
 
     #[test]
     fn help_actions_are_open_before_onboarding() {
-        for action in ["help", "help.privacy", "help.report", "onboarding.accept"] {
+        for action in [
+            "help",
+            "help.privacy",
+            "help.report",
+            "onboarding.accept",
+            "tab",
+        ] {
             assert!(open_before_onboarding(action), "{action}");
         }
         for action in [
