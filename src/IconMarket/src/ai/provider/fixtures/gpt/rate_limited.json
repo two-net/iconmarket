@@ -1,0 +1,14 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 429,
+  "response": {
+    "error": {
+      "message": "Rate limit reached on requests per min (RPM). Please try again in 1s.",
+      "type": "requests",
+      "param": null,
+      "code": "rate_limit_exceeded"
+    }
+  }
+}

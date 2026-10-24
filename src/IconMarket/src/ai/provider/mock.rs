@@ -153,6 +153,7 @@ fn answer(request: &Request) -> Response {
             input_tokens: tokens(prompt),
             output_tokens: tokens(reply),
         },
+        native: None,
     }
 }
 

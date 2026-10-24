@@ -1,7 +1,6 @@
 //! The connection to LINE: TLS, the access token, timeouts and error mapping, plus the calls
 //! that read from LINE or only show something: profiles, content and the loading animation.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -14,6 +13,7 @@ use url::Url;
 
 use super::error::Error;
 use crate::config::{LineConfig, Secret};
+use crate::tls;
 
 const API: &str = "https://api.line.me/";
 /// Content and rich-menu images go through a separate host
@@ -93,7 +93,9 @@ impl Client {
         // Masked in `Debug` (CFG-06)
         authorization.set_sensitive(true);
         let http = reqwest::Client::builder()
-            .tls_backend_preconfigured(tls()?)
+            .tls_backend_preconfigured(
+                tls::client_config().context("cannot set up TLS for the LINE client")?,
+            )
             // Otherwise reqwest reads HTTP_PROXY and friends (CFG-02)
             .no_proxy()
             .default_headers(HeaderMap::from_iter([(AUTHORIZATION, authorization)]))
@@ -219,21 +221,6 @@ impl Client {
 /// LINE accepts 5 to 60 seconds, in steps of 5.
 fn loading_seconds(seconds: u32) -> u32 {
     seconds.div_ceil(5).saturating_mul(5).clamp(5, 60)
-}
-
-/// TLS with ring and the compiled-in roots, like the database connection. No certificate
-/// settings are read from the environment (CFG-02).
-fn tls() -> anyhow::Result<rustls::ClientConfig> {
-    let roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .context("cannot set up TLS for the LINE client")?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(config)
 }
 
 fn join(base: &Url, segments: &[&str]) -> Url {

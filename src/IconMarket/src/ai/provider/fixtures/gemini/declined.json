@@ -1,0 +1,15 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 200,
+  "response": {
+    "promptFeedback": {
+      "blockReason": "SAFETY"
+    },
+    "usageMetadata": {
+      "promptTokenCount": 120,
+      "totalTokenCount": 120
+    }
+  }
+}

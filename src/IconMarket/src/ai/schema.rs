@@ -1,10 +1,11 @@
 //! The JSON Schema subset every provider accepts, for tool parameters and structured output,
 //! and validation of what the model returns against it (FR-AI-05).
 //!
-//! Only what Claude, Gemini, GPT and Grok all understand is offered: types, enums, lengths,
+//! Only what Claude, Gemini, GPT and Grok can all be given is offered: types, enums, lengths,
 //! ranges, arrays and objects; no `$ref`, `oneOf`, patterns or formats. An object never
-//! allows properties it doesn't list. Adapters translate [`Schema::to_json`] where their
-//! provider differs.
+//! allows properties it doesn't list. Not every provider constrains its answers by every rule
+//! (Claude by no length or range, OpenAI by no length), so adapters translate
+//! [`Schema::to_json`] for theirs, and [`Schema::validate`] still enforces the rest.
 
 use std::fmt;
 

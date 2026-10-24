@@ -136,6 +136,7 @@ fn transcript(messages: &[Message]) -> String {
                     Part::Image(media) | Part::Audio(media) => format!("{media:?}"),
                     Part::ToolCall(call) => calls(std::slice::from_ref(call)),
                     Part::ToolResult { call_id, content } => format!("[{call_id}] {content}"),
+                    Part::Native(native) => format!("{native:?}"),
                 })
                 .collect();
             format!("{role}: {}", parts.join(" "))

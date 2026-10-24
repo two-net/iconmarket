@@ -5,8 +5,9 @@
 //! only what is worth retrying (FR-AI-10) and logs every call (FR-AI-16).
 //!
 //! Each provider is one adapter in [`provider`], so adding or changing one touches nothing
-//! outside this module (NFR-MNT-02, FR-AIP-03). The `mock` provider needs no network and no
-//! key (FR-AIP-05); the real adapters are built by #18, and the assistant's tools by #37.
+//! outside this module (NFR-MNT-02, FR-AIP-03): Claude, Gemini, GPT and Grok (FR-AIP-01), and
+//! the `mock` provider, which needs no network and no key (FR-AIP-05). The assistant's tools
+//! are built by #37.
 
 #![allow(
     dead_code,
@@ -33,7 +34,7 @@ pub use gateway::Gateway;
 pub use {
     gateway::{Call, Unavailable},
     provider::Capabilities,
-    request::{Media, Message, Output, Part, Role, Tool, ToolCall},
+    request::{Media, Message, Native, Output, Part, Role, Tool, ToolCall},
     schema::{Problem, Schema},
     validate::Answer,
 };

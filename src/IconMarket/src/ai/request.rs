@@ -80,6 +80,29 @@ pub enum Part {
         call_id: String,
         content: Value,
     },
+    /// The model's turn as its provider sent it; see [`Native`]
+    Native(Native),
+}
+
+/// An assistant turn exactly as the provider returned it, kept beside the text and tool-call
+/// parts of the same message. Inside a tool loop some providers need their own turn back
+/// unchanged: Claude its thinking blocks, Gemini its thought signatures, OpenAI and xAI their
+/// reasoning items. Only the adapter for the same provider and model sends it; any other
+/// rebuilds the turn from the other parts, so history survives a change of provider
+/// (FR-AIP-03).
+#[derive(Clone, PartialEq)]
+pub struct Native {
+    /// As `ai.provider` names it
+    pub provider: &'static str,
+    pub model: String,
+    pub content: Value,
+}
+
+/// The provider and model only: the content repeats the conversation (NFR-PRIV-05).
+impl fmt::Debug for Native {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} turn, {}>", self.provider, self.model)
+    }
 }
 
 /// An image or audio clip sent to the model.
@@ -133,6 +156,8 @@ pub struct Response {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
     pub usage: Usage,
+    /// The turn as the provider sent it, for providers that need it back; `None` from the mock
+    pub native: Option<Native>,
 }
 
 /// Tokens the provider counted, for cost (NFR-COST-02); 0 when it didn't say.

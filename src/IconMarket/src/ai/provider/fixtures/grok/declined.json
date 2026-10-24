@@ -1,0 +1,31 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 200,
+  "response": {
+    "id": "resp_docs",
+    "object": "response",
+    "status": "completed",
+    "model": "docs",
+    "output": [
+      {
+        "type": "message",
+        "id": "msg_docs",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "refusal",
+            "refusal": "I'm sorry, I can't help with that."
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 120,
+      "output_tokens": 10,
+      "total_tokens": 130
+    }
+  }
+}

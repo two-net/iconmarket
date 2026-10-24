@@ -1,0 +1,10 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 503,
+  "response": {
+    "code": "Service unavailable",
+    "error": "The service is currently unavailable."
+  }
+}

@@ -19,6 +19,7 @@ mod scheduler;
 mod shutdown;
 mod startup;
 mod thai;
+mod tls;
 mod users;
 mod webhook;
 

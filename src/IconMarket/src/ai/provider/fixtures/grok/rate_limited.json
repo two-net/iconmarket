@@ -1,0 +1,10 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 429,
+  "response": {
+    "code": "Some resource has been exhausted",
+    "error": "Your team has reached its requests per second limit."
+  }
+}

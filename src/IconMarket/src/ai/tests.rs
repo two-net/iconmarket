@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use url::Url;
 
+use super::provider::contract::{self, Case, Fixture};
+use super::provider::testing::Fake;
 use super::provider::{Adapter, Error, Mock, Step};
 use super::request::{Response, Usage};
 use super::*;
@@ -106,6 +108,7 @@ fn reply(text: &str) -> Step {
         text: text.to_owned(),
         tool_calls: Vec::new(),
         usage: USAGE,
+        native: None,
     })
 }
 
@@ -118,6 +121,7 @@ fn tool_call(name: &str, arguments: Value) -> Step {
             arguments,
         }],
         usage: USAGE,
+        native: None,
     })
 }
 
@@ -150,6 +154,63 @@ async fn outcomes(db: &PgPool) -> Vec<String> {
         .into_iter()
         .map(|call| call.outcome)
         .collect()
+}
+
+/// AC-05: with `ai.provider` set to claude, switching to gemini with its model and key leaves
+/// every AI feature working: the same calls get valid answers from the same database, and no
+/// schema or data changes. Each provider answers with its recorded contract fixtures.
+#[tokio::test]
+async fn switching_provider_is_a_config_change() {
+    let (_postgres, db) = testing::migrated().await;
+    let calls = [
+        (Feature::Assistant, Case::Tools),
+        (Feature::Listing, Case::Json),
+        (Feature::SlipReading, Case::Image),
+    ];
+    for provider in [AiProvider::Claude, AiProvider::Gemini] {
+        let fake = Fake::start().await;
+        let mut model = String::new();
+        for (_, case) in calls {
+            let fixture = Fixture::expect(provider, case);
+            fake.answer(fixture.status, fixture.response);
+            model = fixture.model;
+        }
+        let mut config = config(50, 2000);
+        config.primary = Some(contract::endpoint(provider, &model, "ai-key-value"));
+        config.base_url = Some(fake.url.clone());
+        let gateway = Gateway::new(&config, Bangkok, db.clone());
+
+        for (feature, case) in calls {
+            let request = case.request(None);
+            let call = Call {
+                feature,
+                user_id: None,
+                system: request.system,
+                messages: request.messages,
+                output: request.output,
+            };
+            let answer = gateway.complete(call).await;
+            assert!(
+                answer.is_ok(),
+                "{} {feature:?}: {answer:?}",
+                provider.name()
+            );
+        }
+        // Claude takes no audio, so only voice messages wait for a model that does
+        for feature in Feature::ALL {
+            let expected = feature != Feature::Voice || provider == AiProvider::Gemini;
+            assert_eq!(gateway.is_enabled(feature), expected, "{feature:?}");
+        }
+    }
+    let providers: Vec<String> = logged(&db)
+        .await
+        .into_iter()
+        .map(|call| call.provider)
+        .collect();
+    assert_eq!(
+        providers,
+        ["claude", "claude", "claude", "gemini", "gemini", "gemini"]
+    );
 }
 
 /// AC (NFR-MNT-07): a call to a tool that doesn't exist is retried once, with a hint naming

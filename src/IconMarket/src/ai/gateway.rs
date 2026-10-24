@@ -102,7 +102,7 @@ impl Gateway {
                 info!("AI is off: ai.enabled is false");
                 None
             }
-            Some(endpoint) => match Adapter::new(endpoint) {
+            Some(endpoint) => match Adapter::new(endpoint, config.base_url.as_ref()) {
                 Ok(adapter) => Some(adapter),
                 Err(reason) => {
                     warn!(
@@ -436,10 +436,14 @@ mod tests {
             Err(Unavailable::Disabled)
         );
 
-        // Until #18 builds its adapter
+        // Claude takes no audio, so voice messages stay off (FR-AIP-04)
         let claude = config(Some(endpoint(AiProvider::Claude)));
         let claude = Gateway::new(&claude, Bangkok, testing::unreachable());
-        assert_eq!(enabled(&claude), []);
+        let without_voice: Vec<Feature> = Feature::ALL
+            .into_iter()
+            .filter(|feature| *feature != Feature::Voice)
+            .collect();
+        assert_eq!(enabled(&claude), without_voice);
 
         let mock = Gateway::new(
             &config(Some(endpoint(AiProvider::Mock))),

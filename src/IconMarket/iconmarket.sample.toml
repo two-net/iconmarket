@@ -47,18 +47,29 @@ autoProvision = true
 [ai]
 # Master switch. When true, provider, model and apiKey are required
 enabled = true
-# claude, gemini, gpt, grok or mock
+# claude, gemini, gpt, grok or mock. Changing it, or the model, needs only a restart. What each
+# takes, and so which features it can serve (the others are turned off with a warning):
+#   claude  images                 (no voice messages)
+#   gemini  images and voice
+#   gpt     images                 (no voice messages)
+#   grok    images, except grok-build and grok-code models (no voice messages)
 provider = "claude"
-# Model name at that provider
+# Model name at that provider, e.g. claude-opus-5, gemini-3.8-flash, gpt-6-astra, grok-4.7
 model = "change-me"
 # Not needed for mock
 apiKey = "change-me"
-# Endpoint override; empty uses the provider's default
+# Endpoint override, e.g. a proxy; empty uses the provider's own. Written as each provider's
+# SDKs take it:
+#   claude  https://api.anthropic.com
+#   gemini  https://generativelanguage.googleapis.com
+#   gpt     https://api.openai.com/v1
+#   grok    https://api.x.ai/v1
 baseUrl = ""
 # Per request
 timeoutSeconds = 20
+# The visible answer. Models that think get room for their thinking on top
 maxOutputTokens = 1024
-# 0 to 2
+# 0 to 2. Models that reason take none, and keep their own
 temperature = 0.3
 # Conversation turns sent as context
 historyTurns = 10

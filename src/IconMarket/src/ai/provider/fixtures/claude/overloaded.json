@@ -1,0 +1,13 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 529,
+  "response": {
+    "type": "error",
+    "error": {
+      "type": "overloaded_error",
+      "message": "Overloaded"
+    }
+  }
+}

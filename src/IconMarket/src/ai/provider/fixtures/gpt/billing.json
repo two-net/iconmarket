@@ -1,0 +1,14 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 429,
+  "response": {
+    "error": {
+      "message": "You exceeded your current quota, please check your plan and billing details.",
+      "type": "insufficient_quota",
+      "param": null,
+      "code": "insufficient_quota"
+    }
+  }
+}

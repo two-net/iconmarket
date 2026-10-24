@@ -1,0 +1,14 @@
+{
+  "model": "docs",
+  "recorded": "docs",
+  "request": null,
+  "status": 503,
+  "response": {
+    "error": {
+      "message": "The server is overloaded or not ready yet.",
+      "type": "server_error",
+      "param": null,
+      "code": null
+    }
+  }
+}
