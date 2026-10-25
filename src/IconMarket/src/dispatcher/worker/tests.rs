@@ -30,7 +30,7 @@ use crate::notifications::templates::labels;
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{
-    audit_log, category, join_attempt, push_log, report, session, shop, user,
+    audit_log, category, image, join_attempt, product, push_log, report, session, shop, user,
 };
 use crate::persistence::{orm, testing};
 use crate::thai::Label;
@@ -1480,4 +1480,103 @@ async fn a_shop_is_run_end_to_end() {
         .unwrap();
     assert!(!shop.is_open);
     assert_eq!(shop.opening_hours.as_deref(), Some("ทุกวัน 06:00–10:00"));
+}
+
+/// FR-PROD-01, FR-UI-14, end to end: a seller's photo that no flow takes starts "เพิ่มสินค้า"
+/// with it, the answers lead to the preview, and "ยืนยันลงขาย" lists the product with its photo;
+/// "เพิ่มสินค้า" from the menu then starts another.
+#[tokio::test]
+async fn a_product_is_listed_from_a_photo_end_to_end() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut seller = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    seller.menu_roles = Set(Some(MenuRoles::Seller));
+    seller.update(&s.db).await.unwrap();
+    let shop = testing::new_shop(alice).insert(&s.db).await.unwrap();
+    let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let jpeg = include_bytes!("../../ai/provider/fixtures/media/slip.jpg");
+    s.line.script(
+        "/v2/bot/message/p1/content",
+        [Answer::bytes("image/jpeg", jpeg)],
+    );
+    let photo = json!({ "id": "p1", "type": "image", "contentProvider": { "type": "line" } });
+
+    store(
+        &s.db,
+        [
+            sent("a1", ALICE, photo),
+            said("a2", ALICE, "ถัดไป"),
+            said("a3", ALICE, "ไข่ไก่เบอร์ 2"),
+            said("a4", ALICE, "110"),
+            said("a5", ALICE, "แผง"),
+            said("a6", ALICE, "ไข่/นม"),
+            said("a7", ALICE, "30"),
+            said("a8", ALICE, "ข้าม"),
+            // Seven answers since the photo
+            tapped("a9", ALICE, "add_product.submit?r=7"),
+            tapped("a10", ALICE, "add_product"),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 10).await;
+    replied(&s, 10).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    let offered = reply("a1")[0]["text"].as_str().unwrap().to_owned();
+    assert!(
+        offered.starts_with("ได้รับรูปแล้วค่ะ จะลงขายสินค้านี้ใช่ไหมคะ"),
+        "{offered}"
+    );
+    let preview = serde_json::to_string(&reply("a8")).unwrap();
+    for shown in [
+        "ยืนยันลงขาย",
+        "฿110 / แผง",
+        "30 แผง",
+        "add_product.submit?r=7",
+    ] {
+        assert!(preview.contains(shown), "{shown} in {preview}");
+    }
+    let next = vec![
+        Item::MyProducts
+            .postback()
+            .button(labels::MY_PRODUCTS.clone()),
+        Item::AddProduct
+            .postback()
+            .button(labels::ADD_ANOTHER.clone()),
+    ];
+    assert_eq!(reply("a9"), json!([t.product_listed("ไข่ไก่เบอร์ 2", next)]));
+    let another = reply("a10")[0]["text"].as_str().unwrap().to_owned();
+    assert!(another.starts_with("มาลงสินค้ากันค่ะ"), "{another}");
+
+    let product = product::Entity::find().one(&s.db).await.unwrap().unwrap();
+    assert_eq!(
+        (
+            product.shop_id,
+            product.category_id,
+            product.price,
+            product.stock,
+            product.status
+        ),
+        (
+            shop.id,
+            eggs.id,
+            crate::thai::Money::from_baht(110),
+            Some(30),
+            product::Status::Active
+        )
+    );
+    let photo = image::Entity::find().one(&s.db).await.unwrap().unwrap();
+    assert_eq!(
+        (photo.owner_type, photo.owner_id, photo.position),
+        (image::OwnerType::Product, product.id, 0)
+    );
 }

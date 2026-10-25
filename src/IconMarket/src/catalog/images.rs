@@ -7,12 +7,13 @@
 //! [`SlipLink`] at `/img/s/{token}`, until the link expires (AC-14).
 //!
 //! A photo sent in a guided flow before what it is for exists, such as the photo of a shop
-//! applied for, is a [draft](Owner::Draft) of the user who sent it. The flow [`adopt`]s it for
-//! what it makes; one that ends without is swept by [`delete_orphaned_drafts`].
+//! applied for or those of a product being added, is a [draft](Owner::Draft) of the user who
+//! sent it. The flow [`adopt`]s it for what it makes; one that ends without is swept by
+//! [`delete_orphaned_drafts`].
 
 #![allow(
     dead_code,
-    reason = "the product and payment flows that upload images are built by later issues"
+    reason = "the payment flows that upload slips are built by later issues"
 )]
 
 mod process;
@@ -88,7 +89,7 @@ pub enum Owner {
     Product(i64),
     Shop(i64),
     Slip(i64),
-    /// The user with this ID, who sent it in a guided flow (FR-SHOP-01)
+    /// The user with this ID, who sent it in a guided flow (FR-SHOP-01, FR-PROD-01)
     Draft(i64),
 }
 
@@ -233,17 +234,35 @@ pub async fn adopt(
     user_id: i64,
     owner: Owner,
 ) -> Result<bool, DbErr> {
+    adopt_all(db, &[id], user_id, owner).await
+}
+
+/// Gives user `user_id`'s drafts `ids` to `owner`, in that order, such as a product's photos
+/// (FR-PROD-01). Returns whether all of them were there: one may have been
+/// [swept](delete_orphaned_drafts), and the others are then given all the same, for the caller
+/// to roll back.
+pub async fn adopt_all(
+    db: &impl ConnectionTrait,
+    ids: &[Uuid],
+    user_id: i64,
+    owner: Owner,
+) -> Result<bool, DbErr> {
     let (owner_type, owner_id) = owner.parts();
-    let adopted = image::Entity::update_many()
-        .col_expr(image::Column::OwnerType, Expr::value(owner_type))
-        .col_expr(image::Column::OwnerId, Expr::value(owner_id))
-        .col_expr(image::Column::Position, Expr::value(0_i16))
-        .filter(image::Column::Id.eq(id))
-        .filter(image::Column::OwnerType.eq(OwnerType::Draft))
-        .filter(image::Column::OwnerId.eq(user_id))
-        .exec(db)
-        .await?;
-    Ok(adopted.rows_affected > 0)
+    let mut all = true;
+    for (position, &id) in ids.iter().enumerate() {
+        let position = i16::try_from(position).expect("a few images");
+        let adopted = image::Entity::update_many()
+            .col_expr(image::Column::OwnerType, Expr::value(owner_type))
+            .col_expr(image::Column::OwnerId, Expr::value(owner_id))
+            .col_expr(image::Column::Position, Expr::value(position))
+            .filter(image::Column::Id.eq(id))
+            .filter(image::Column::OwnerType.eq(OwnerType::Draft))
+            .filter(image::Column::OwnerId.eq(user_id))
+            .exec(db)
+            .await?;
+        all &= adopted.rows_affected > 0;
+    }
+    Ok(all)
 }
 
 /// Deletes user `user_id`'s draft `id`, replaced by another photo.

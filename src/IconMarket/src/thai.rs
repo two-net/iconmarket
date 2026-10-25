@@ -17,10 +17,6 @@ mod phone;
 
 pub use date::{format_date, format_date_time, local_instant};
 pub use label::{Label, shorten};
-pub use money::Money;
-#[allow(
-    unused_imports,
-    reason = "the flows that read numbers are built by later issues"
-)]
+pub use money::{Money, group_thousands};
 pub use number::{NumberError, arabic_digits, parse_money, parse_whole};
 pub use phone::{format_phone, parse_phone};

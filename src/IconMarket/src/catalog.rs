@@ -2,7 +2,7 @@
 //!
 //! [`categories`] holds the categories in the order admins set, [`browse`] is "ซื้อของ",
 //! [`shops`] is "เปิดร้าน", "ร้านของฉัน", "เปิด/ปิดร้าน" and "ตั้งค่าร้าน", and [`products`]
-//! says whether a product can be ordered.
+//! is "เพิ่มสินค้า" and says whether a product can be ordered.
 
 pub mod browse;
 pub mod categories;

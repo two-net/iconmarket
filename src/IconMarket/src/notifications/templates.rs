@@ -1265,8 +1265,9 @@ impl Templates {
         ]
     }
 
-    /// Asks which part of the application to correct; `parts` are its buttons.
-    pub fn choose_shop_part(&self, parts: Vec<Action>) -> Message {
+    /// Asks which part of a summary to correct, of a shop application or a product being added;
+    /// `parts` are its buttons.
+    pub fn choose_part(&self, parts: Vec<Action>) -> Message {
         let (kha, kha_question) = (self.kha(), self.kha_question());
         Message::text(format!("แก้ข้อไหนดี{kha_question} เลือกได้เลย{kha}"))
             .with_quick_reply(QuickReply::new(parts))
@@ -1555,6 +1556,286 @@ impl Templates {
         notice(&headline, &details, vec![again])
     }
 
+    /// Asks for a new product's photos, `count` of at most `max` given (FR-PROD-01): the first
+    /// question of "เพิ่มสินค้า", which says how it goes, or, `editing`, a change to them.
+    pub fn ask_product_photos(&self, count: usize, max: usize, editing: bool) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let next = labels::NEXT.as_str();
+        let text = if count == 0 {
+            let intro = if editing {
+                String::new()
+            } else {
+                format!("มาลงสินค้ากัน{kha} ระบบจะถามทีละข้อ ไม่กี่นาทีก็เสร็จ ")
+            };
+            format!(
+                "{intro}มีรูปสินค้าไหม{kha_question} ส่งมาได้ไม่เกิน {max} รูป ลูกค้าจะเห็นรูปเหล่านี้ที่สินค้า ไม่บังคับ{kha} ถ้ายังไม่มี กด \"{}\" ได้เลย{kha}",
+                labels::SKIP.as_str()
+            )
+        } else {
+            let more = if count < max {
+                format!(
+                    "ส่งเพิ่มได้อีก {} รูป ถ้าครบแล้ว กด \"{next}\" ได้เลย{kha}",
+                    max - count
+                )
+            } else {
+                format!("ครบแล้ว กด \"{next}\" ได้เลย{kha}")
+            };
+            let remove = if editing {
+                format!(
+                    " ถ้าจะเปลี่ยนรูปใหม่ทั้งหมด กด \"{}\" ได้เลย{kha}",
+                    labels::REMOVE.as_str()
+                )
+            } else {
+                String::new()
+            };
+            format!("ตอนนี้มีรูปสินค้า {count} รูป{kha} {more}{remove}")
+        };
+        Message::text(text)
+    }
+
+    /// A seller's photo that nothing asked for (FR-UI-14): an offer to list it as a new product,
+    /// which `left` more photos can join.
+    pub fn listing_offered(&self, left: usize) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let more = if left > 0 {
+            format!(
+                " ส่งรูปเพิ่มได้อีก {left} รูป หรือกด \"{}\" เพื่อไปต่อได้เลย{kha}",
+                labels::NEXT.as_str()
+            )
+        } else {
+            String::new()
+        };
+        Message::text(format!(
+            "ได้รับรูปแล้ว{kha} จะลงขายสินค้านี้ใช่ไหม{kha_question} ระบบจะถามทีละข้อ{kha}{more} ถ้าไม่ได้จะขาย กด \"{}\" ได้เลย{kha}",
+            labels::CANCEL.as_str()
+        ))
+    }
+
+    /// A photo was added to the product being added, which now has `count` of at most `max`.
+    /// The step's question follows.
+    pub fn product_photo_added(&self, count: usize, max: usize) -> Message {
+        let kha = self.kha();
+        Message::text(format!("ได้รูปแล้ว{kha} ตอนนี้มีรูปสินค้า {count} จาก {max} รูป"))
+    }
+
+    /// A photo past the `max` a product may have (FR-PROD-04), so not kept. The step's question
+    /// follows.
+    pub fn product_photos_full(&self, max: usize) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} สินค้าหนึ่งชิ้นมีรูปได้ไม่เกิน {max} รูป รูปนี้จึงไม่ได้ใช้{kha}"
+        ))
+    }
+
+    /// The photos sent earlier for the product are gone, so they are asked for again before it
+    /// can be listed.
+    pub fn product_photos_lost(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} รูปสินค้าที่ส่งไว้หายไปแล้ว ส่งรูปมาใหม่อีกครั้ง หรือกด \"{}\" ได้เลย{kha}",
+            labels::SKIP.as_str()
+        ))
+    }
+
+    /// Asks for the product's name, of at most `max_chars` (FR-PROD-03), or a new name for
+    /// `current`.
+    pub fn ask_product_name(&self, max_chars: usize, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "สินค้าชื่ออะไร{kha_question} พิมพ์มาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha} เช่น ไข่ไก่เบอร์ 2{}",
+            now(current)
+        ))
+    }
+
+    /// Asks for the product's price per unit, of at most `max` (FR-PROD-03).
+    pub fn ask_product_price(&self, max: Money, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขายราคาเท่าไร{kha_question} พิมพ์ราคาต่อหน่วยเป็นตัวเลขได้เลย{kha} เช่น 20 หรือ 12.50 ได้ไม่เกิน {max}{}",
+            now(current)
+        ))
+    }
+
+    /// A price under `min`, the least a product may cost (FR-PROD-03).
+    pub fn price_too_low(&self, min: Money) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ราคาต้องไม่ต่ำกว่า {min} พิมพ์ราคาเป็นตัวเลขได้เลย{kha} เช่น 20 หรือ 12.50"
+        ))
+    }
+
+    /// Asks what the product is sold by, of at most `max_chars` (FR-PROD-03): one of the
+    /// suggested units, or one typed.
+    pub fn ask_product_unit(&self, max_chars: usize, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขายเป็นหน่วยอะไร{kha_question} เช่น ชิ้น กล่อง แผง เลือกจากปุ่มด้านล่าง หรือพิมพ์เองได้ไม่เกิน {max_chars} ตัวอักษร{kha}{}",
+            now(current)
+        ))
+    }
+
+    /// Asks for the product's category, one of the active ones offered as buttons (FR-PROD-03).
+    pub fn ask_product_category(&self, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "สินค้านี้อยู่หมวดไหน{kha_question} เลือกจากปุ่มด้านล่างได้เลย{kha}{}",
+            now(current)
+        ))
+    }
+
+    /// A category that is no longer active, so not offered for new products (FR-PROD-03).
+    pub fn category_inactive(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} หมวดนี้ปิดใช้งานแล้ว เลือกหมวดอื่นจากปุ่มด้านล่างได้เลย{kha}"
+        ))
+    }
+
+    /// No category is active, so no product can be listed (FR-PROD-03).
+    pub fn no_categories(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ตอนนี้ยังไม่มีหมวดสินค้าให้เลือก จึงยังลงสินค้าไม่ได้ ผู้ดูแลต้องเพิ่มหมวดก่อน ลองใหม่ภายหลังได้เลย{kha}"
+        ))
+    }
+
+    /// Asks how many of the product, sold by `unit`, there are for new orders, at most `max`
+    /// (FR-PROD-03), or that there is no set number.
+    pub fn ask_product_stock(&self, max: u32, unit: &str, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ตอนนี้มีขายกี่{unit}{kha_question} พิมพ์เป็นตัวเลขได้เลย เช่น 30 ได้ไม่เกิน {} ถ้าไม่จำกัดหรือทำตามสั่ง กด \"{}\" ได้เลย{kha}{}",
+            thai::group_thousands(max.into()),
+            labels::UNLIMITED_STOCK.as_str(),
+            now(current)
+        ))
+    }
+
+    /// A stock over `max`, the most a product may have (FR-PROD-03).
+    pub fn stock_too_large(&self, max: u32) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} จำนวนใส่ได้ไม่เกิน {} พิมพ์ใหม่ได้เลย ถ้าไม่จำกัดหรือทำตามสั่ง กด \"{}\" ได้เลย{kha}",
+            thai::group_thousands(max.into()),
+            labels::UNLIMITED_STOCK.as_str()
+        ))
+    }
+
+    /// Asks for the product's optional description, of at most `max_chars` (FR-PROD-03). `none`
+    /// goes without, or removes the one given.
+    pub fn ask_product_description(
+        &self,
+        max_chars: usize,
+        none: &Label,
+        current: Option<&str>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "อยากบอกรายละเอียดสินค้าเพิ่มไหม{kha_question} เช่น ทำสดทุกเช้า พิมพ์ได้ไม่เกิน {max_chars} ตัวอักษร ไม่บังคับ{kha} ถ้าไม่มี กด \"{}\" ได้เลย{kha}{}",
+            none.as_str(),
+            now(current)
+        ))
+    }
+
+    /// The product before it is listed (FR-PROD-01): `preview`, whose buttons list it or correct
+    /// a part.
+    pub fn product_preview(&self, preview: &ProductPreview<'_>) -> Vec<Message> {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ตรวจสินค้าอีกครั้งนะ{kha_question} ถ้าถูกต้อง กด \"{}\" แล้วลูกค้าจะเห็นสินค้าทันที ถ้าต้องการแก้ กด \"{}\" ได้เลย{kha}",
+            labels::CONFIRM_LISTING.as_str(),
+            labels::EDIT.as_str()
+        );
+        vec![
+            Message::text(text),
+            Message::flex(
+                format!("ตัวอย่างสินค้า: {}", preview.name),
+                self.product_bubble(preview),
+            ),
+        ]
+    }
+
+    /// Product `name` is listed, and buyers see it (FR-PROD-01, Appendix A.3): `next` are what
+    /// to do next, before the menu.
+    pub fn product_listed(&self, name: &str, next: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(format!("ลงขาย {name} แล้ว{kha} ลูกค้าเห็นสินค้านี้แล้ว{kha}"))
+            .with_quick_reply(QuickReply::new(next.into_iter().chain([menu])))
+    }
+
+    /// A button of "เพิ่มสินค้า" that is no longer in progress: listed, cancelled or expired.
+    /// `add_product` starts again.
+    pub fn product_flow_gone(&self, add_product: Action) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "รายการนี้ไม่ได้ทำต่อแล้ว{kha} อาจลงขายไปแล้ว ยกเลิก หรือหมดเวลาไป ถ้าจะลงสินค้าใหม่ กด \"{}\" ได้เลย{kha}",
+            add_product.label().as_str()
+        );
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(text).with_quick_reply(QuickReply::new([add_product, menu]))
+    }
+
+    /// A product's preview (FR-PROD-01): its first photo, name, price per unit and description,
+    /// then its category, stock and photos, with `preview.buttons` at the foot, the first one
+    /// primary.
+    fn product_bubble(&self, preview: &ProductPreview<'_>) -> Bubble {
+        let hero = preview.photo.map(|url| {
+            Hero::Image(Image {
+                size: Some(Size::Full),
+                aspect_ratio: Some("20:13".to_owned()),
+                aspect_mode: Some(AspectMode::Cover),
+                ..Image::new(url)
+            })
+        });
+        let name = Text {
+            size: Some(Size::Lg),
+            weight: Some(Weight::Bold),
+            wrap: Some(true),
+            ..Text::new(preview.name)
+        };
+        let price = Text {
+            weight: Some(Weight::Bold),
+            wrap: Some(true),
+            ..Text::new(price_per_unit(preview.price, preview.unit))
+        };
+        let mut top: Vec<Component> = vec![name.into(), price.into()];
+        if let Some(description) = preview.description {
+            let description = Text {
+                size: Some(Size::Sm),
+                wrap: Some(true),
+                ..Text::new(description)
+            };
+            top.push(description.into());
+        }
+        let photos = match preview.photos {
+            0 => NONE.to_owned(),
+            count => format!("{count} รูป"),
+        };
+        let details = FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical([
+                row("หมวดหมู่", preview.category),
+                row("จำนวน", &stock_line(preview.stock, preview.unit)),
+                row("รูปสินค้า", &photos),
+            ])
+        };
+        let body = FlexBox {
+            spacing: Some(Spacing::Md),
+            ..FlexBox::vertical(
+                top.into_iter()
+                    .chain([Separator::default().into(), details.into()]),
+            )
+        };
+        Bubble {
+            size: Some(BubbleSize::Mega),
+            hero,
+            body: Some(body),
+            footer: footer(&preview.buttons),
+            ..Bubble::default()
+        }
+    }
+
     /// A shop's card (FR-SHOP-01): its photo, name and description, and how it sells, with
     /// who applied and when for the admins, `heading` above, and `card.buttons` at the foot,
     /// the first one primary.
@@ -1790,6 +2071,24 @@ pub fn availability(availability: Availability) -> String {
     }
 }
 
+/// A product's price per unit, as its card says it: `฿20 / กล่อง` (FR-UI-07).
+pub fn price_per_unit(price: Money, unit: &str) -> String {
+    format!("{price} / {unit}")
+}
+
+/// How many of a product sold by `unit` there are, as its seller sees it: `30 กล่อง`, sold out at
+/// 0, or `None`, unlimited or made to order (FR-PROD-03).
+pub fn stock_line(stock: Option<i32>, unit: &str) -> String {
+    match stock {
+        None => labels::UNLIMITED_STOCK.as_str().to_owned(),
+        Some(0) => format!("0 {unit} (ลูกค้าจะเห็นว่าหมด)"),
+        Some(count) => format!(
+            "{} {unit}",
+            thai::group_thousands(count.unsigned_abs().into())
+        ),
+    }
+}
+
 /// What a closed shop and its products show (FR-SHOP-05)
 const CLOSED: &str = "ร้านปิด";
 /// The colours of whether a shop is open, on its card
@@ -1813,6 +2112,22 @@ pub struct ShopFront<'a> {
     pub minimum_order: Option<Money>,
     /// "ดูสินค้า"
     pub products: Action,
+}
+
+/// A product being added, as its preview shows it (FR-PROD-01).
+pub struct ProductPreview<'a> {
+    pub name: &'a str,
+    pub price: Money,
+    pub unit: &'a str,
+    pub category: &'a str,
+    /// `None`: unlimited or made to order
+    pub stock: Option<i32>,
+    pub description: Option<&'a str>,
+    /// Its first photo's `/img/p` link
+    pub photo: Option<&'a Url>,
+    /// How many photos it has
+    pub photos: usize,
+    pub buttons: Vec<Action>,
 }
 
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
@@ -2204,6 +2519,17 @@ pub fn with_cancel(mut message: Message) -> Message {
     message
 }
 
+/// `messages` with `choices` as the Quick Replies of the last.
+pub fn with_choices(mut messages: Vec<Message>, choices: Vec<Action>) -> Vec<Message> {
+    if choices.is_empty() {
+        return messages;
+    }
+    if let Some(last) = messages.pop() {
+        messages.push(last.with_quick_reply(QuickReply::new(choices)));
+    }
+    messages
+}
+
 /// The main menu as a message (FR-UI-05): a card for each of `tabs`, with a button for each
 /// function. `has_shop` turns "เปิดร้าน" into "ร้านของฉัน".
 pub fn main_menu(tabs: impl IntoIterator<Item = Tab>, has_shop: bool) -> Message {
@@ -2549,6 +2875,26 @@ pub mod labels {
         /// A shop's products, from its card (FR-SHOP-09)
         VIEW_PRODUCTS = "ดูสินค้า",
 
+        // Adding a product (FR-PROD-01, FR-PROD-03)
+        /// Lists the product previewed; buyers see it from then on
+        CONFIRM_LISTING = "ยืนยันลงขาย",
+        /// Adds another product once one is listed (Appendix A.3)
+        ADD_ANOTHER = "เพิ่มสินค้าอีก",
+        /// Moves on from the photos sent
+        NEXT = "ถัดไป",
+        /// A stock of no set number
+        UNLIMITED_STOCK = "ไม่จำกัด / ทำตามสั่ง",
+        /// Either half of it, typed alone, means it too
+        UNLIMITED = "ไม่จำกัด",
+        MADE_TO_ORDER = "ทำตามสั่ง",
+        // The parts of a product, to correct one; CATEGORIES is its category
+        PRODUCT_PHOTOS = "รูปสินค้า",
+        PRODUCT_NAME = "ชื่อสินค้า",
+        PRICE = "ราคา",
+        UNIT = "หน่วย",
+        STOCK = "จำนวน",
+        PRODUCT_DESCRIPTION = "รายละเอียด",
+
         // Approving shops (FR-ADM-02)
         APPROVE = "อนุมัติ",
         REJECT = "ไม่อนุมัติ",
@@ -2557,6 +2903,22 @@ pub mod labels {
         REASON_NOT_RESIDENT = "ไม่ได้อยู่ในหมู่บ้าน",
         REASON_UNREACHABLE = "ติดต่อไม่ได้",
     }
+
+    /// The units a product is suggested to be sold by, as Quick Replies (FR-PROD-03)
+    pub static UNITS: [Label; 12] = [
+        Label::from_static("ชิ้น"),
+        Label::from_static("กล่อง"),
+        Label::from_static("ถุง"),
+        Label::from_static("แพ็ค"),
+        Label::from_static("กิโลกรัม"),
+        Label::from_static("ขีด"),
+        Label::from_static("แผง"),
+        Label::from_static("หวี"),
+        Label::from_static("กำ"),
+        Label::from_static("จาน"),
+        Label::from_static("ชุด"),
+        Label::from_static("ครั้ง"),
+    ];
 }
 
 #[cfg(test)]
@@ -2687,7 +3049,7 @@ mod tests {
             text(&t.photo_lost()).to_owned(),
             text(&t.shop_summary(&shop_card(), true, &labels::SUBMIT_APPLICATION)[0]).to_owned(),
             text(&t.shop_summary(&shop_card(), false, &labels::OPEN_NOW)[0]).to_owned(),
-            text(&t.choose_shop_part(Vec::new())).to_owned(),
+            text(&t.choose_part(Vec::new())).to_owned(),
             text(&t.application_sent("ร้านป้าแดง")).to_owned(),
             text(&t.shop_opened("ร้านป้าแดง")).to_owned(),
             text(&t.application_pending(
@@ -2719,6 +3081,31 @@ mod tests {
             text(&t.application_changed()).to_owned(),
             text(&t.ask_rejection_reason("ร้านป้าแดง", 300, Vec::new())).to_owned(),
             text(&t.shop_rejected("ร้านป้าแดง")).to_owned(),
+            text(&t.ask_product_photos(0, 3, false)).to_owned(),
+            text(&t.ask_product_photos(0, 3, true)).to_owned(),
+            text(&t.ask_product_photos(1, 3, false)).to_owned(),
+            text(&t.ask_product_photos(2, 3, true)).to_owned(),
+            text(&t.ask_product_photos(3, 3, true)).to_owned(),
+            text(&t.listing_offered(2)).to_owned(),
+            text(&t.listing_offered(0)).to_owned(),
+            text(&t.product_photo_added(2, 3)).to_owned(),
+            text(&t.product_photos_full(3)).to_owned(),
+            text(&t.product_photos_lost()).to_owned(),
+            text(&t.ask_product_name(80, None)).to_owned(),
+            text(&t.ask_product_name(80, Some("ไข่ไก่เบอร์ 2"))).to_owned(),
+            text(&t.ask_product_price(Money::from_baht(100_000), Some("฿110"))).to_owned(),
+            text(&t.price_too_low(Money::from_satang(1))).to_owned(),
+            text(&t.ask_product_unit(20, Some("แผง"))).to_owned(),
+            text(&t.ask_product_category(Some("ไข่/นม"))).to_owned(),
+            text(&t.category_inactive()).to_owned(),
+            text(&t.no_categories()).to_owned(),
+            text(&t.ask_product_stock(99_999, "แผง", Some("30 แผง"))).to_owned(),
+            text(&t.stock_too_large(99_999)).to_owned(),
+            text(&t.ask_product_description(500, &labels::SKIP, None)).to_owned(),
+            text(&t.ask_product_description(500, &labels::REMOVE, Some("ไข่สด"))).to_owned(),
+            text(&t.product_preview(&product_preview())[0]).to_owned(),
+            text(&t.product_listed("ไข่ไก่เบอร์ 2", Vec::new())).to_owned(),
+            text(&t.product_flow_gone(add_product())).to_owned(),
         ];
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
@@ -2771,6 +3158,24 @@ mod tests {
     }
 
     /// Appendix A.5's shop, as buyers see it.
+    fn add_product() -> Action {
+        Action::postback(labels::ADD_PRODUCT.clone(), "add_product")
+    }
+
+    fn product_preview() -> ProductPreview<'static> {
+        ProductPreview {
+            name: "ไข่ไก่เบอร์ 2",
+            price: Money::from_baht(110),
+            unit: "แผง",
+            category: "ไข่/นม",
+            stock: Some(30),
+            description: None,
+            photo: None,
+            photos: 0,
+            buttons: Vec::new(),
+        }
+    }
+
     fn shop_front() -> ShopFront<'static> {
         ShopFront {
             name: "ร้านป้าแดง",
@@ -2996,6 +3401,61 @@ mod tests {
             t.shop_rejected_notice(&name, &reason, apply_again()),
         ])
         .unwrap();
+    }
+
+    /// FR-PROD-01, FR-LINE-11: the preview and what follows fit, with the longest values a
+    /// product takes.
+    #[test]
+    fn product_messages_with_everything_fit() {
+        let t = templates(PoliteParticle::Khrap);
+        let (name, unit, description) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(500));
+        let photo = Url::parse("https://iconmarket.example.com/img/p/0123").unwrap();
+        let button = |label: &Label| {
+            Action::postback(label.clone(), format!("add_product.submit?r={}", i64::MAX))
+        };
+        let preview = ProductPreview {
+            name: &name,
+            price: Money::from_baht(100_000),
+            unit: &unit,
+            category: "ขนม/ของหวาน",
+            stock: Some(99_999),
+            description: Some(&description),
+            photo: Some(&photo),
+            photos: 3,
+            buttons: vec![button(&labels::CONFIRM_LISTING), button(&labels::EDIT)],
+        };
+        let messages = t.product_preview(&preview);
+        limits::check(&messages).unwrap();
+        let Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } = &messages[1].body
+        else {
+            panic!("a card");
+        };
+        let texts = card_texts(card);
+        assert_eq!(texts[1], format!("฿100,000 / {unit}"));
+        assert!(texts.contains(&format!("99,999 {unit}")), "{texts:?}");
+        assert!(texts.contains(&"3 รูป".to_owned()), "{texts:?}");
+        let next = vec![add_product(), add_product()];
+        limits::check(&[
+            t.product_listed(&name, next),
+            t.product_flow_gone(add_product()),
+        ])
+        .unwrap();
+    }
+
+    /// FR-PROD-03: how many there are, as the seller sees it.
+    #[test]
+    fn a_stock_is_said_with_its_unit() {
+        assert_eq!(stock_line(Some(30), "กล่อง"), "30 กล่อง");
+        assert_eq!(stock_line(Some(12_500), "ชิ้น"), "12,500 ชิ้น");
+        assert_eq!(stock_line(Some(0), "แผง"), "0 แผง (ลูกค้าจะเห็นว่าหมด)");
+        assert_eq!(stock_line(None, "จาน"), "ไม่จำกัด / ทำตามสั่ง");
+        assert_eq!(
+            price_per_unit(Money::from_satang(1_250), "ถุง"),
+            "฿12.50 / ถุง"
+        );
     }
 
     #[test]

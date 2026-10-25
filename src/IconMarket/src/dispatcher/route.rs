@@ -34,6 +34,7 @@ use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::ai::Feature;
 use crate::catalog::browse;
+use crate::catalog::products::{self, ProductFlow};
 use crate::catalog::shops::settings::{self, SettingsFlow};
 use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
@@ -421,7 +422,7 @@ async fn route(
         Step::Keyword(keyword) => return typed(turn, keyword).await,
         Step::Assistant => not_built("the AI assistant", 37, fallback(turn)),
         Step::Fallback => fallback(turn),
-        Step::Image => return image(context, turn).await,
+        Step::Image => return image(context, turn, &input).await,
         Step::Location => vec![templates.location_not_expected()],
         Step::Voice => not_built("voice messages", 50, fallback(turn)),
         Step::Unsupported => vec![templates.unsupported(), menu::main_menu(&turn.actor)],
@@ -488,6 +489,12 @@ async fn answer_flow(
             }
             None => None,
         },
+        ProductFlow::NAME => match stored.read::<ProductFlow>() {
+            Some(session) => {
+                Some(products::answer(turn, config, &context.line, session, input).await)
+            }
+            None => None,
+        },
         _ => None,
     };
     match answered {
@@ -536,6 +543,9 @@ async fn tapped(
         action if action.starts_with(settings::PREFIX) => {
             return settings::tapped(turn, &context.config, postback).await;
         }
+        action if action.starts_with(products::PREFIX) => {
+            return products::tapped(turn, &context.config, postback).await;
+        }
         action if action.starts_with(help::PREFIX) => {
             return help::tapped(turn, &context.config, &context.ai, postback).await;
         }
@@ -571,10 +581,10 @@ async fn menu_item(
         OpenClose | ShopSettings => {
             return settings::tapped(turn, &context.config, postback).await;
         }
+        AddProduct => return products::tapped(turn, &context.config, postback).await,
         Search => 28,
         Cart => 29,
         MyOrders | ShopOrders => 34,
-        AddProduct => 25,
         MyProducts => 26,
         Sales => 39,
         ReviewQueue | Users => 31,
@@ -598,12 +608,15 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
     })
 }
 
-/// A photo no flow step took (FR-UI-14). Whoever takes it downloads it while the event is
-/// processed (FR-LINE-09).
-async fn image(context: &Context, turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
+/// A photo no flow step took (FR-UI-14), sent as `input`. Whoever takes it downloads it while
+/// the event is processed (FR-LINE-09). #30 has the AI draft a seller's listing from it, once
+/// `ai.features.listing` is on.
+async fn image(context: &Context, turn: &Turn<'_>, input: &Input) -> Result<Vec<Message>, DbErr> {
     let unexpected = || vec![turn.templates.image_not_expected()];
-    if turn.actor.roles().seller {
-        return Ok(not_built("listing from a photo", 25, unexpected()));
+    if turn.actor.roles().seller
+        && let Input::Image { message_id } = input
+    {
+        return products::photo_sent(turn, &context.config, &context.line, message_id).await;
     }
     if payments::awaiting_transfer(turn.db, turn.actor.user.id)
         .await?

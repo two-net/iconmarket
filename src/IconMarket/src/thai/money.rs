@@ -42,8 +42,8 @@ impl fmt::Display for Money {
     }
 }
 
-/// `1250` → `1,250`
-fn group_thousands(n: u64) -> String {
+/// `1250` → `1,250`, as amounts and counts are shown
+pub fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, digit) in digits.chars().enumerate() {

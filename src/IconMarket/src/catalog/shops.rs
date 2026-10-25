@@ -32,8 +32,8 @@ use serde_json::json;
 use tracing::{info, warn};
 use url::Url;
 
-use super::browse;
 use super::images::{self, Owner, Rejected};
+use super::{browse, products};
 use crate::admin::approvals;
 use crate::admin::audit::{self, Entry, Target};
 use crate::config::{Config, PaymentMethod};
@@ -41,9 +41,9 @@ use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::{self, Item};
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Location, Turn};
-use crate::line::{self, Action, Message, QuickReply};
+use crate::line::{self, Action, Message};
 use crate::notifications::templates::{
-    self, Applicant, PromptPay, Running, ShopCard, ShopFront, labels,
+    self, Applicant, PromptPay, Running, ShopCard, ShopFront, labels, with_choices,
 };
 use crate::notifications::{Kind, To};
 use crate::payments;
@@ -70,7 +70,7 @@ pub const DESCRIPTION_CHARS: usize = 300;
 pub const PICKUP_ADDRESS_CHARS: usize = 200;
 pub const MAX_DELIVERY_FEE: Money = Money::from_baht(1_000);
 /// As much as a product may cost (FR-PROD-03)
-pub const MAX_MINIMUM_ORDER: Money = Money::from_baht(100_000);
+pub const MAX_MINIMUM_ORDER: Money = products::MAX_PRICE;
 /// Room for *ทุกวัน 06:00–10:00, ปิดวันจันทร์* and the like (FR-SHOP-07)
 pub const OPENING_HOURS_CHARS: usize = 50;
 
@@ -397,7 +397,7 @@ pub async fn tapped(
         (SUBMIT, _) => submit(turn, config, session.draft).await,
         (EDIT, _) => {
             let parts = parts(config, &session.draft);
-            let choose = turn.templates.choose_shop_part(parts);
+            let choose = turn.templates.choose_part(parts);
             flow::answered(turn, Answer::<ShopFlow>::Again(vec![choose])).await
         }
         (PART, Some(part)) if offered(config, &session.draft, part) => {
@@ -1009,17 +1009,6 @@ fn choices(user: &user::Model, draft: &ShopFlow, step: Step) -> Vec<Action> {
 /// The shop's phone, if it is a mobile number, which PromptPay takes.
 fn promptpay_phone(draft: &ShopFlow) -> Option<&str> {
     draft.phone.as_deref().filter(|phone| phone.len() == 10)
-}
-
-/// `messages` with `choices` as the Quick Replies of the last.
-fn with_choices(mut messages: Vec<Message>, choices: Vec<Action>) -> Vec<Message> {
-    if choices.is_empty() {
-        return messages;
-    }
-    if let Some(last) = messages.pop() {
-        messages.push(last.with_quick_reply(QuickReply::new(choices)));
-    }
-    messages
 }
 
 /// Sends the application (FR-SHOP-01, FR-SHOP-03): the user's shop, made or applied for again,

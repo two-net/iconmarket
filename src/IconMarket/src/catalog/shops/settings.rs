@@ -24,7 +24,7 @@ use tracing::info;
 
 use super::{
     ShopFlow, Step, Taken, after, card, choices, details, front, keep_photo, offered, photo_lost,
-    photo_url, prompt, take_input, why, with_choices,
+    photo_url, prompt, take_input, why,
 };
 use crate::catalog::images::{self, Owner};
 use crate::config::Config;
@@ -33,7 +33,7 @@ use crate::dispatcher::menu::Item;
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{self, Action, Message};
-use crate::notifications::templates::labels;
+use crate::notifications::templates::{labels, with_choices};
 use crate::persistence::entity::shop;
 use crate::users::access::{self, Denied, authorize};
 
