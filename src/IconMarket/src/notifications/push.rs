@@ -80,7 +80,8 @@ pub enum Kind {
     ShopApproved,
     /// To the applicant: their shop was rejected
     ShopRejected,
-    /// To the seller: their product was held for review
+    /// To the seller: their product or shop was held for review. Moderation holds it while
+    /// the seller is changing it, so tells them in the reply instead (FR-LINE-07).
     ItemHeld,
     /// To the seller: their product was removed
     ItemRemoved,
@@ -88,7 +89,8 @@ pub enum Kind {
     AccountSuspended,
     /// To the admins: a shop application to decide on
     ShopApplication,
-    /// To the admins: a product held for review
+    /// To the admins: a product or shop held for review, or a shop's application to look at
+    /// closely, by moderation (FR-PROD-09)
     HeldForReview,
     /// To the admins: a user reported a problem
     UserReport,

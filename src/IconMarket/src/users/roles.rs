@@ -27,6 +27,10 @@ const LISTED: &str = "listed in admin.lineUserIds";
 const UNLISTED: &str = "no longer listed in admin.lineUserIds";
 
 /// The roles a user holds beyond buyer, which everyone is.
+/// The statuses of a shop whose owner is a seller: approved, or held for review, as its owner
+/// still runs it (FR-PROD-09)
+const SELLERS_SHOPS: [shop::Status; 2] = [shop::Status::Approved, shop::Status::Held];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Roles {
     pub seller: bool,
@@ -39,7 +43,7 @@ impl Roles {
     pub fn of(user: &user::Model, shop: Option<&shop::Model>) -> Self {
         Self {
             seller: shop.is_some_and(|shop| {
-                shop.owner_id == user.id && shop.status == shop::Status::Approved
+                shop.owner_id == user.id && SELLERS_SHOPS.contains(&shop.status)
             }),
             admin: user.is_admin,
         }
@@ -197,7 +201,7 @@ pub async fn outdated_menus(
     let sellers: HashSet<i64> = shop::Entity::find()
         .select_only()
         .column(shop::Column::OwnerId)
-        .filter(shop::Column::Status.eq(shop::Status::Approved))
+        .filter(shop::Column::Status.is_in(SELLERS_SHOPS))
         .apply_if(only, |query, id| query.filter(shop::Column::OwnerId.eq(id)))
         .into_tuple()
         .all(db)

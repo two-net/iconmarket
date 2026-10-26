@@ -12,9 +12,10 @@
 //! a seller's photo that no flow takes starts one with it (FR-UI-14). What the user types is
 //! never logged (NFR-PRIV-05).
 //!
-//! A listed product is `ACTIVE`; [`may_become`] says which status it can go to from there
-//! (FR-PROD-07). Its price and stock are what new checkouts see: an order keeps the name, unit and
-//! price it was placed at (FR-PROD-08, DR-03).
+//! A listed product is `ACTIVE`, or `HELD` for review if [moderation] finds it suspicious, so that
+//! buyers don't see it until an admin lists it (#31); [`may_become`] says which status it can go
+//! to from there (FR-PROD-07). Its price and stock are what new checkouts see: an order keeps the
+//! name, unit and price it was placed at (FR-PROD-08, DR-03).
 //!
 //! A product's [`Availability`] is what its card says of it (FR-SRCH-07): how many are left, or
 //! that it is made to order, sold out (FR-PROD-06) or of a closed shop (FR-SHOP-05). Only an
@@ -38,7 +39,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use super::images::{self, Owner, Rejected};
+use super::moderation::{self, Held, Subject};
 use super::{categories, shops};
+use crate::ai;
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::{self, Item};
@@ -282,6 +285,7 @@ fn max_photos(config: &Config) -> usize {
 pub async fn tapped(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
@@ -321,7 +325,7 @@ pub async fn tapped(
         return again(turn, config, session).await;
     }
     match (action, postback.name(WHICH).and_then(Step::part)) {
-        (SUBMIT, _) => submit(turn, config, shop, session.draft).await,
+        (SUBMIT, _) => submit(turn, config, ai, shop, session.draft).await,
         (EDIT, _) => {
             let choose = turn.templates.choose_part(parts(&session.draft));
             flow::answered(turn, Answer::<ProductFlow>::Again(vec![choose])).await
@@ -932,12 +936,13 @@ async fn summary(
     Ok(turn.templates.product_preview(&preview))
 }
 
-/// Lists the product (FR-PROD-01) in `shop`, the seller's: `ACTIVE`, so buyers see it from now
-/// on, with its photos in the order sent. Its category must still be active, and its photos
-/// still there.
+/// Lists the product (FR-PROD-01) in `shop`, the seller's, with its photos in the order sent:
+/// `ACTIVE`, so buyers see it from now on, or `HELD` for review if moderation finds it
+/// suspicious (FR-PROD-09). Its category must still be active, and its photos still there.
 async fn submit(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     shop: &shop::Model,
     mut draft: ProductFlow,
 ) -> Result<Vec<Message>, DbErr> {
@@ -953,6 +958,14 @@ async fn submit(
         return flow::answered(turn, Answer::Next(Session { step, draft }, ask)).await;
     };
     let user_id = turn.actor.user.id;
+    // Before anything is locked, as the AI may take a while
+    let description = draft.description.as_deref();
+    let subject = Subject::product(&name, &unit, description, draft.photos.clone());
+    let flag = moderation::check(turn.db, config, ai, &subject).await?;
+    let status = match flag {
+        Some(_) => product::Status::Held,
+        None => product::Status::Active,
+    };
     // The product and its photos are saved together, or not at all
     let txn = turn.db.begin().await?;
     // Locked, so it can't be deleted until the product is in it
@@ -980,7 +993,7 @@ async fn submit(
         price: Set(price),
         unit: Set(unit),
         stock: Set(stock.column()),
-        status: Set(product::Status::Active),
+        status: Set(status),
         created_at: Set(turn.now),
         updated_at: Set(turn.now),
         deleted_at: Set(None),
@@ -1008,11 +1021,11 @@ async fn submit(
     }
     txn.commit().await?;
 
-    // #27 moderates the name, description and photos here, and may hold the product (FR-PROD-09)
     info!(
         product_id = listed.id,
         shop_id = shop.id,
         photos = draft.photos.len(),
+        held = flag.is_some(),
         "product listed"
     );
     let item = |item: Item, label: &Label| item.postback().button(label.clone());
@@ -1020,14 +1033,24 @@ async fn submit(
         item(Item::MyProducts, &labels::MY_PRODUCTS),
         item(Item::AddProduct, &labels::ADD_ANOTHER),
     ];
-    let done = turn.templates.product_listed(&listed.name, next);
+    let done = match &flag {
+        Some(flag) => {
+            let held = Held::Product {
+                product: &listed,
+                shop,
+            };
+            moderation::hold(turn, held, flag).await?;
+            turn.templates.product_held(&listed.name, next)
+        }
+        None => turn.templates.product_listed(&listed.name, next),
+    };
     flow::answered(turn, Answer::<ProductFlow>::Done(vec![done])).await
 }
 
 /// Whether a product whose status is `from` may become `to` (FR-PROD-07). A product is listed
 /// from `DRAFT`; its seller hides and shows it ([`manage`]); a new or edited one may be held for
-/// review (#27), and an admin then lists or removes it (#31); any but a deleted one may be
-/// deleted, for good (DR-04). Sold out isn't a status: it is the stock (FR-PROD-06).
+/// review ([`moderation`]), and an admin then lists or removes it (#31); any but a deleted one
+/// may be deleted, for good (DR-04). Sold out isn't a status: it is the stock (FR-PROD-06).
 pub fn may_become(from: product::Status, to: product::Status) -> bool {
     use product::Status::{Active, Deleted, Draft, Held, Hidden, Removed};
     match (from, to) {

@@ -21,7 +21,10 @@ mod provider;
 mod request;
 mod schema;
 #[cfg(test)]
+pub mod testing;
+#[cfg(test)]
 mod tests;
+mod untrusted;
 mod validate;
 
 use crate::config::AiFeatures;
@@ -36,6 +39,7 @@ pub use {
     provider::Capabilities,
     request::{Media, Message, Native, Output, Part, Role, Tool, ToolCall},
     schema::{Problem, Schema},
+    untrusted::{DATA_RULE, as_data},
     validate::Answer,
 };
 

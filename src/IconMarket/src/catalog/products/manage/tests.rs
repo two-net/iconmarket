@@ -2,18 +2,22 @@
 //! sold-out product restocked with a tap and the quantity; each part changed alone and saved
 //! once answered, leaving orders as they were (FR-PROD-08) and stock taken meanwhile alone;
 //! photos added or replaced; hiding and showing at a tap; deleting confirmed, and soft (DR-04);
-//! and only the owner of an approved shop doing any of it. Each event is handled in a
+//! changed text and new photos moderated (FR-PROD-09); and only the owner of an approved shop
+//! doing any of it. Each event is handled in a
 //! transaction committed once it is handled. The `async` tests each start a throwaway
 //! PostgreSQL, so they need Docker.
 
 use chrono::{TimeDelta, TimeZone, Utc};
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, IntoActiveModel};
+use sea_orm::{ActiveModelTrait, DatabaseConnection, IntoActiveModel, QueryOrder};
+use serde_json::json;
+use sqlx::PgPool;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 
 use super::*;
+use crate::ai::testing as scripted;
 use crate::catalog::products::{Availability, MAX_STOCK};
 use crate::config::{self, SessionConfig};
 use crate::dispatcher::Finished;
@@ -22,7 +26,7 @@ use crate::line::flex::{Bubble, Component, FlexContainer, Hero};
 use crate::line::testing::{self as fake, Fake};
 use crate::line::{Body, limits};
 use crate::persistence::entity::image::{self, OwnerType};
-use crate::persistence::entity::{order, order_item, session, shop};
+use crate::persistence::entity::{order, order_item, push_log, report, session, shop, user};
 use crate::persistence::{orm, random_id, testing};
 use crate::thai::{Money, NumberError};
 use crate::users::access::Actor;
@@ -35,6 +39,7 @@ static SESSION: SessionConfig = SessionConfig {
 const SELLER: &str = "Ua1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const OTHER_SELLER: &str = "Uc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
 const BUYER: &str = "Ub2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+const ADMIN: &str = "Ud4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4";
 
 /// The JPEG LINE serves for the photos users send
 const PHOTO: &[u8] = include_bytes!("../../../ai/provider/fixtures/media/slip.jpg");
@@ -46,9 +51,13 @@ fn t0() -> DateTimeUtc {
 
 struct Setup {
     _container: ContainerAsync<Postgres>,
+    /// The pool [`Setup::db`] is on, for the AI's daily limits
+    pool: PgPool,
     db: DatabaseConnection,
     line: Fake,
     config: Config,
+    /// Off, unless a test scripts it
+    ai: ai::Gateway,
     templates: Templates,
     /// The owner of [`Setup::shop`]
     seller: i64,
@@ -66,7 +75,7 @@ struct Setup {
 
 async fn setup() -> Setup {
     let (container, pool) = testing::migrated().await;
-    let db = orm(pool);
+    let db = orm(pool.clone());
     let seller = testing::new_user(SELLER).insert(&db).await.unwrap().id;
     let shop = testing::new_shop(seller).insert(&db).await.unwrap().id;
     let other_seller = testing::new_user(OTHER_SELLER)
@@ -94,10 +103,12 @@ async fn setup() -> Setup {
     let config = config::sample();
     Setup {
         _container: container,
+        pool,
         db,
         line: Fake::start().await,
         templates: Templates::new(&config.app),
         config,
+        ai: ai::testing::off(),
         seller,
         shop,
         other_seller,
@@ -110,7 +121,8 @@ async fn setup() -> Setup {
 
 impl Setup {
     /// Handles an event of user `user_id`'s at `now` with `handle`, as the worker does: in a
-    /// transaction that commits once it is handled, with the user loaded afresh.
+    /// transaction that commits once it is handled, with the user loaded afresh and what it
+    /// notifies queued.
     async fn handle_at(
         &self,
         user_id: i64,
@@ -123,7 +135,13 @@ impl Setup {
             .await
             .unwrap();
         let messages = handle(&turn).await.unwrap();
-        let Finished { messages, .. } = turn.finish(messages);
+        let Finished {
+            messages, outbox, ..
+        } = turn.finish(messages);
+        outbox
+            .queue(&txn, &self.config.notification, now)
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
         if !messages.is_empty() {
             limits::check(&messages).unwrap();
@@ -162,7 +180,7 @@ impl Setup {
         self.handle_at(user_id, t0(), async |turn| {
             let session = turn.flow.as_ref().and_then(|flow| flow.read::<EditFlow>());
             let session = session.expect("changing a product");
-            answered = answer(turn, &self.config, &line, session, &input).await?;
+            answered = answer(turn, &self.config, &self.ai, &line, session, &input).await?;
             Ok(answered.clone().unwrap_or_default())
         })
         .await;
@@ -213,6 +231,39 @@ impl Setup {
             .exec(&self.db)
             .await
             .unwrap();
+    }
+
+    /// An admin, whom the admins' alerts go to.
+    async fn admin(&self) -> i64 {
+        let admin = user::ActiveModel {
+            is_admin: Set(true),
+            ..testing::new_user(ADMIN)
+        };
+        admin.insert(&self.db).await.unwrap().id
+    }
+
+    /// Every report, as (reporter, target type, target, reason).
+    async fn reports(&self) -> Vec<(Option<i64>, report::TargetType, i64, String)> {
+        report::Entity::find()
+            .order_by_asc(report::Column::Id)
+            .all(&self.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.reporter_id, row.target_type, row.target_id, row.reason))
+            .collect()
+    }
+
+    /// The types of every push queued, oldest first.
+    async fn pushes(&self) -> Vec<String> {
+        push_log::Entity::find()
+            .order_by_asc(push_log::Column::Id)
+            .all(&self.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.push_type)
+            .collect()
     }
 
     /// Gives product `id` another photo, as listing it with one would.
@@ -1058,4 +1109,100 @@ async fn only_the_owner_of_an_approved_shop_manages_its_products() {
         s.taps(s.seller, "my_products").await,
         [t.denied(Denied::ShopSuspended)]
     );
+}
+
+/// FR-PROD-09: a changed name, unit or description with a prohibited keyword holds the product,
+/// active or hidden, for review: the seller is told, a report of no one's is filed and the
+/// admins are alerted. Its price and stock aren't moderated, and once held it changes as before
+/// without being checked or filed again.
+#[tokio::test]
+async fn text_found_suspicious_holds_the_product() {
+    let mut s = setup().await;
+    s.config.catalog.prohibited_keywords = vec!["กัญชา".to_owned()];
+    // On, but never asked: a keyword decides alone
+    let (ai, model) = scripted::scripted(&s.pool, [], true, &[]);
+    s.ai = ai;
+    s.admin().await;
+    let t = &s.templates;
+    let eggs = s.product("ไข่ไก่", Some(30)).await;
+
+    s.changes(eggs, "price").await;
+    s.types("115").await;
+    assert_eq!(s.get(eggs).await.status, product::Status::Active);
+
+    s.changes(eggs, "name").await;
+    let held = s.types("ไข่ไก่ใส่กัญชา").await;
+    assert_eq!(held[0], t.product_held_saved());
+    assert_eq!(texts(card(&held[1]))[2], "รอตรวจ (ผู้ซื้อยังไม่เห็น)");
+    let product = s.get(eggs).await;
+    assert_eq!(
+        (product.name.as_str(), product.status),
+        ("ไข่ไก่ใส่กัญชา", product::Status::Held)
+    );
+    let reason = "มีคำต้องห้าม \"กัญชา\"".to_owned();
+    let filed = (None, report::TargetType::Product, eggs, reason);
+    assert_eq!(s.reports().await, std::slice::from_ref(&filed));
+    assert_eq!(s.pushes().await, ["admin.held_for_review"]);
+
+    // Held, it is changed as before, and not checked or filed again
+    s.changes(eggs, "description").await;
+    let saved = s.types("กัญชาแท้").await;
+    assert_eq!(saved[0], t.product_saved());
+    assert_eq!(s.get(eggs).await.description.as_deref(), Some("กัญชาแท้"));
+    assert_eq!(s.reports().await, [filed]);
+    assert_eq!(s.pushes().await.len(), 1);
+
+    // Hidden, it is held too
+    let sweets = s.product("ขนมครก", Some(5)).await;
+    s.set_status(sweets, product::Status::Hidden).await;
+    s.changes(sweets, "unit").await;
+    let held = s.types("ห่อกัญชา").await;
+    assert_eq!(held[0], t.product_held_saved());
+    assert_eq!(s.get(sweets).await.status, product::Status::Held);
+    assert_eq!(s.reports().await.len(), 2);
+    assert!(model.requests().is_empty());
+}
+
+/// FR-PROD-09, FR-AI-12: without a keyword the AI decides, seeing the product's text as it will
+/// be and only the photos new to it.
+#[tokio::test]
+async fn the_ai_moderates_changed_text_and_new_photos() {
+    let mut s = setup().await;
+    let turns = [
+        scripted::Turn::Json(json!({ "verdict": "allow", "reason": "" })),
+        scripted::Turn::Json(json!({ "verdict": "review", "reason": "รูปไม่ตรงกับสินค้า" })),
+    ];
+    let (ai, model) = scripted::scripted(&s.pool, turns, true, &[]);
+    s.ai = ai;
+    let t = &s.templates;
+    let eggs = s.product("ไข่ไก่", Some(30)).await;
+    s.add_photo(eggs).await;
+
+    s.changes(eggs, "name").await;
+    let saved = s.types("ไข่ไก่สด").await;
+    assert_eq!(saved[0], t.product_saved());
+    assert_eq!(s.get(eggs).await.status, product::Status::Active);
+    let asked = model.requests()[0].messages[0].text();
+    let listing = json!({ "name": "ไข่ไก่สด", "unit": "แผง" });
+    assert!(asked.contains(&ai::as_data("listing", &listing)), "{asked}");
+
+    s.changes(eggs, "photos").await;
+    s.sends_photo("m1", PHOTO).await.expect("taken");
+    let held = s.types("ถัดไป").await;
+    assert_eq!(held[0], t.product_held_saved());
+    assert_eq!(s.get(eggs).await.status, product::Status::Held);
+    let reason = "AI: รูปไม่ตรงกับสินค้า".to_owned();
+    assert_eq!(
+        s.reports().await,
+        [(None, report::TargetType::Product, eggs, reason)]
+    );
+    // The photo it had isn't sent again
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    let photos = requests[1].messages[0]
+        .parts
+        .iter()
+        .filter(|part| matches!(part, ai::Part::Image(_)))
+        .count();
+    assert_eq!(photos, 1);
 }

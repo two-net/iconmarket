@@ -13,6 +13,10 @@
 //! (FR-SHOP-07) are a part only here. Whether buyers with an active order see the shop's phone
 //! (FR-SHOP-08) is set at a tap, like opening. What the user types is never logged
 //! (NFR-PRIV-05).
+//!
+//! A changed name, description or photo is [moderated](moderation) before it is saved (FR-SHOP-06):
+//! found suspicious, the shop is saved `HELD` for review. Its owner goes on running it as before,
+//! but buyers don't see it until an admin approves it again (#31).
 
 #[cfg(test)]
 mod tests;
@@ -23,10 +27,12 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::{
-    ShopFlow, Step, Taken, after, card, choices, details, front, keep_photo, offered, photo_lost,
-    photo_url, prompt, take_input, why,
+    Photo, ShopFlow, Step, Taken, after, card, choices, details, front, keep_photo, offered,
+    photo_lost, photo_url, prompt, subject, take_input, why,
 };
+use crate::ai;
 use crate::catalog::images::{self, Owner};
+use crate::catalog::moderation::{self, Flag, Held};
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::Item;
@@ -247,6 +253,7 @@ async fn show(
 pub async fn answer(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     line: &line::Client,
     session: Session<SettingsFlow>,
     input: &Input,
@@ -272,7 +279,7 @@ pub async fn answer(
             };
             // The summary of an application is, here, saving
             if next == Step::Summary {
-                save(turn, config, draft, step).await?
+                save(turn, config, ai, draft, step).await?
             } else {
                 let ask = prompt(turn, config, user, &draft, next);
                 let session = Session {
@@ -295,15 +302,19 @@ pub async fn answer(
 }
 
 /// Saves the shop's details as `draft` has them, `step` being the last answered, and ends the
-/// flow with "ตั้งค่าร้าน" again. The shop must still be approved, and a new photo still there;
-/// a draft left as the shop is, by "ใช้ของเดิม", writes nothing.
+/// flow with "ตั้งค่าร้าน" again. The shop must still be approved, or held for review, and a new
+/// photo still there; a draft left as the shop is, by "ใช้ของเดิม", writes nothing. Moderation may
+/// hold it for review (FR-SHOP-06).
 async fn save(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     mut draft: ShopFlow,
     step: Step,
 ) -> Result<Vec<Message>, DbErr> {
     let user_id = turn.actor.user.id;
+    // Before anything is locked, as the AI may take a while
+    let flag = moderate(turn, config, ai, &draft).await?;
     // The shop and its photo change together, or not at all
     let txn = turn.db.begin().await?;
     let shop = shop::Entity::find()
@@ -312,7 +323,7 @@ async fn save(
         .one(&txn)
         .await?;
     let shop = match shop {
-        Some(shop) if shop.status == shop::Status::Approved => shop,
+        Some(shop) if matches!(shop.status, shop::Status::Approved | shop::Status::Held) => shop,
         shop => {
             txn.rollback().await?;
             let denied = match shop.map(|shop| shop.status) {
@@ -333,11 +344,17 @@ async fn save(
         let messages = show(turn, config, &shop, Some(unchanged)).await?;
         return flow::answered(turn, Answer::<SettingsFlow>::Done(messages)).await;
     }
+    let mut update = shop::ActiveModel {
+        updated_at: Set(turn.now),
+        ..details(&draft)
+    };
+    // Unless it was held meanwhile
+    let flag = flag.filter(|_| shop.status == shop::Status::Approved);
+    if flag.is_some() {
+        update.status = Set(shop::Status::Held);
+    }
     let saved = shop::Entity::update_many()
-        .set(shop::ActiveModel {
-            updated_at: Set(turn.now),
-            ..details(&draft)
-        })
+        .set(update)
         .filter(shop::Column::Id.eq(shop.id))
         .exec_with_returning(&txn)
         .await?
@@ -356,10 +373,44 @@ async fn save(
     }
     txn.commit().await?;
 
-    // #27 moderates an edited name or description here, and may hold the shop (FR-SHOP-06,
-    // FR-PROD-09)
-    info!(shop_id = shop.id, part = step.key(), "shop settings saved");
-    let saved_message = turn.templates.shop_settings_saved();
+    info!(
+        shop_id = shop.id,
+        part = step.key(),
+        held = flag.is_some(),
+        "shop settings saved"
+    );
+    let saved_message = match &flag {
+        Some(flag) => {
+            moderation::hold(turn, Held::Shop(&saved), flag).await?;
+            turn.templates.shop_held_saved()
+        }
+        None => turn.templates.shop_settings_saved(),
+    };
     let messages = show(turn, config, &saved, Some(saved_message)).await?;
     flow::answered(turn, Answer::<SettingsFlow>::Done(messages)).await
+}
+
+/// Moderates the user's shop as `draft` has it (FR-SHOP-06), if that changes its name,
+/// description or photo: why to hold it, if it should be. One held already isn't checked again.
+async fn moderate(
+    turn: &Turn<'_>,
+    config: &Config,
+    ai: &ai::Gateway,
+    draft: &ShopFlow,
+) -> Result<Option<Flag>, DbErr> {
+    let Some(shop) = turn
+        .actor
+        .shop
+        .as_ref()
+        .filter(|shop| shop.status == shop::Status::Approved)
+    else {
+        return Ok(None);
+    };
+    let changes = draft.name.as_deref() != Some(shop.name.as_str())
+        || draft.description.as_deref() != Some(shop.description.as_str())
+        || matches!(draft.photo, Some(Photo::New(_)));
+    if !changes {
+        return Ok(None);
+    }
+    moderation::check(turn.db, config, ai, &subject(draft)).await
 }

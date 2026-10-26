@@ -509,6 +509,13 @@ async fn a_card_that_no_longer_matches_shows_the_application_as_it_is() {
     assert!(!s.in_flow(s.other_admin).await);
     assert_eq!((s.pushes().await.len(), s.audited().await.len()), (1, 1));
 
+    // Approved, then held for review since (FR-PROD-09): still decided, and still held
+    let mut held = s.the_shop().await.into_active_model();
+    held.status = Set(shop::Status::Held);
+    held.update(&s.db).await.unwrap();
+    assert_eq!(s.taps(s.admin, &approve).await, decided);
+    assert_eq!(s.the_shop().await.status, shop::Status::Held);
+
     // Applied for again since the card was sent
     let mut again = s.the_shop().await.into_active_model();
     again.status = Set(shop::Status::Pending);

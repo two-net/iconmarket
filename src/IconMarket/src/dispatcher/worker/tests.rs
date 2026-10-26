@@ -1641,3 +1641,89 @@ async fn a_sold_out_product_is_restocked_end_to_end() {
     let session = session::Entity::find_by_id(alice).one(&s.db).await.unwrap();
     assert_eq!(session, None);
 }
+
+/// FR-PROD-09, end to end: a product listed with a prohibited keyword is held for review. The
+/// seller is answered that it is under review, and the admins are pushed the alert after.
+#[tokio::test]
+async fn a_suspicious_product_is_held_end_to_end() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut seller = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    seller.menu_roles = Set(Some(MenuRoles::Seller));
+    seller.update(&s.db).await.unwrap();
+    let bob = onboarded(&s.db, BOB).await;
+    let mut admin = user::Entity::find_by_id(bob)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    admin.is_admin = Set(true);
+    admin.menu_roles = Set(Some(MenuRoles::Admin));
+    admin.update(&s.db).await.unwrap();
+    testing::new_shop(alice).insert(&s.db).await.unwrap();
+    testing::new_category("ขนม/ของหวาน")
+        .insert(&s.db)
+        .await
+        .unwrap();
+
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "add_product"),
+            said("a2", ALICE, "ข้าม"),
+            said("a3", ALICE, "คุกกี้เนยสด"),
+            said("a4", ALICE, "50"),
+            said("a5", ALICE, "ถุง"),
+            said("a6", ALICE, "ขนม/ของหวาน"),
+            said("a7", ALICE, "10"),
+            said("a8", ALICE, "ผสมกัญชา หอมมาก"),
+            tapped("a9", ALICE, "add_product.submit?r=7"),
+        ],
+    )
+    .await;
+    let mut context = s.context(&s.pool, 20);
+    let config = Arc::get_mut(&mut context.config).expect("not shared yet");
+    config.catalog.prohibited_keywords = vec!["กัญชา".to_owned()];
+    let running = s.run_with(context, 2);
+    settled(&s.db, 9).await;
+    replied(&s, 9).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let next = vec![
+        Item::MyProducts
+            .postback()
+            .button(labels::MY_PRODUCTS.clone()),
+        Item::AddProduct
+            .postback()
+            .button(labels::ADD_ANOTHER.clone()),
+    ];
+    assert_eq!(
+        replies[&token("a9")],
+        json!([t.product_held("คุกกี้เนยสด", next)])
+    );
+    let product = product::Entity::find().one(&s.db).await.unwrap().unwrap();
+    assert_eq!(product.status, product::Status::Held);
+    let reports = report::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(
+        reports
+            .iter()
+            .map(|report| (report.reporter_id, report.target_id))
+            .collect::<Vec<_>>(),
+        [(None, product.id)]
+    );
+    let logs = push_log::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(
+        logs.iter()
+            .map(|log| (log.push_type.as_str(), log.recipient.as_str(), log.status))
+            .collect::<Vec<_>>(),
+        [("admin.held_for_review", BOB, push_log::Status::Sent)]
+    );
+}

@@ -16,6 +16,10 @@
 //! confirmed ([`DeleteProduct`]) and keeps the product, `DELETED` (DR-04). Each button carries
 //! the product's ID, checked against the seller's shop at every tap. What the user types is
 //! never logged (NFR-PRIV-05).
+//!
+//! A changed name, unit or description, or new photos, are [moderated](moderation) before they
+//! are saved: found suspicious, the product is saved `HELD` for review, so buyers don't see it
+//! until an admin lists it again (#31). Its other parts change as they are.
 
 #[cfg(test)]
 mod tests;
@@ -33,10 +37,12 @@ use tracing::info;
 use url::Url;
 
 use super::{
-    ProductFlow, Step, Taken, ask_category, choices, max_photos, photos_done_label, prompt,
-    receive, take, why,
+    ProductFlow, Step, Taken, ask_category, choices, max_photos, may_become, photos_done_label,
+    prompt, receive, take, why,
 };
+use crate::ai;
 use crate::catalog::images::{self, Owner};
+use crate::catalog::moderation::{self, Flag, Held, Subject};
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::Item;
@@ -298,6 +304,7 @@ async fn categories(
 pub async fn answer(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     line: &line::Client,
     session: Session<EditFlow>,
     input: &Input,
@@ -317,13 +324,15 @@ pub async fn answer(
     }
     let text = match (step, input) {
         (Step::Photos, Input::Image { message_id }) => {
-            return photo(turn, config, line, draft, message_id).await.map(Some);
+            return photo(turn, config, ai, line, draft, message_id)
+                .await
+                .map(Some);
         }
         (_, Input::Text(text)) => text,
         _ => return Ok(None),
     };
     let messages = match take(turn, &mut draft, step, text).await? {
-        Ok(Taken::Changed) => save(turn, config, draft, step).await?,
+        Ok(Taken::Changed) => save(turn, config, ai, draft, step).await?,
         Ok(Taken::Kept) => {
             let done = match listed(turn.db, id).await? {
                 Some(product) => vec![
@@ -361,6 +370,7 @@ pub async fn answer(
 async fn photo(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     line: &line::Client,
     mut draft: ProductFlow,
     message_id: &str,
@@ -384,7 +394,7 @@ async fn photo(
         return flow::answered(turn, Answer::<EditFlow>::Again(again)).await;
     }
     if draft.photos.len() >= max {
-        return save(turn, config, draft, Step::Photos).await;
+        return save(turn, config, ai, draft, Step::Photos).await;
     }
     // The question says how many there are now
     let ask = prompt(turn, config, &draft, Step::Photos).await?;
@@ -397,15 +407,19 @@ async fn photo(
 
 /// Saves `step` of the product as `draft` has it, and nothing else of it, then ends the flow with
 /// the product's card. The product must still be listed, a new category still active and new
-/// photos still there; a part left as it is writes nothing.
+/// photos still there; a part left as it is writes nothing. Moderation may hold it for review
+/// (FR-PROD-09).
 async fn save(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     mut draft: ProductFlow,
     step: Step,
 ) -> Result<Vec<Message>, DbErr> {
     let id = draft.product_id.expect("a listed product's");
     let user_id = turn.actor.user.id;
+    // Before anything is locked, as the AI may take a while
+    let flag = moderate(turn, config, ai, &draft, step, id).await?;
     // The product and its photos change together, or not at all
     let txn = turn.db.begin().await?;
     // Locked, so that a checkout or a deletion at the same time waits for this
@@ -468,11 +482,17 @@ async fn save(
         let card = card(turn.db, turn.templates, config, &product).await?;
         return flow::answered(turn, Answer::<EditFlow>::Done(vec![unchanged, card])).await;
     }
+    let mut update = product::ActiveModel {
+        updated_at: Set(turn.now),
+        ..change.unwrap_or_default()
+    };
+    // Unless it was held, or removed, meanwhile
+    let flag = flag.filter(|_| may_become(product.status, product::Status::Held));
+    if flag.is_some() {
+        update.status = Set(product::Status::Held);
+    }
     let saved = product::Entity::update_many()
-        .set(product::ActiveModel {
-            updated_at: Set(turn.now),
-            ..change.unwrap_or_default()
-        })
+        .set(update)
         .filter(product::Column::Id.eq(id))
         .exec_with_returning(&txn)
         .await?
@@ -481,17 +501,89 @@ async fn save(
         .ok_or_else(|| DbErr::RecordNotFound(format!("product {id}")))?;
     txn.commit().await?;
 
-    // #27 moderates an edited name or description, and new photos, here, and may hold the
-    // product (FR-PROD-09)
-    info!(product_id = id, part = step.key(), "product changed");
+    info!(
+        product_id = id,
+        part = step.key(),
+        held = flag.is_some(),
+        "product changed"
+    );
     let templates = turn.templates;
+    if let Some(flag) = &flag {
+        let shop = turn
+            .actor
+            .shop
+            .as_ref()
+            .expect("authorized for its product");
+        let held = Held::Product {
+            product: &saved,
+            shop,
+        };
+        moderation::hold(turn, held, flag).await?;
+    }
     let done = match step {
+        _ if flag.is_some() => templates.product_held_saved(),
         Step::Price => templates.product_price_saved(saved.price, &saved.unit),
         Step::Stock => templates.product_stock_saved(saved.stock, &saved.unit, sold_out(&product)),
         _ => templates.product_saved(),
     };
     let card = card(turn.db, templates, config, &saved).await?;
     flow::answered(turn, Answer::<EditFlow>::Done(vec![done, card])).await
+}
+
+/// Moderates what saving `step` as `draft` has changes of product `id` (FR-PROD-09), if that is
+/// its text or new photos: why to hold it, if it should be. The product's text is checked as it
+/// will be, and only the photos new to it. One held already isn't checked again.
+async fn moderate(
+    turn: &Turn<'_>,
+    config: &Config,
+    ai: &ai::Gateway,
+    draft: &ProductFlow,
+    step: Step,
+    id: i64,
+) -> Result<Option<Flag>, DbErr> {
+    if !matches!(
+        step,
+        Step::Name | Step::Unit | Step::Description | Step::Photos
+    ) {
+        return Ok(None);
+    }
+    let Some(product) = listed(turn.db, id)
+        .await?
+        .filter(|product| product.status != product::Status::Held)
+    else {
+        return Ok(None);
+    };
+    let photos = if step == Step::Photos {
+        let had = images::all(turn.db, Owner::Product(id)).await?;
+        let new: Vec<Uuid> = draft
+            .photos
+            .iter()
+            .filter(|photo| !had.contains(photo))
+            .copied()
+            .collect();
+        if new.is_empty() {
+            // Photos taken away only
+            return Ok(None);
+        }
+        new
+    } else if changed(draft, step, &product).is_some() {
+        Vec::new()
+    } else {
+        return Ok(None);
+    };
+    let (mut name, mut unit, mut description) = (
+        product.name.as_str(),
+        product.unit.as_str(),
+        product.description.as_deref(),
+    );
+    match step {
+        Step::Name => name = draft.name.as_deref().unwrap_or(name),
+        Step::Unit => unit = draft.unit.as_deref().unwrap_or(unit),
+        Step::Description => description = draft.description.as_deref(),
+        _ => {}
+    }
+    let subject = Subject::product(name, unit, description, photos);
+    moderation::check(turn.db, config, ai, &subject).await
 }
 
 /// What saving `step` of `product` as `draft` has it changes, if it changes anything: that part

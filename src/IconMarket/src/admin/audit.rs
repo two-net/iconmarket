@@ -32,6 +32,9 @@ pub enum Action {
     /// By an admin, or by the system when `shop.requireApproval` is off (FR-SHOP-03)
     ShopApproved,
     ShopRejected,
+    /// A product or shop held for review by moderation, or an application left for an admin
+    /// to approve (FR-PROD-09)
+    HeldForReview,
 }
 
 impl Action {
@@ -48,6 +51,7 @@ impl Action {
             Self::CategoryDeleted => "category.deleted",
             Self::ShopApproved => "shop.approved",
             Self::ShopRejected => "shop.rejected",
+            Self::HeldForReview => "moderation.held",
         }
     }
 }
@@ -58,6 +62,7 @@ pub enum Target {
     User(i64),
     Category(i64),
     Shop(i64),
+    Product(i64),
 }
 
 impl Target {
@@ -67,6 +72,7 @@ impl Target {
             Self::User(id) => ("user", id),
             Self::Category(id) => ("category", id),
             Self::Shop(id) => ("shop", id),
+            Self::Product(id) => ("product", id),
         }
     }
 }
