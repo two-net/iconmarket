@@ -34,6 +34,7 @@ use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::ai::Feature;
 use crate::catalog::browse;
+use crate::catalog::products::manage::{self, EditFlow};
 use crate::catalog::products::{self, ProductFlow};
 use crate::catalog::shops::settings::{self, SettingsFlow};
 use crate::catalog::shops::{self, ShopFlow};
@@ -452,7 +453,7 @@ fn step_name(step: &Step) -> &'static str {
 ///
 /// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21),
 /// problem reports (#22), shop applications and the reasons for turning one down (#23), shop
-/// settings (#24), products (#25, #26) and checkout (#32).
+/// settings (#24), adding products (#25), changing them (#26) and checkout (#32).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -492,6 +493,12 @@ async fn answer_flow(
         ProductFlow::NAME => match stored.read::<ProductFlow>() {
             Some(session) => {
                 Some(products::answer(turn, config, &context.line, session, input).await)
+            }
+            None => None,
+        },
+        EditFlow::NAME => match stored.read::<EditFlow>() {
+            Some(session) => {
+                Some(manage::answer(turn, config, &context.line, session, input).await)
             }
             None => None,
         },
@@ -546,6 +553,9 @@ async fn tapped(
         action if action.starts_with(products::PREFIX) => {
             return products::tapped(turn, &context.config, postback).await;
         }
+        action if action.starts_with(manage::PREFIX) => {
+            return manage::tapped(turn, &context.config, postback).await;
+        }
         action if action.starts_with(help::PREFIX) => {
             return help::tapped(turn, &context.config, &context.ai, postback).await;
         }
@@ -582,10 +592,10 @@ async fn menu_item(
             return settings::tapped(turn, &context.config, postback).await;
         }
         AddProduct => return products::tapped(turn, &context.config, postback).await,
+        MyProducts => return manage::tapped(turn, &context.config, postback).await,
         Search => 28,
         Cart => 29,
         MyOrders | ShopOrders => 34,
-        MyProducts => 26,
         Sales => 39,
         ReviewQueue | Users => 31,
         Stats => 38,

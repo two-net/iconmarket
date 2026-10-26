@@ -24,6 +24,7 @@ use crate::line::flex::{
 };
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
 use crate::payments;
+use crate::persistence::entity::product;
 use crate::thai::{self, Label, Money, NumberError};
 use crate::users::access::Denied;
 use crate::users::help::Topic;
@@ -1628,12 +1629,12 @@ impl Templates {
     }
 
     /// The photos sent earlier for the product are gone, so they are asked for again before it
-    /// can be listed.
-    pub fn product_photos_lost(&self) -> Message {
+    /// can be saved; `done` goes on without them.
+    pub fn product_photos_lost(&self, done: &Label) -> Message {
         let kha = self.kha();
         Message::text(format!(
             "ขอโทษ{kha} รูปสินค้าที่ส่งไว้หายไปแล้ว ส่งรูปมาใหม่อีกครั้ง หรือกด \"{}\" ได้เลย{kha}",
-            labels::SKIP.as_str()
+            done.as_str()
         ))
     }
 
@@ -1774,6 +1775,132 @@ impl Templates {
         );
         let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
         Message::text(text).with_quick_reply(QuickReply::new([add_product, menu]))
+    }
+
+    /// "สินค้าของฉัน" (FR-PROD-05): page `page` of the seller's products, a card each with its
+    /// buttons, and "ดูเพิ่มเติม" sending `more(next_page)`. `add` is "เพิ่มสินค้า", which is all
+    /// there is without any product.
+    pub fn my_products(
+        &self,
+        cards: &[MyProductCard<'_>],
+        page: usize,
+        more: impl FnOnce(usize) -> String,
+        add: Action,
+    ) -> Message {
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        if cards.is_empty() {
+            let kha = self.kha();
+            let text = format!(
+                "ร้านยังไม่มีสินค้าเลย{kha} กด \"{}\" เพื่อลงขายได้เลย{kha}",
+                add.label().as_str()
+            );
+            return Message::text(text).with_quick_reply(QuickReply::new([add, menu]));
+        }
+        let page = carousel_page(cards, page, PRODUCTS_PER_PAGE, my_product_card, more);
+        Message::flex(labels::MY_PRODUCTS.as_str(), page)
+            .with_quick_reply(QuickReply::new([add, menu]))
+    }
+
+    /// The seller's product `card` as it is now (FR-PROD-05), with its buttons, then where to
+    /// carry on: "สินค้าของฉัน" and the menu.
+    pub fn my_product(&self, card: &MyProductCard<'_>) -> Message {
+        let mine = Item::MyProducts
+            .postback()
+            .button(labels::MY_PRODUCTS.clone());
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::flex(card.name, my_product_card(card))
+            .with_quick_reply(QuickReply::new([mine, menu]))
+    }
+
+    /// Names product `name`, a part of which the seller is about to change in "สินค้าของฉัน".
+    /// The question follows.
+    pub fn editing_product(&self, name: &str) -> Message {
+        Message::text(format!("แก้ไขสินค้า \"{name}\"{}", self.kha()))
+    }
+
+    /// The product's price is now `price` per `unit`, for new orders only: those placed keep the
+    /// price they were placed at (FR-PROD-08). Its card follows.
+    pub fn product_price_saved(&self, price: Money, unit: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "เปลี่ยนราคาเป็น {} แล้ว{kha} ราคาใหม่ใช้กับออเดอร์ใหม่ ส่วนออเดอร์ที่สั่งไว้แล้วยังใช้ราคาเดิม{kha}",
+            price_per_unit(price, unit)
+        ))
+    }
+
+    /// The product sold by `unit` now has `stock` for new orders (FR-PROD-05): sold out at 0,
+    /// orderable again if it was sold out (FR-PROD-06). Its card follows.
+    pub fn product_stock_saved(
+        &self,
+        stock: Option<i32>,
+        unit: &str,
+        was_sold_out: bool,
+    ) -> Message {
+        let kha = self.kha();
+        Message::text(match stock {
+            Some(0) => format!(
+                "ตั้งจำนวนเป็น 0 แล้ว{kha} ลูกค้าจะเห็นว่า \"{}\" และสั่งไม่ได้จนกว่าจะเติมของ{kha}",
+                availability(Availability::SoldOut)
+            ),
+            _ if was_sold_out => format!("เติมของแล้ว{kha} ลูกค้าสั่งสินค้านี้ได้อีกครั้ง{kha}"),
+            stock => format!("แก้จำนวนเป็น {} แล้ว{kha}", stock_line(stock, unit)),
+        })
+    }
+
+    /// A part of the product other than its price and stock is saved. Its card follows.
+    pub fn product_saved(&self) -> Message {
+        Message::text(format!("บันทึกแล้ว{}", self.kha()))
+    }
+
+    /// A part of the product is left as it was. Its card follows.
+    pub fn product_unchanged(&self) -> Message {
+        Message::text(format!("ยังใช้ข้อมูลเดิมอยู่{}", self.kha()))
+    }
+
+    /// Product `name` is now `visible` to buyers or hidden from them (FR-PROD-05); `changed`
+    /// unless it already was. Its card follows.
+    pub fn product_visibility(&self, name: &str, visible: bool, changed: bool) -> Message {
+        let kha = self.kha();
+        Message::text(match (visible, changed) {
+            (true, true) => format!("แสดง \"{name}\" แล้ว{kha} ผู้ซื้อเห็นสินค้านี้อีกครั้ง{kha}"),
+            (true, false) => format!("\"{name}\" แสดงอยู่แล้ว{kha}"),
+            (false, true) => format!(
+                "ซ่อน \"{name}\" แล้ว{kha} ผู้ซื้อจะไม่เห็นสินค้านี้จนกว่าจะกด \"{}\"{kha}",
+                labels::SHOW_PRODUCT.as_str()
+            ),
+            (false, false) => format!("\"{name}\" ซ่อนอยู่แล้ว{kha}"),
+        })
+    }
+
+    /// Asks to confirm deleting product `name` (FR-PROD-05, FR-UI-13): buyers no longer see it,
+    /// its orders go on, and it can't be undone. `confirm` deletes it; cancelling keeps it.
+    pub fn confirm_delete_product(&self, name: &str, confirm: Action) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ลบสินค้า \"{name}\" ใช่ไหม{kha_question} ผู้ซื้อจะไม่เห็นสินค้านี้อีก ออเดอร์ที่สั่งไว้แล้วยังทำต่อตามปกติ ลบแล้วกู้คืนไม่ได้ ถ้าแน่ใจ กด \"{}\" ได้เลย{kha}",
+            confirm.label().as_str()
+        );
+        with_cancel(Message::text(text).with_quick_reply(QuickReply::new([confirm])))
+    }
+
+    /// Product `name` was deleted (DR-04), or kept, the deletion not having been confirmed in
+    /// time; then where to carry on: "สินค้าของฉัน" and the menu.
+    pub fn product_deleted(&self, name: &str, deleted: bool) -> Message {
+        let kha = self.kha();
+        let text = if deleted {
+            format!("ลบสินค้า \"{name}\" แล้ว{kha}")
+        } else {
+            format!(
+                "ยังไม่ได้ลบสินค้า \"{name}\"{kha} ถ้าจะลบ กด \"{}\" ที่สินค้านั้นใน \"{}\" อีกครั้งได้เลย{kha}",
+                labels::DELETE.as_str(),
+                labels::MY_PRODUCTS.as_str()
+            )
+        };
+        let mine = Item::MyProducts
+            .postback()
+            .button(labels::MY_PRODUCTS.clone());
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(text).with_quick_reply(QuickReply::new([mine, menu]))
     }
 
     /// A product's preview (FR-PROD-01): its first photo, name, price per unit and description,
@@ -2130,6 +2257,27 @@ pub struct ProductPreview<'a> {
     pub buttons: Vec<Action>,
 }
 
+/// A product as its seller sees it in "สินค้าของฉัน" (FR-PROD-05).
+pub struct MyProductCard<'a> {
+    pub name: &'a str,
+    pub price: Money,
+    pub unit: &'a str,
+    pub category: &'a str,
+    /// What is left for new orders: `None` is unlimited or made to order, and 0 sold out
+    /// (FR-PROD-06)
+    pub stock: Option<i32>,
+    /// Whether buyers see it (FR-PROD-07)
+    pub status: product::Status,
+    /// Its first photo's `/img/p` link
+    pub photo: Option<&'a Url>,
+    /// How many photos it has
+    pub photos: usize,
+    /// Its buttons, a row each
+    pub buttons: Vec<Vec<Action>>,
+    /// Whether the first button is primary: "เติมของ", for a sold-out product (FR-PROD-06)
+    pub primary: bool,
+}
+
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
 pub struct ShopCard<'a> {
     pub name: &'a str,
@@ -2310,6 +2458,110 @@ fn category_card(card: &CategoryCard<'_>) -> Bubble {
     Bubble {
         size: Some(BubbleSize::Kilo),
         header: Some(FlexBox::vertical([title.into()])),
+        body: Some(body),
+        footer: Some(footer),
+        ..Bubble::default()
+    }
+}
+
+/// Products on a page of a list, leaving room for "ดูเพิ่มเติม" (FR-SRCH-03)
+pub const PRODUCTS_PER_PAGE: usize = 10;
+
+/// A product's card in "สินค้าของฉัน" (FR-PROD-05): its first photo, name and price per unit,
+/// whether buyers see it and whether it is sold out (FR-PROD-06), its stock, category and
+/// photos, and its buttons in rows, side by side.
+fn my_product_card(card: &MyProductCard<'_>) -> Bubble {
+    let hero = card.photo.map(|url| {
+        Hero::Image(Image {
+            size: Some(Size::Full),
+            aspect_ratio: Some("20:13".to_owned()),
+            aspect_mode: Some(AspectMode::Cover),
+            ..Image::new(url)
+        })
+    });
+    let name = Text {
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(card.name)
+    };
+    let price = Text {
+        size: Some(Size::Sm),
+        wrap: Some(true),
+        ..Text::new(price_per_unit(card.price, card.unit))
+    };
+    let (state, color) = match card.status {
+        product::Status::Active if card.stock == Some(0) => {
+            (availability(Availability::SoldOut), CLOSED_COLOR)
+        }
+        product::Status::Active => ("ลงขายอยู่".to_owned(), OPEN_COLOR),
+        product::Status::Hidden => ("ซ่อนอยู่ (ผู้ซื้อไม่เห็น)".to_owned(), MUTED),
+        product::Status::Held => ("รอตรวจ (ผู้ซื้อยังไม่เห็น)".to_owned(), MUTED),
+        product::Status::Removed => ("ถูกนำออก (ผู้ซื้อไม่เห็น)".to_owned(), CLOSED_COLOR),
+        product::Status::Draft | product::Status::Deleted => ("ไม่ได้ลงขาย".to_owned(), MUTED),
+    };
+    let state = Text {
+        size: Some(Size::Sm),
+        weight: Some(Weight::Bold),
+        color: Some(color.to_owned()),
+        wrap: Some(true),
+        ..Text::new(state)
+    };
+    let photos = match card.photos {
+        0 => NONE.to_owned(),
+        count => format!("{count} รูป"),
+    };
+    let details = FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::vertical([
+            row("จำนวน", &stock_line(card.stock, card.unit)),
+            row("หมวดหมู่", card.category),
+            row("รูปสินค้า", &photos),
+        ])
+    };
+    let body = FlexBox {
+        spacing: Some(Spacing::Md),
+        ..FlexBox::vertical([
+            name.into(),
+            price.into(),
+            state.into(),
+            Separator::default().into(),
+            details.into(),
+        ])
+    };
+    let mut first = card.primary;
+    let rows = card
+        .buttons
+        .iter()
+        .filter(|row| !row.is_empty())
+        .map(|row| {
+            let buttons = row.iter().map(|action| {
+                let style = if std::mem::take(&mut first) {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Secondary
+                };
+                let button = Button {
+                    style: Some(style),
+                    height: Some(ButtonHeight::Sm),
+                    flex: Some(1),
+                    ..Button::new(action.clone())
+                };
+                button.into()
+            });
+            let row: Component = FlexBox {
+                spacing: Some(Spacing::Sm),
+                ..FlexBox::horizontal(buttons.collect::<Vec<_>>())
+            }
+            .into();
+            row
+        });
+    let footer = FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::vertical(rows.collect::<Vec<_>>())
+    };
+    Bubble {
+        size: Some(BubbleSize::Mega),
+        hero,
         body: Some(body),
         footer: Some(footer),
         ..Bubble::default()
@@ -2895,6 +3147,16 @@ pub mod labels {
         STOCK = "จำนวน",
         PRODUCT_DESCRIPTION = "รายละเอียด",
 
+        // "สินค้าของฉัน" (FR-PROD-05, FR-PROD-06), with EDIT and DELETE
+        /// Asks for the stock of a sold-out product, to sell it again
+        RESTOCK = "เติมของ",
+        EDIT_STOCK = "แก้จำนวน",
+        EDIT_PRICE = "แก้ราคา",
+        CHANGE_PHOTOS = "เปลี่ยนรูป",
+        /// Hides a product from buyers, or shows it again
+        HIDE_PRODUCT = "ซ่อนสินค้า",
+        SHOW_PRODUCT = "แสดงสินค้า",
+
         // Approving shops (FR-ADM-02)
         APPROVE = "อนุมัติ",
         REJECT = "ไม่อนุมัติ",
@@ -3090,7 +3352,7 @@ mod tests {
             text(&t.listing_offered(0)).to_owned(),
             text(&t.product_photo_added(2, 3)).to_owned(),
             text(&t.product_photos_full(3)).to_owned(),
-            text(&t.product_photos_lost()).to_owned(),
+            text(&t.product_photos_lost(&labels::SKIP)).to_owned(),
             text(&t.ask_product_name(80, None)).to_owned(),
             text(&t.ask_product_name(80, Some("ไข่ไก่เบอร์ 2"))).to_owned(),
             text(&t.ask_product_price(Money::from_baht(100_000), Some("฿110"))).to_owned(),
@@ -3106,7 +3368,22 @@ mod tests {
             text(&t.product_preview(&product_preview())[0]).to_owned(),
             text(&t.product_listed("ไข่ไก่เบอร์ 2", Vec::new())).to_owned(),
             text(&t.product_flow_gone(add_product())).to_owned(),
+            text(&t.my_products(&[], 0, |_| unreachable!(), add_product())).to_owned(),
+            text(&t.editing_product("ไข่ไก่เบอร์ 2")).to_owned(),
+            text(&t.product_price_saved(Money::from_baht(120), "แผง")).to_owned(),
+            text(&t.product_stock_saved(Some(30), "แผง", true)).to_owned(),
+            text(&t.product_stock_saved(Some(0), "แผง", false)).to_owned(),
+            text(&t.product_stock_saved(None, "แผง", false)).to_owned(),
+            text(&t.product_saved()).to_owned(),
+            text(&t.product_unchanged()).to_owned(),
+            text(&t.confirm_delete_product("ไข่ไก่เบอร์ 2", confirm_delete())).to_owned(),
+            text(&t.product_deleted("ไข่ไก่เบอร์ 2", true)).to_owned(),
+            text(&t.product_deleted("ไข่ไก่เบอร์ 2", false)).to_owned(),
         ];
+        for (visible, changed) in [(true, true), (true, false), (false, true), (false, false)] {
+            let visibility = t.product_visibility("ไข่ไก่เบอร์ 2", visible, changed);
+            texts.push(text(&visibility).to_owned());
+        }
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
         texts.extend(DENIALS.map(|denied| text(&t.denied(denied)).to_owned()));
@@ -4037,6 +4314,125 @@ mod tests {
             .map(|item| item.action.label().as_str())
             .collect();
         assert_eq!(labels, ["ยืนยันลบ", "ยกเลิก"]);
+    }
+
+    /// The buttons of a product's card in "สินค้าของฉัน", as many as it has, each sending a
+    /// postback as long as a product's can be.
+    fn my_product_buttons() -> Vec<Vec<Action>> {
+        let action = |label: &Label| Action::Postback {
+            label: label.clone(),
+            data: format!("my_products.part?id={}&p=description", i64::MAX),
+            display_text: Some(label.as_str().to_owned()),
+        };
+        vec![
+            vec![action(&labels::RESTOCK), action(&labels::EDIT_PRICE)],
+            vec![action(&labels::CHANGE_PHOTOS), action(&labels::EDIT)],
+            vec![action(&labels::HIDE_PRODUCT), action(&labels::DELETE)],
+        ]
+    }
+
+    /// Eggs, as their seller sees them: for sale, 30 left, with every button.
+    fn eggs<'a>(name: &'a str, photo: Option<&'a Url>) -> MyProductCard<'a> {
+        MyProductCard {
+            name,
+            price: Money::from_baht(110),
+            unit: "แผง",
+            category: "ไข่/นม",
+            stock: Some(30),
+            status: product::Status::Active,
+            photo,
+            photos: 1,
+            buttons: my_product_buttons(),
+            primary: false,
+        }
+    }
+
+    /// FR-PROD-05, FR-SRCH-03, FR-LINE-11: a full page of "สินค้าของฉัน", with the longest
+    /// values a product takes and every button, fits in one carousel with "ดูเพิ่มเติม".
+    #[test]
+    fn a_full_page_of_my_products_fits() {
+        let t = templates(PoliteParticle::Kha);
+        let (name, unit) = ("ข".repeat(80), "ข".repeat(20));
+        let category = "ข".repeat(Label::MAX_CHARS);
+        let photo =
+            Url::parse("https://iconmarket.example.com/img/p/6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b")
+                .unwrap();
+        let cards: Vec<_> = (0..=PRODUCTS_PER_PAGE)
+            .map(|_| MyProductCard {
+                unit: &unit,
+                category: &category,
+                price: Money::from_baht(100_000),
+                stock: Some(99_999),
+                photos: 3,
+                ..eggs(&name, Some(&photo))
+            })
+            .collect();
+        let more = |next| format!("my_products?page={next}");
+        let page = t.my_products(&cards, 0, more, add_product());
+        limits::check(slice::from_ref(&page)).unwrap();
+        let Body::Flex {
+            alt_text,
+            contents: FlexContainer::Carousel(carousel),
+        } = &page.body
+        else {
+            panic!("not a carousel");
+        };
+        assert_eq!(alt_text, "สินค้าของฉัน");
+        assert_eq!(carousel.contents.len(), PRODUCTS_PER_PAGE + 1);
+        let texts = card_texts(&carousel.contents[0]);
+        assert_eq!(texts[1], format!("฿100,000 / {unit}"));
+        assert!(texts.contains(&format!("99,999 {unit}")), "{texts:?}");
+        assert!(texts.contains(&"3 รูป".to_owned()), "{texts:?}");
+        limits::check(&[t.my_product(&cards[0])]).unwrap();
+    }
+
+    /// FR-PROD-05 – FR-PROD-07: a product's card says whether buyers see it and whether it is
+    /// sold out, and makes "เติมของ" the primary button of a sold-out one.
+    #[test]
+    fn a_products_card_says_whether_buyers_can_order_it() {
+        use product::Status::{Active, Held, Hidden, Removed};
+        for (status, stock, state) in [
+            (Active, Some(30), "ลงขายอยู่"),
+            (Active, None, "ลงขายอยู่"),
+            (Active, Some(0), "หมด"),
+            (Hidden, Some(0), "ซ่อนอยู่ (ผู้ซื้อไม่เห็น)"),
+            (Held, Some(30), "รอตรวจ (ผู้ซื้อยังไม่เห็น)"),
+            (Removed, Some(30), "ถูกนำออก (ผู้ซื้อไม่เห็น)"),
+        ] {
+            let card = MyProductCard {
+                status,
+                stock,
+                ..eggs("ไข่ไก่เบอร์ 2", None)
+            };
+            let texts = card_texts(&my_product_card(&card));
+            assert_eq!(texts[2], state, "{status:?} {stock:?}");
+        }
+
+        let styles = |primary: bool| -> Vec<Option<ButtonStyle>> {
+            let card = MyProductCard {
+                primary,
+                ..eggs("ไข่ไก่เบอร์ 2", None)
+            };
+            let bubble = my_product_card(&card);
+            let mut styles = Vec::new();
+            for row in &bubble.footer.unwrap().contents {
+                let Component::Box(row) = row else {
+                    panic!("not a row: {row:?}");
+                };
+                for button in &row.contents {
+                    let Component::Button(button) = button else {
+                        panic!("not a button: {button:?}");
+                    };
+                    styles.push(button.style);
+                }
+            }
+            styles
+        };
+        let secondary = Some(ButtonStyle::Secondary);
+        assert_eq!(styles(false), [secondary; 6]);
+        let mut first_primary = [secondary; 6];
+        first_primary[0] = Some(ButtonStyle::Primary);
+        assert_eq!(styles(true), first_primary);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Products (FR-PROD): adding one ("เพิ่มสินค้า"), and whether it can be ordered. Built by #25
-//! and #26; #24 adds what a buyer can do with a product while its shop is closed.
+//! and #26; #24 adds what a buyer can do with a product while its shop is closed. Managing
+//! listed ones, "สินค้าของฉัน", is [`manage`].
 //!
 //! Adding a product is a [flow](ProductFlow) that asks for its photos, name, price, unit,
 //! category, stock and description in turn, each checked as FR-PROD-03 says, then shows it as a
@@ -21,10 +22,10 @@
 
 #![allow(
     dead_code,
-    reason = "the product card (#28), the cart (#29), checkout (#32) and \"สินค้าของฉัน\" (#26) \
-              are built by later issues"
+    reason = "the product card (#28), the cart (#29) and checkout (#32) are built by later issues"
 )]
 
+pub mod manage;
 #[cfg(test)]
 mod tests;
 
@@ -87,6 +88,10 @@ pub struct ProductFlow {
     editing: bool,
     /// How many answers were taken, so that a preview's buttons act only on what it showed
     revision: i64,
+    /// The listed product a part of which "สินค้าของฉัน" changes ([`manage`]); `None` while
+    /// adding one, and missing from drafts saved before it was added
+    #[serde(default)]
+    product_id: Option<i64>,
 }
 
 /// How many of a product there are for new orders (FR-PROD-03, FR-PROD-05).
@@ -105,6 +110,11 @@ impl Stock {
             Self::Count(count) => Some(count),
             Self::Unlimited => None,
         }
+    }
+
+    /// What `products.stock` keeps, `column`.
+    pub fn of(column: Option<i32>) -> Self {
+        column.map_or(Self::Unlimited, Self::Count)
     }
 }
 
@@ -185,6 +195,24 @@ impl ProductFlow {
             description: None,
             editing: false,
             revision: 0,
+            product_id: None,
+        }
+    }
+
+    /// What listed `product` has, its photos `photos` in order, to change a part of it in
+    /// "สินค้าของฉัน".
+    fn from_product(product: &product::Model, photos: Vec<Uuid>) -> Self {
+        Self {
+            photos,
+            name: Some(product.name.clone()),
+            price: Some(product.price),
+            unit: Some(product.unit.clone()),
+            category_id: Some(product.category_id),
+            stock: Some(Stock::of(product.stock)),
+            description: product.description.clone(),
+            editing: true,
+            revision: 0,
+            product_id: Some(product.id),
         }
     }
 
@@ -839,8 +867,9 @@ async fn choices(
 }
 
 /// Page `page` of the active categories, in the order admins set, as Quick Replies that send
-/// their names, with "ดูเพิ่มเติม" while more remain. A page past the last, from a button sent
-/// before categories were deactivated, starts over.
+/// their names, with "ดูเพิ่มเติม" while more remain: the button of "เพิ่มสินค้า", or of
+/// "สินค้าของฉัน" for a listed product. A page past the last, from a button sent before
+/// categories were deactivated, starts over.
 async fn category_choices(
     turn: &Turn<'_>,
     draft: &ProductFlow,
@@ -854,9 +883,14 @@ async fn category_choices(
     let choice = |category: &category::Model| {
         Action::message(Label::fit(category.name.as_str()), category.name.as_str())
     };
+    let action = if draft.product_id.is_some() {
+        manage::CATEGORIES
+    } else {
+        CATEGORIES
+    };
     let more = |next: usize| {
         let next = i64::try_from(next).expect("a few pages");
-        Postback::new(CATEGORIES).with_int(PAGE, next).to_string()
+        Postback::new(action).with_int(PAGE, next).to_string()
     };
     Ok(templates::quick_reply_page(
         &active, page, per_page, choice, more,
@@ -961,7 +995,10 @@ async fn submit(
             images::delete_draft(turn.db, id, user_id).await?;
         }
         draft.revision += 1;
-        let mut ask = vec![turn.templates.product_photos_lost()];
+        let mut ask = vec![
+            turn.templates
+                .product_photos_lost(photos_done_label(&draft)),
+        ];
         ask.extend(prompt(turn, config, &draft, Step::Photos).await?);
         let session = Session {
             step: Step::Photos,
@@ -988,9 +1025,9 @@ async fn submit(
 }
 
 /// Whether a product whose status is `from` may become `to` (FR-PROD-07). A product is listed
-/// from `DRAFT`; its seller hides and shows it (#26); a new or edited one may be held for review
-/// (#27), and an admin then lists or removes it (#31); any but a deleted one may be deleted, for
-/// good (DR-04). Sold out isn't a status: it is the stock (FR-PROD-06).
+/// from `DRAFT`; its seller hides and shows it ([`manage`]); a new or edited one may be held for
+/// review (#27), and an admin then lists or removes it (#31); any but a deleted one may be
+/// deleted, for good (DR-04). Sold out isn't a status: it is the stock (FR-PROD-06).
 pub fn may_become(from: product::Status, to: product::Status) -> bool {
     use product::Status::{Active, Deleted, Draft, Held, Hidden, Removed};
     match (from, to) {

@@ -1166,7 +1166,7 @@ async fn lost_photos_are_asked_for_again() {
     image::Entity::delete_many().exec(&s.db).await.unwrap();
 
     let lost = s.taps_latest(a, SUBMIT).await;
-    assert_eq!(lost[0], t.product_photos_lost());
+    assert_eq!(lost[0], t.product_photos_lost(&labels::SKIP));
     assert_eq!(text(&lost[1]), text(&t.ask_product_photos(0, 3, true)));
     assert_eq!(s.products().await, []);
     let session = s.session(a).await.unwrap();

@@ -20,6 +20,7 @@ mod process;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
@@ -31,7 +32,7 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::{Expr, Query};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QueryOrder,
+    ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QueryOrder,
     QuerySelect, RelationTrait, TransactionSession, TransactionTrait,
 };
 use tokio::sync::Semaphore;
@@ -265,6 +266,51 @@ pub async fn adopt_all(
     Ok(all)
 }
 
+/// Makes `ids` `owner`'s images, in that order, and deletes its others, such as a product's
+/// photos changed in "สินค้าของฉัน" (FR-PROD-05). Each is either `owner`'s already or one of
+/// user `user_id`'s drafts, which it adopts. Returns whether all of them were there: a draft may
+/// have been [swept](delete_orphaned_drafts), and the others are then given all the same, for the
+/// caller to roll back.
+pub async fn replace_all(
+    db: &impl ConnectionTrait,
+    owner: Owner,
+    ids: &[Uuid],
+    user_id: i64,
+) -> Result<bool, DbErr> {
+    let (owner_type, owner_id) = owner.parts();
+    let mut all = true;
+    for (position, &id) in ids.iter().enumerate() {
+        let position = i16::try_from(position).expect("a few images");
+        let mine = Condition::any()
+            .add(
+                Condition::all()
+                    .add(image::Column::OwnerType.eq(OwnerType::Draft))
+                    .add(image::Column::OwnerId.eq(user_id)),
+            )
+            .add(
+                Condition::all()
+                    .add(image::Column::OwnerType.eq(owner_type))
+                    .add(image::Column::OwnerId.eq(owner_id)),
+            );
+        let kept = image::Entity::update_many()
+            .col_expr(image::Column::OwnerType, Expr::value(owner_type))
+            .col_expr(image::Column::OwnerId, Expr::value(owner_id))
+            .col_expr(image::Column::Position, Expr::value(position))
+            .filter(image::Column::Id.eq(id))
+            .filter(mine)
+            .exec(db)
+            .await?;
+        all &= kept.rows_affected > 0;
+    }
+    image::Entity::delete_many()
+        .filter(image::Column::OwnerType.eq(owner_type))
+        .filter(image::Column::OwnerId.eq(owner_id))
+        .filter(image::Column::Id.is_not_in(ids.iter().copied()))
+        .exec(db)
+        .await?;
+    Ok(all)
+}
+
 /// Deletes user `user_id`'s draft `id`, replaced by another photo.
 pub async fn delete_draft(db: &impl ConnectionTrait, id: Uuid, user_id: i64) -> Result<(), DbErr> {
     image::Entity::delete_many()
@@ -306,6 +352,48 @@ pub async fn first(db: &impl ConnectionTrait, owner: Owner) -> Result<Option<Uui
         .into_tuple()
         .one(db)
         .await
+}
+
+/// The IDs of `owner`'s images, in their order, such as a product's photos.
+pub async fn all(db: &impl ConnectionTrait, owner: Owner) -> Result<Vec<Uuid>, DbErr> {
+    let (owner_type, owner_id) = owner.parts();
+    image::Entity::find()
+        .select_only()
+        .column(image::Column::Id)
+        .filter(image::Column::OwnerType.eq(owner_type))
+        .filter(image::Column::OwnerId.eq(owner_id))
+        .order_by_asc(image::Column::Position)
+        .order_by_asc(image::Column::CreatedAt)
+        .into_tuple()
+        .all(db)
+        .await
+}
+
+/// The IDs of the images of products `ids`, each product's in their order: what "สินค้าของฉัน"
+/// shows of their photos. A product without any has no entry.
+pub async fn of_products(
+    db: &impl ConnectionTrait,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<Uuid>>, DbErr> {
+    let mut photos: HashMap<i64, Vec<Uuid>> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(photos);
+    }
+    let rows: Vec<(i64, Uuid)> = image::Entity::find()
+        .select_only()
+        .column(image::Column::OwnerId)
+        .column(image::Column::Id)
+        .filter(image::Column::OwnerType.eq(OwnerType::Product))
+        .filter(image::Column::OwnerId.is_in(ids.iter().copied()))
+        .order_by_asc(image::Column::Position)
+        .order_by_asc(image::Column::CreatedAt)
+        .into_tuple()
+        .all(db)
+        .await?;
+    for (product_id, id) in rows {
+        photos.entry(product_id).or_default().push(id);
+    }
+    Ok(photos)
 }
 
 /// Deletes, at `now`, the drafts of users whose guided flow ended more than [`DRAFT_GRACE`]

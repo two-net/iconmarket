@@ -1580,3 +1580,64 @@ async fn a_product_is_listed_from_a_photo_end_to_end() {
         (image::OwnerType::Product, product.id, 0)
     );
 }
+
+/// FR-PROD-05, FR-PROD-06, end to end: "สินค้าของฉัน" from the menu shows the sold-out product
+/// first, saying "หมด"; its "เติมของ" and the quantity make it orderable again.
+#[tokio::test]
+async fn a_sold_out_product_is_restocked_end_to_end() {
+    let s = setup().await;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut seller = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    seller.menu_roles = Set(Some(MenuRoles::Seller));
+    seller.update(&s.db).await.unwrap();
+    let shop = testing::new_shop(alice).insert(&s.db).await.unwrap();
+    let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let listed = testing::new_product(shop.id, eggs.id, "ขนมครก", Some(5));
+    listed.insert(&s.db).await.unwrap();
+    let sold_out = testing::new_product(shop.id, eggs.id, "ไข่ไก่เบอร์ 2", Some(0));
+    let sold_out = sold_out.insert(&s.db).await.unwrap();
+    let restock = format!("my_products.part?id={}&p=stock", sold_out.id);
+
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "my_products"),
+            tapped("a2", ALICE, &restock),
+            said("a3", ALICE, "30"),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 3).await;
+    replied(&s, 3).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    let list = serde_json::to_string(&reply("a1")).unwrap();
+    for shown in ["หมด", "เติมของ", restock.as_str()] {
+        assert!(list.contains(shown), "{shown} in {list}");
+    }
+    let at = |name: &str| list.find(name).expect(name);
+    assert!(at("ไข่ไก่เบอร์ 2") < at("ขนมครก"), "sold out first: {list}");
+    let asked = reply("a2")[1]["text"].as_str().unwrap().to_owned();
+    assert!(asked.starts_with("ตอนนี้มีขายกี่แผงคะ"), "{asked}");
+    assert_eq!(reply("a3")[0]["text"], "เติมของแล้วค่ะ ลูกค้าสั่งสินค้านี้ได้อีกครั้งค่ะ");
+
+    let restocked = product::Entity::find_by_id(sold_out.id)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (restocked.stock, restocked.status),
+        (Some(30), product::Status::Active)
+    );
+    let session = session::Entity::find_by_id(alice).one(&s.db).await.unwrap();
+    assert_eq!(session, None);
+}

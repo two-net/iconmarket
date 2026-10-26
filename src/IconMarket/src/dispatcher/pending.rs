@@ -29,6 +29,7 @@ use tracing::warn;
 use super::Turn;
 use super::postback::Postback;
 use crate::admin::categories::DeleteCategory;
+use crate::catalog::products::manage::DeleteProduct;
 use crate::line::Message;
 use crate::persistence::entity::pending_action;
 use crate::persistence::random_id;
@@ -125,10 +126,12 @@ pub async fn propose<P: Proposal>(turn: &Turn<'_>, proposal: &P) -> Result<Postb
 
 /// A tap on a confirm button: confirms its pending action as the kind it names. Each kind of
 /// proposal adds its arm, as its issue builds it: deleting a category (#21), product listings
-/// (#25, #30), checkout (#32), order actions (#33) and the AI assistant's proposals (#37).
+/// (#25, #30), deleting a product (#26), checkout (#32), order actions (#33) and the AI
+/// assistant's proposals (#37).
 pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
     match (postback.name(KIND), postback.uuid(ID)) {
         (Some(DeleteCategory::KIND), Some(id)) => confirm::<DeleteCategory>(turn, id).await,
+        (Some(DeleteProduct::KIND), Some(id)) => confirm::<DeleteProduct>(turn, id).await,
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }
