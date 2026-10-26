@@ -40,6 +40,7 @@ use tokio::time::Instant;
 use tracing::{debug, error, warn};
 use url::Url;
 
+use crate::ai;
 use crate::config::ImageConfig;
 use crate::http::AppState;
 use crate::line;
@@ -367,6 +368,28 @@ pub async fn all(db: &impl ConnectionTrait, owner: Owner) -> Result<Vec<Uuid>, D
         .into_tuple()
         .all(db)
         .await
+}
+
+/// Images `ids` as the AI is sent them, in the order given; one that is gone is left out.
+pub async fn media(db: &impl ConnectionTrait, ids: &[Uuid]) -> Result<Vec<ai::Media>, DbErr> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut found: HashMap<Uuid, image::Model> = image::Entity::find()
+        .filter(image::Column::Id.is_in(ids.iter().copied()))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row))
+        .collect();
+    Ok(ids
+        .iter()
+        .filter_map(|id| found.remove(id))
+        .map(|row| ai::Media {
+            media_type: row.content_type,
+            bytes: row.data,
+        })
+        .collect())
 }
 
 /// The IDs of the images of products `ids`, each product's in their order: what "สินค้าของฉัน"

@@ -1,26 +1,30 @@
 //! Adding a product (FR-PROD-01, FR-PROD-03): the flow's steps and what each refuses, the
 //! photos kept as drafts until the product is listed, nothing listed before "ยืนยันลงขาย",
 //! correcting a part, the categories paged, a seller's photo offered for listing, and only the
-//! owner of an approved shop listing; the statuses a product goes through (FR-PROD-07); and
-//! whether it can be ordered (FR-SRCH-07). Each event is handled in a transaction committed once
-//! it is handled. The `async` tests each start a throwaway PostgreSQL, so they need Docker.
+//! owner of an approved shop listing; a listing moderation finds suspicious held for review
+//! (FR-PROD-09); the statuses a product goes through (FR-PROD-07); and whether it can be ordered
+//! (FR-SRCH-07). Each event is handled in a transaction committed once it is handled. The `async`
+//! tests each start a throwaway PostgreSQL, so they need Docker.
 
 use chrono::{TimeZone, Utc};
 use sea_orm::prelude::{DateTimeUtc, Json};
 use sea_orm::sea_query::Expr;
 use sea_orm::{DatabaseConnection, IntoActiveModel, Iterable, QueryOrder};
+use serde_json::json;
+use sqlx::PgPool;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 
 use super::*;
+use crate::ai::testing as scripted;
 use crate::config::{self, SessionConfig};
 use crate::dispatcher::{Finished, Location};
 use crate::line::Body;
 use crate::line::flex::{Component, FlexContainer, Hero};
 use crate::line::testing::{self as fake, Fake};
-use crate::notifications::templates::{Templates, with_cancel};
+use crate::notifications::templates::{Reported, Templates, with_cancel};
 use crate::persistence::entity::image::{self, OwnerType};
-use crate::persistence::entity::{session, user};
+use crate::persistence::entity::{audit_log, push_log, report, session, user};
 use crate::persistence::{orm, testing};
 use crate::users::access::Actor;
 
@@ -31,6 +35,7 @@ static SESSION: SessionConfig = SessionConfig {
 
 const SELLER: &str = "Ua1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const BUYER: &str = "Ub2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+const ADMIN: &str = "Uc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
 
 /// The JPEG LINE serves for the photos users send
 const PHOTO: &[u8] = include_bytes!("../../ai/provider/fixtures/media/slip.jpg");
@@ -295,9 +300,13 @@ fn a_closed_shops_products_cannot_be_ordered() {
 
 struct Setup {
     _container: ContainerAsync<Postgres>,
+    /// The pool [`Setup::db`] is on, for the AI's daily limits
+    pool: PgPool,
     db: DatabaseConnection,
     line: Fake,
     config: Config,
+    /// Off, unless a test scripts it
+    ai: ai::Gateway,
     templates: Templates,
     /// The owner of [`Setup::shop`]
     seller: i64,
@@ -312,7 +321,7 @@ struct Setup {
 
 async fn setup() -> Setup {
     let (container, pool) = testing::migrated().await;
-    let db = orm(pool);
+    let db = orm(pool.clone());
     let seller = testing::new_user(SELLER).insert(&db).await.unwrap().id;
     let shop = testing::new_shop(seller).insert(&db).await.unwrap().id;
     let buyer = testing::new_user(BUYER).insert(&db).await.unwrap().id;
@@ -330,10 +339,12 @@ async fn setup() -> Setup {
     let config = config::sample();
     Setup {
         _container: container,
+        pool,
         db,
         line: Fake::start().await,
         templates: Templates::new(&config.app),
         config,
+        ai: ai::testing::off(),
         seller,
         shop,
         buyer,
@@ -344,7 +355,7 @@ async fn setup() -> Setup {
 
 impl Setup {
     /// Handles an event of user `user_id`'s with `handle`, as the worker does: in a transaction
-    /// that commits once it is handled, with the user loaded afresh.
+    /// that commits once it is handled, with the user loaded afresh and what it notifies queued.
     async fn handle(
         &self,
         user_id: i64,
@@ -356,7 +367,13 @@ impl Setup {
             .await
             .unwrap();
         let messages = handle(&turn).await.unwrap();
-        let Finished { messages, .. } = turn.finish(messages);
+        let Finished {
+            messages, outbox, ..
+        } = turn.finish(messages);
+        outbox
+            .queue(&txn, &self.config.notification, t0())
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
         if !messages.is_empty() {
             limits::check(&messages).unwrap();
@@ -368,7 +385,7 @@ impl Setup {
     async fn taps(&self, user_id: i64, data: &str) -> Vec<Message> {
         let postback = Postback::parse(data).unwrap();
         self.handle(user_id, async |turn| {
-            tapped(turn, &self.config, &postback).await
+            tapped(turn, &self.config, &self.ai, &postback).await
         })
         .await
     }
@@ -463,13 +480,69 @@ impl Setup {
     /// User `user_id` adds eggs, from "เพิ่มสินค้า" to the preview: a photo, ฿110 a แผง, 30 of
     /// them, with a description.
     async fn fill(&self, user_id: i64) -> Vec<Message> {
+        self.fill_as(user_id, "ไข่ไก่เบอร์ 2", "ไข่สดจากฟาร์มทุกเช้า")
+            .await
+    }
+
+    /// User `user_id` adds `name`, described as `description`, likewise.
+    async fn fill_as(&self, user_id: i64, name: &str, description: &str) -> Vec<Message> {
         self.taps(user_id, "add_product").await;
         self.sends_photo(user_id, "m1", PHOTO).await;
-        for answer in ["ถัดไป", "ไข่ไก่เบอร์ 2", "110", "แผง", "ไข่/นม", "30"]
-        {
+        for answer in ["ถัดไป", name, "110", "แผง", "ไข่/นม", "30"] {
             self.types(user_id, answer).await;
         }
-        self.types(user_id, "ไข่สดจากฟาร์มทุกเช้า").await
+        self.types(user_id, description).await
+    }
+
+    /// An admin, whom the admins' alerts go to.
+    async fn admin(&self) -> i64 {
+        let admin = user::ActiveModel {
+            is_admin: Set(true),
+            ..testing::new_user(ADMIN)
+        };
+        admin.insert(&self.db).await.unwrap().id
+    }
+
+    /// Every report, as (reporter, target type, target, reason, status).
+    async fn reports(&self) -> Vec<(Option<i64>, report::TargetType, i64, String, report::Status)> {
+        report::Entity::find()
+            .order_by_asc(report::Column::Id)
+            .all(&self.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                let (reporter, reason) = (row.reporter_id, row.reason);
+                (reporter, row.target_type, row.target_id, reason, row.status)
+            })
+            .collect()
+    }
+
+    /// Every push queued, as (type, recipient, messages), oldest first.
+    async fn pushes(&self) -> Vec<(String, String, Option<Json>)> {
+        push_log::Entity::find()
+            .order_by_asc(push_log::Column::Id)
+            .all(&self.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.push_type, row.recipient, row.messages))
+            .collect()
+    }
+
+    /// Every audit entry, as (actor, action, target type, target, details).
+    async fn audited(&self) -> Vec<(Option<i64>, String, String, Option<i64>, Json)> {
+        audit_log::Entity::find()
+            .order_by_asc(audit_log::Column::Id)
+            .all(&self.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                let (actor, action) = (row.actor_id, row.action);
+                (actor, action, row.target_type, row.target_id, row.details)
+            })
+            .collect()
     }
 
     async fn products(&self) -> Vec<product::Model> {
@@ -1323,4 +1396,152 @@ async fn a_sellers_photo_is_offered_for_listing() {
         s.templates.image_rejected(Rejected::NotJpegOrPng)
     );
     assert_eq!(s.flow(a).await, None);
+}
+
+/// The admins' alert of product `name` of ร้านป้าแดง, held for `reason`.
+fn held_alert(t: &Templates, name: &str, reason: &str) -> Message {
+    let what = Reported::Product {
+        name,
+        shop: "ร้านป้าแดง",
+    };
+    let review = Item::ReviewQueue
+        .postback()
+        .button(labels::REVIEW_QUEUE.clone());
+    t.held_alert(&what, reason, t0(), vec![review])
+}
+
+fn queued(messages: &[Message]) -> Option<Json> {
+    Some(serde_json::to_value(messages).unwrap())
+}
+
+/// FR-PROD-09, acceptance: a listing with a prohibited keyword is saved `HELD`, which buyers
+/// never see, however the keyword is spaced. The seller is told it is under review, but not why;
+/// a report of no one's is filed for the review queue, the admins are alerted with the keyword,
+/// and the hold is audited as the system's.
+#[tokio::test]
+async fn a_listing_with_a_prohibited_keyword_is_held() {
+    let mut s = setup().await;
+    s.config.catalog.prohibited_keywords = vec!["กัญชา".to_owned()];
+    let (a, t) = (s.seller, &s.templates);
+    s.admin().await;
+    s.fill_as(a, "คุกกี้เนยสด", "หอมกัญ ชา อบใหม่ทุกวัน").await;
+
+    let held = s.taps_latest(a, SUBMIT).await;
+    assert_eq!(held, [t.product_held("คุกกี้เนยสด", listed_next())]);
+    assert_eq!(
+        text(&held[0]),
+        "บันทึก คุกกี้เนยสด แล้วค่ะ ขอให้ผู้ดูแลตรวจก่อนลงขาย ระหว่างนี้ผู้ซื้อยังไม่เห็นสินค้านี้ ดูสถานะได้ที่ \"สินค้าของฉัน\"ค่ะ"
+    );
+    let [product] = &s.products().await[..] else {
+        panic!("one product: {:?}", s.products().await);
+    };
+    assert_eq!(product.status, product::Status::Held);
+    // Its photo is its own, as a listed product's
+    let [(OwnerType::Product, owner, _)] = s.images().await[..] else {
+        panic!("one photo: {:?}", s.images().await);
+    };
+    assert_eq!(owner, product.id);
+
+    let reason = "มีคำต้องห้าม \"กัญชา\"";
+    assert_eq!(
+        s.reports().await,
+        [(
+            None,
+            report::TargetType::Product,
+            product.id,
+            reason.to_owned(),
+            report::Status::Open
+        )]
+    );
+    assert_eq!(
+        s.pushes().await,
+        [(
+            "admin.held_for_review".to_owned(),
+            ADMIN.to_owned(),
+            queued(&[held_alert(t, "คุกกี้เนยสด", reason)])
+        )]
+    );
+    assert_eq!(
+        s.audited().await,
+        [(
+            None,
+            "moderation.held".to_owned(),
+            "product".to_owned(),
+            Some(product.id),
+            json!({ "name": "คุกกี้เนยสด", "reason": reason })
+        )]
+    );
+}
+
+/// FR-PROD-09, FR-AI-12, acceptance: with the AI asking for a review, the listing is held with
+/// the AI's reason. The AI saw the listing's text as data, and its photo.
+#[tokio::test]
+async fn the_ai_can_hold_a_listing() {
+    let mut s = setup().await;
+    let review = json!({ "verdict": "review", "reason": "อ้างว่ารักษาโรคเบาหวานได้" });
+    let (ai, model) = scripted::scripted(&s.pool, [scripted::Turn::Json(review)], true, &[]);
+    s.ai = ai;
+    let (a, t) = (s.seller, &s.templates);
+    s.admin().await;
+    s.fill_as(a, "ไข่ไก่เบอร์ 2", "กินแล้วหายเบาหวาน").await;
+
+    let held = s.taps_latest(a, SUBMIT).await;
+    assert_eq!(held, [t.product_held("ไข่ไก่เบอร์ 2", listed_next())]);
+    let [product] = &s.products().await[..] else {
+        panic!("one product: {:?}", s.products().await);
+    };
+    assert_eq!(product.status, product::Status::Held);
+    let reason = "AI: อ้างว่ารักษาโรคเบาหวานได้";
+    assert_eq!(
+        s.reports().await,
+        [(
+            None,
+            report::TargetType::Product,
+            product.id,
+            reason.to_owned(),
+            report::Status::Open
+        )]
+    );
+    assert_eq!(
+        s.pushes().await[0].2,
+        queued(&[held_alert(t, "ไข่ไก่เบอร์ 2", reason)])
+    );
+
+    let [request] = &model.requests()[..] else {
+        panic!("one request: {:?}", model.requests());
+    };
+    assert!(request.system.ends_with(ai::DATA_RULE));
+    let [ai::Part::Text(asked), ai::Part::Image(photo)] = &request.messages[0].parts[..] else {
+        panic!("the text, then the photo: {:?}", request.messages);
+    };
+    let listing = json!({
+        "name": "ไข่ไก่เบอร์ 2",
+        "unit": "แผง",
+        "description": "กินแล้วหายเบาหวาน"
+    });
+    assert!(asked.contains(&ai::as_data("listing", &listing)), "{asked}");
+    assert_eq!(photo.media_type, "image/jpeg");
+}
+
+/// FR-PROD-09: a listing the AI allows, or that it can't answer about, is listed as usual, with
+/// nothing filed (NFR-REL-06).
+#[tokio::test]
+async fn a_listing_the_ai_allows_is_listed() {
+    let mut s = setup().await;
+    let allow = json!({ "verdict": "allow", "reason": "" });
+    let turns = [scripted::Turn::Json(allow), scripted::Turn::Fail];
+    let (ai, model) = scripted::scripted(&s.pool, turns, true, &[]);
+    s.ai = ai;
+    let (a, t) = (s.seller, &s.templates);
+    s.admin().await;
+
+    for listed in 1..=2 {
+        s.fill(a).await;
+        let done = s.taps_latest(a, SUBMIT).await;
+        assert_eq!(done, [t.product_listed("ไข่ไก่เบอร์ 2", listed_next())]);
+        assert_eq!(model.requests().len(), listed);
+    }
+    let statuses: Vec<_> = s.products().await.iter().map(|p| p.status).collect();
+    assert_eq!(statuses, [product::Status::Active; 2]);
+    assert_eq!((s.reports().await, s.pushes().await), (vec![], vec![]));
 }

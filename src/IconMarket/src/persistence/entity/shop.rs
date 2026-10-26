@@ -50,6 +50,9 @@ pub enum Status {
     Pending,
     Approved,
     Rejected,
+    /// Under review once moderation found its edited name, description or photo suspicious
+    /// (FR-PROD-09): its owner still runs it, but buyers don't see it and it takes no new orders
+    Held,
     Suspended,
     /// Closed for good by the owner or by account deletion
     Closed,

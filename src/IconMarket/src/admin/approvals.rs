@@ -266,7 +266,7 @@ async fn undecided(
             };
             Err(vec![templates.application_changed(), card])
         }
-        shop::Status::Approved | shop::Status::Suspended => {
+        shop::Status::Approved | shop::Status::Held | shop::Status::Suspended => {
             Err(vec![templates.application_decided(&shop.name, true)])
         }
         shop::Status::Rejected => Err(vec![templates.application_decided(&shop.name, false)]),

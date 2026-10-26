@@ -1,7 +1,8 @@
 //! "เปิด/ปิดร้าน" and "ตั้งค่าร้าน" (FR-SHOP-05 – FR-SHOP-09): opening and closing at a tap, which
 //! leaves orders and products alone; each part of the shop saved once answered; the phone shown
-//! or hidden; the card buyers see; and only the owner of an approved shop doing any of it. Each
-//! event is handled in a transaction committed once it is handled. The `async` tests each start
+//! or hidden; the card buyers see; a suspicious change holding the shop for review (FR-PROD-09);
+//! and only the owner of an approved or held shop doing any of it. Each event is handled in a
+//! transaction committed once it is handled. The `async` tests each start
 //! a throwaway PostgreSQL, so they need Docker.
 
 use chrono::{TimeDelta, TimeZone, Utc};
@@ -20,7 +21,7 @@ use crate::line::testing::{self as fake, Fake};
 use crate::line::{Body, limits};
 use crate::notifications::templates::Templates;
 use crate::persistence::entity::image::{self, OwnerType};
-use crate::persistence::entity::{order, product, session, user};
+use crate::persistence::entity::{order, product, report, session, user};
 use crate::persistence::{orm, testing};
 use crate::thai::Money;
 use crate::users::access::Actor;
@@ -62,6 +63,8 @@ struct Setup {
     db: DatabaseConnection,
     line: Fake,
     config: Config,
+    /// Off, unless a test scripts it
+    ai: ai::Gateway,
     templates: Templates,
     /// The owner of [`Setup::shop`], with an address and a phone
     seller: i64,
@@ -97,6 +100,7 @@ async fn setup() -> Setup {
         line: Fake::start().await,
         templates: Templates::new(&config.app),
         config,
+        ai: ai::testing::off(),
         seller,
         shop,
         buyer,
@@ -150,7 +154,7 @@ impl Setup {
                 .as_ref()
                 .and_then(|flow| flow.read::<SettingsFlow>());
             let session = session.expect("changing a part of the shop");
-            answered = answer(turn, &self.config, &line, session, &input).await?;
+            answered = answer(turn, &self.config, &self.ai, &line, session, &input).await?;
             Ok(answered.clone().unwrap_or_default())
         })
         .await;
@@ -334,7 +338,7 @@ async fn the_menu_tap_closes_and_opens_the_shop() {
 
     // "ร้านของฉัน" offers the same switch
     let mine = s.handle_at(s.seller, t0(), async |turn| {
-        shops::tapped(turn, &s.config, &Item::MyShop.postback()).await
+        shops::tapped(turn, &s.config, &s.ai, &Item::MyShop.postback()).await
     });
     let mine = mine.await;
     assert_eq!(quick_reply_data(&mine[1])[0], Some("shop.open?to=0"));
@@ -591,7 +595,7 @@ async fn each_part_is_saved_once_answered() {
         let session = turn.flow.as_ref().and_then(|flow| flow.read()).unwrap();
         let line = s.line.client();
         let input = Input::Text("ใช้ของเดิม".to_owned());
-        Ok(answer(turn, &s.config, &line, session, &input)
+        Ok(answer(turn, &s.config, &s.ai, &line, session, &input)
             .await?
             .unwrap())
     });
@@ -749,4 +753,64 @@ async fn the_shop_front_shows_what_buyers_see() {
     s.taps(s.seller, "open_close").await;
     let front = s.taps(s.seller, "shop.front").await;
     assert_eq!(card_texts(&front[1])[1], "ร้านปิด");
+}
+
+/// FR-SHOP-06, FR-PROD-09: a description changed to something suspicious holds the shop for
+/// review, and a report of no one's is filed. Its owner keeps the seller's functions and goes on
+/// running it, but it takes no orders, and its card says buyers don't see it. Held, it changes as
+/// before, without being checked or filed again.
+#[tokio::test]
+async fn a_suspicious_change_holds_the_shop() {
+    let mut s = setup().await;
+    s.config.catalog.prohibited_keywords = vec!["บุหรี่ไฟฟ้า".to_owned()];
+    let (seller, t) = (s.seller, &s.templates);
+    s.taps(seller, "shop.part?p=description").await;
+    let held = s.types(seller, "ไข่ไก่ และบุหรี่ไฟฟ้า").await;
+    assert_eq!(held[0], t.shop_held_saved());
+    assert_eq!(row(&held[1], "สถานะร้าน"), "รอตรวจ (ผู้ซื้อยังไม่เห็นร้าน)");
+    let shop = s.shop().await;
+    assert_eq!(
+        (shop.status, shop.description.as_str()),
+        (shop::Status::Held, "ไข่ไก่ และบุหรี่ไฟฟ้า")
+    );
+    assert!(!shops::takes_orders(&shop));
+    let reports = || async {
+        report::Entity::find()
+            .all(&s.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.reporter_id, row.target_type, row.target_id, row.reason))
+            .collect::<Vec<_>>()
+    };
+    let filed = (
+        None,
+        report::TargetType::Shop,
+        shop.id,
+        "มีคำต้องห้าม \"บุหรี่ไฟฟ้า\"".to_owned(),
+    );
+    assert_eq!(reports().await, std::slice::from_ref(&filed));
+
+    // Its owner still runs it
+    let owner = Actor::load(&s.db, seller).await.unwrap().unwrap();
+    assert!(owner.roles().seller);
+    let mine = s.handle_at(seller, t0(), async |turn| {
+        shops::tapped(turn, &s.config, &s.ai, &Item::MyShop.postback()).await
+    });
+    let mine = mine.await;
+    assert_eq!(
+        text(&mine[1]),
+        text(&t.my_shop_held("ร้านป้าแดง", Vec::new()))
+    );
+    s.taps(seller, "shop.open?to=0").await;
+    assert!(!s.shop().await.is_open);
+    s.taps(seller, "shop.part?p=name").await;
+    let saved = s.types(seller, "ร้านบุหรี่ไฟฟ้า").await;
+    assert_eq!(saved[0], t.shop_settings_saved());
+    let shop = s.shop().await;
+    assert_eq!(
+        (shop.status, shop.name.as_str()),
+        (shop::Status::Held, "ร้านบุหรี่ไฟฟ้า")
+    );
+    assert_eq!(reports().await, [filed]);
 }

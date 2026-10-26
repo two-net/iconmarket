@@ -1019,6 +1019,44 @@ impl Templates {
         notice(&headline, &details, vec![review])
     }
 
+    /// Tells the admins moderation held `what` for review at `at`, for `reason` (FR-PROD-09,
+    /// Table 4.8-A), or left a shop's application for them to approve: `buttons` open the
+    /// review queue or the applications.
+    pub fn held_alert(
+        &self,
+        what: &Reported<'_>,
+        reason: &str,
+        at: DateTime<Utc>,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let headline = format!("มีรายการรอตรวจใหม่{}", self.kha());
+        let what = match what {
+            Reported::Product { name, shop } => format!("สินค้า: {name} ({shop})"),
+            Reported::Shop { name } => format!("ร้าน: {name}"),
+        };
+        let details = [
+            what,
+            format!("เหตุผล: {reason}"),
+            format!("พักไว้เมื่อ {}", self.date_time(at)),
+        ];
+        notice(&headline, &details, buttons)
+    }
+
+    /// Why moderation held something, for the admins: `keyword` of `catalog.prohibitedKeywords`
+    /// is in its text (FR-PROD-09).
+    pub fn held_for_keyword(&self, keyword: &str) -> String {
+        format!("มีคำต้องห้าม \"{keyword}\"")
+    }
+
+    /// Why moderation held something, for the admins: the AI's `reason` (FR-AI-12), which it
+    /// may have left empty.
+    pub fn held_by_ai(&self, reason: &str) -> String {
+        match reason.trim() {
+            "" => "AI ขอให้ตรวจ".to_owned(),
+            reason => format!("AI: {reason}"),
+        }
+    }
+
     /// Asks for the shop's name, of at most `max_chars` (FR-SHOP-01): the first question of an
     /// application, which says how it goes, or a new name for `current`.
     pub fn ask_shop_name(&self, max_chars: usize, current: Option<&str>) -> Message {
@@ -1339,6 +1377,17 @@ impl Templates {
         .with_quick_reply(QuickReply::new(actions))
     }
 
+    /// "ร้านของฉัน" for the owner of shop `name`, held for review (FR-PROD-09): `actions` manage
+    /// it, as they do an approved one. Its card comes first.
+    pub fn my_shop_held(&self, name: &str, actions: Vec<Action>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "{}กำลังรอผู้ดูแลตรวจ{kha} ระหว่างนี้ผู้ซื้อจะยังไม่เห็นร้านและสินค้าของร้าน แต่ยังดูแลร้านได้จากเมนูผู้ขาย เลือกด้านล่างได้เลย{kha}",
+            shop_called(name)
+        ))
+        .with_quick_reply(QuickReply::new(actions))
+    }
+
     /// Shop `name` is now `open` or closed (FR-SHOP-05); `changed` unless it already was.
     /// `switch` turns it back. Closed, its products stay visible but can't be ordered, and its
     /// orders go on.
@@ -1383,6 +1432,15 @@ impl Templates {
     /// A change in "ตั้งค่าร้าน" is saved. The shop's card follows.
     pub fn shop_settings_saved(&self) -> Message {
         Message::text(format!("บันทึกแล้ว{}", self.kha()))
+    }
+
+    /// A change in "ตั้งค่าร้าน" is saved, and the shop held for review (FR-SHOP-06,
+    /// FR-PROD-09). Its owner isn't told why; the admins are. The shop's card follows.
+    pub fn shop_held_saved(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "บันทึกแล้ว{kha} ขอให้ผู้ดูแลตรวจร้านก่อน ระหว่างนี้ผู้ซื้อจะยังไม่เห็นร้านและสินค้าของร้าน แต่ยังดูแลร้านได้ตามปกติ{kha}"
+        ))
     }
 
     /// A part of "ตั้งค่าร้าน" is left as it was. The shop's card follows.
@@ -1765,6 +1823,18 @@ impl Templates {
             .with_quick_reply(QuickReply::new(next.into_iter().chain([menu])))
     }
 
+    /// Product `name` is saved but held for review, so buyers don't see it yet (FR-PROD-09).
+    /// The seller isn't told why; the admins are. `next` are what to do next, before the menu.
+    pub fn product_held(&self, name: &str, next: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(format!(
+            "บันทึก {name} แล้ว{kha} ขอให้ผู้ดูแลตรวจก่อนลงขาย ระหว่างนี้ผู้ซื้อยังไม่เห็นสินค้านี้ ดูสถานะได้ที่ \"{}\"{kha}",
+            labels::MY_PRODUCTS.as_str()
+        ))
+        .with_quick_reply(QuickReply::new(next.into_iter().chain([menu])))
+    }
+
     /// A button of "เพิ่มสินค้า" that is no longer in progress: listed, cancelled or expired.
     /// `add_product` starts again.
     pub fn product_flow_gone(&self, add_product: Action) -> Message {
@@ -1850,6 +1920,15 @@ impl Templates {
     /// A part of the product other than its price and stock is saved. Its card follows.
     pub fn product_saved(&self) -> Message {
         Message::text(format!("บันทึกแล้ว{}", self.kha()))
+    }
+
+    /// A part of the product is saved, and the product held for review (FR-PROD-09). The seller
+    /// isn't told why; the admins are. Its card, saying "รอตรวจ", follows.
+    pub fn product_held_saved(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "บันทึกแล้ว{kha} ขอให้ผู้ดูแลตรวจสินค้านี้ก่อน ระหว่างนี้ผู้ซื้อยังไม่เห็นสินค้านี้{kha}"
+        ))
     }
 
     /// A part of the product is left as it was. Its card follows.
@@ -2010,7 +2089,9 @@ impl Templates {
             fulfillment_line(card.offers_pickup, card.offers_delivery, card.delivery_fee);
         let mut rows = Vec::new();
         if let Some(running) = &card.running {
-            let state = if running.is_open {
+            let state = if running.held {
+                "รอตรวจ (ผู้ซื้อยังไม่เห็นร้าน)"
+            } else if running.is_open {
                 "เปิดอยู่"
             } else {
                 "ปิดอยู่ (ผู้ซื้อสั่งไม่ได้)"
@@ -2305,6 +2386,8 @@ pub struct ShopCard<'a> {
 pub struct Running<'a> {
     /// Open or closed for now (FR-SHOP-05)
     pub is_open: bool,
+    /// Held for review, so buyers don't see it whether open or not (FR-PROD-09)
+    pub held: bool,
     /// FR-SHOP-07
     pub opening_hours: Option<&'a str>,
     /// Whether buyers with an active order see the phone (FR-SHOP-08)
@@ -3568,6 +3651,7 @@ mod tests {
         let running = ShopCard {
             running: Some(Running {
                 is_open: false,
+                held: false,
                 opening_hours: Some("ทุกวัน 06:00–10:00"),
                 show_phone: false,
             }),
@@ -3584,6 +3668,7 @@ mod tests {
         let open = ShopCard {
             running: Some(Running {
                 is_open: true,
+                held: false,
                 opening_hours: None,
                 show_phone: true,
             }),
@@ -3622,6 +3707,7 @@ mod tests {
             minimum_order: Some(Money::from_satang(9_999_999)),
             running: Some(Running {
                 is_open: false,
+                held: false,
                 opening_hours: Some(&hours),
                 show_phone: false,
             }),

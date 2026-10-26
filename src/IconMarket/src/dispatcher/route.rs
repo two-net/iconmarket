@@ -485,9 +485,9 @@ async fn answer_flow(
             None => None,
         },
         SettingsFlow::NAME => match stored.read::<SettingsFlow>() {
-            Some(session) => {
-                Some(settings::answer(turn, config, &context.line, session, input).await)
-            }
+            Some(session) => Some(
+                settings::answer(turn, config, &context.ai, &context.line, session, input).await,
+            ),
             None => None,
         },
         ProductFlow::NAME => match stored.read::<ProductFlow>() {
@@ -498,7 +498,7 @@ async fn answer_flow(
         },
         EditFlow::NAME => match stored.read::<EditFlow>() {
             Some(session) => {
-                Some(manage::answer(turn, config, &context.line, session, input).await)
+                Some(manage::answer(turn, config, &context.ai, &context.line, session, input).await)
             }
             None => None,
         },
@@ -542,7 +542,7 @@ async fn tapped(
             return categories::tapped(turn, postback).await;
         }
         action if action.starts_with(OPEN_SHOP) => {
-            return shops::tapped(turn, &context.config, postback).await;
+            return shops::tapped(turn, &context.config, &context.ai, postback).await;
         }
         action if action.starts_with(APPROVALS) => {
             return approvals::tapped(turn, &context.config, postback).await;
@@ -551,7 +551,7 @@ async fn tapped(
             return settings::tapped(turn, &context.config, postback).await;
         }
         action if action.starts_with(products::PREFIX) => {
-            return products::tapped(turn, &context.config, postback).await;
+            return products::tapped(turn, &context.config, &context.ai, postback).await;
         }
         action if action.starts_with(manage::PREFIX) => {
             return manage::tapped(turn, &context.config, postback).await;
@@ -584,14 +584,14 @@ async fn menu_item(
     use Item::*;
     let issue = match item {
         Buy => return browse::tapped(turn, postback).await,
-        MyShop => return shops::tapped(turn, &context.config, postback).await,
+        MyShop => return shops::tapped(turn, &context.config, &context.ai, postback).await,
         ApproveShops => return approvals::tapped(turn, &context.config, postback).await,
         Categories => return categories::tapped(turn, postback).await,
         Help => return help::tapped(turn, &context.config, &context.ai, postback).await,
         OpenClose | ShopSettings => {
             return settings::tapped(turn, &context.config, postback).await;
         }
-        AddProduct => return products::tapped(turn, &context.config, postback).await,
+        AddProduct => return products::tapped(turn, &context.config, &context.ai, postback).await,
         MyProducts => return manage::tapped(turn, &context.config, postback).await,
         Search => 28,
         Cart => 29,

@@ -48,10 +48,11 @@ impl Actor {
         self.user.status == user::Status::Active
     }
 
-    /// Whether the actor may manage their shop: only an `APPROVED` one (FR-SHOP-10).
+    /// Whether the actor may manage their shop: an `APPROVED` one (FR-SHOP-10), or one `HELD`
+    /// for review, which its owner still runs (FR-PROD-09).
     fn manages_shop(&self) -> Result<(), Denied> {
         match self.shop.as_ref().map(|shop| shop.status) {
-            Some(shop::Status::Approved) => Ok(()),
+            Some(shop::Status::Approved | shop::Status::Held) => Ok(()),
             Some(shop::Status::Suspended) => Err(Denied::ShopSuspended),
             Some(shop::Status::Pending | shop::Status::Rejected | shop::Status::Closed) | None => {
                 Err(Denied::NotAllowed)

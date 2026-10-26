@@ -177,7 +177,8 @@ defaultCategories = [
     "บริการ",
     "อื่นๆ",
 ]
-# Keyword moderation
+# Keyword moderation (FR-PROD-09): new or edited product and shop text containing one of these,
+# whatever its case or spacing, is held for an admin to review
 prohibitedKeywords = []
 
 [privacy]

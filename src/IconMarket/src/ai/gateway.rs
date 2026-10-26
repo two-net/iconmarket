@@ -165,6 +165,15 @@ impl Gateway {
         self.inner.enabled.contains(&feature)
     }
 
+    /// Whether the model accepts images, for the features that send them only then, such as
+    /// moderation (FR-PROD-09). The adapters send every image they are given.
+    pub fn accepts_images(&self) -> bool {
+        self.inner
+            .adapter
+            .as_ref()
+            .is_some_and(|adapter| adapter.capabilities().image_input)
+    }
+
     /// Asks the model, and returns its answer once it is valid.
     ///
     /// The call counts once against the daily limits; at a limit the provider isn't called

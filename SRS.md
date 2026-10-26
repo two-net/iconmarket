@@ -337,7 +337,7 @@ No other endpoints are exposed.
 | FR-SHOP-07 | The seller may set an opening-hours text (e.g., *ทุกวัน 06:00–10:00*) shown on the shop card. | S |
 | FR-SHOP-08 | The seller chooses whether the shop phone is shown to buyers with an active order (default: shown). | S |
 | FR-SHOP-09 | A shop card shall show photo, name, description, open/closed, fulfillment options, delivery fee, minimum order, opening hours and rating (when FR-ORD-14 is enabled), with a "ดูสินค้า" button. | M |
-| FR-SHOP-10 | Shop statuses are `PENDING`, `APPROVED`, `REJECTED`, `SUSPENDED` and `CLOSED` (closed permanently by the owner or by account deletion). Only `APPROVED` shops can receive orders. A suspended shop's products are hidden and new orders are blocked; existing open orders continue unless an admin cancels them. | M |
+| FR-SHOP-10 | Shop statuses are `PENDING`, `APPROVED`, `REJECTED`, `HELD` (under review, FR-PROD-09), `SUSPENDED` and `CLOSED` (closed permanently by the owner or by account deletion). Only `APPROVED` shops can receive orders. A held shop is still run by its owner, but it and its products are hidden from buyers until an admin approves it again. A suspended shop's products are hidden and new orders are blocked; existing open orders continue unless an admin cancels them. | M |
 | FR-SHOP-11 | "ยอดขาย" shall show, for today, the last 7 days and the last 30 days: number of orders by status, value of completed orders, unpaid completed orders and the top 5 products. | S |
 
 ### 4.3 Products (FR-PROD)

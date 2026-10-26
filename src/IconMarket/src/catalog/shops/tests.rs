@@ -17,9 +17,9 @@ use crate::dispatcher::Finished;
 use crate::line::flex::{Component, FlexContainer, Hero};
 use crate::line::testing::{self as fake, Fake};
 use crate::line::{Body, limits};
-use crate::notifications::templates::Templates;
+use crate::notifications::templates::{Reported, Templates};
 use crate::persistence::entity::image::{self, OwnerType};
-use crate::persistence::entity::{audit_log, push_log, session};
+use crate::persistence::entity::{audit_log, push_log, report, session};
 use crate::persistence::{orm, testing};
 use crate::users::address::AddressFlow;
 
@@ -128,6 +128,8 @@ struct Setup {
     db: DatabaseConnection,
     line: Fake,
     config: Config,
+    /// Off, unless a test scripts it
+    ai: ai::Gateway,
     templates: Templates,
     /// A user with an address and a phone, but no shared location; an admin, whose LINE user
     /// ID is [`ADMIN`], is alerted of applications
@@ -157,6 +159,7 @@ async fn setup() -> Setup {
         line: Fake::start().await,
         templates: Templates::new(&config.app),
         config,
+        ai: ai::testing::off(),
         applicant,
     }
 }
@@ -201,7 +204,7 @@ impl Setup {
     async fn tapped(&self, user_id: i64, data: &str) -> (Vec<Message>, Vec<i64>) {
         let postback = Postback::parse(data).unwrap();
         self.handle(user_id, async |turn| {
-            tapped(turn, &self.config, &postback).await
+            tapped(turn, &self.config, &self.ai, &postback).await
         })
         .await
     }
@@ -302,10 +305,15 @@ impl Setup {
     /// User `user_id` applies, from "เปิดร้าน" to the summary, as Appendix A.5's shop: picked
     /// up at home or delivered for ฿10, without a photo, location, minimum or PromptPay.
     async fn fill(&self, user_id: i64) -> Vec<Message> {
+        self.fill_as(user_id, "ไข่ไก่ ผักสวนครัว").await
+    }
+
+    /// User `user_id` applies likewise, but with `description`.
+    async fn fill_as(&self, user_id: i64, description: &str) -> Vec<Message> {
         self.taps(user_id, "my_shop").await;
         for answer in [
             "ร้านป้าแดง",
-            "ไข่ไก่ ผักสวนครัว",
+            description,
             "ข้าม",
             "ใช้ที่อยู่บ้าน",
             "ข้าม",
@@ -647,6 +655,54 @@ async fn without_approval_the_shop_opens_at_once() {
         )]
     );
     assert_eq!(s.pushes().await, []);
+}
+
+/// FR-PROD-09: an application moderation finds suspicious waits for an admin, even with
+/// `shop.requireApproval` off. The admins are alerted with its card and why, and the hold is
+/// audited; no report is filed, as approving the application is its review.
+#[tokio::test]
+async fn a_suspicious_application_waits_for_an_admin() {
+    let mut s = setup().await;
+    s.config.shop.require_approval = false;
+    s.config.catalog.prohibited_keywords = vec!["บุหรี่ไฟฟ้า".to_owned()];
+    let a = s.applicant;
+    s.fill_as(a, "ไข่ไก่ มีบุหรี่ไฟฟ้าด้วย").await;
+
+    let (sent, relink) = s.taps_latest(a, SUBMIT).await;
+    let menu = s.main_menu(a).await;
+    assert_eq!(sent, [s.templates.application_sent("ร้านป้าแดง"), menu]);
+    assert!(relink.is_empty(), "no seller's menu yet");
+    let shop = &s.shops().await[0];
+    assert_eq!(shop.status, shop::Status::Pending);
+
+    let reason = "มีคำต้องห้าม \"บุหรี่ไฟฟ้า\"";
+    let application = approvals::alert(&s.templates, shop, &s.user(a).await, None);
+    let approvals = Item::ApproveShops
+        .postback()
+        .button(labels::APPROVE_SHOPS.clone());
+    let what = Reported::Shop {
+        name: "ร้านป้าแดง"
+    };
+    let held = s.templates.held_alert(&what, reason, t0(), vec![approvals]);
+    assert_eq!(
+        s.pushes().await,
+        [(
+            "admin.shop_application,admin.held_for_review".to_owned(),
+            ADMIN.to_owned(),
+            queued(&[application, held])
+        )]
+    );
+    assert_eq!(
+        s.audited().await,
+        [(
+            None,
+            "moderation.held".to_owned(),
+            Some(shop.id),
+            json!({ "name": "ร้านป้าแดง", "reason": reason })
+        )]
+    );
+    let reports = report::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(reports, []);
 }
 
 /// FR-ONB-04: a user without an address gives it first, then goes straight on to the

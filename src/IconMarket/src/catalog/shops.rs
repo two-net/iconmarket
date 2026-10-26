@@ -6,9 +6,14 @@
 //! `shop.requireApproval` is off (FR-SHOP-03). Turned down, it is `REJECTED`, and its owner may
 //! apply again, which makes the same shop `PENDING` once more: a user owns at most one shop
 //! (FR-SHOP-02). Only an `APPROVED` shop sells: its owner manages it ([`authorize`]), buyers see
-//! its products (#28) and, while it is open, it [takes orders](takes_orders) (#32). A
-//! `SUSPENDED` one (#31) is hidden and takes no new orders, though its open orders go on;
-//! `CLOSED` is for good (#36).
+//! its products (#28) and, while it is open, it [takes orders](takes_orders) (#32). One whose
+//! edited name, description or photo [moderation] finds suspicious is `HELD` for review: its
+//! owner still runs it, but buyers don't see it until an admin approves it again (#31), and it
+//! takes no new orders. A `SUSPENDED` one (#31) is hidden and takes no new orders, though its
+//! open orders go on; `CLOSED` is for good (#36).
+//!
+//! An application is moderated too: one found suspicious is left `PENDING` for an admin to
+//! approve, even while `shop.requireApproval` is off.
 //!
 //! The application is a [flow](ShopFlow), which asks for the address first if the user has
 //! none (FR-ONB-04). Its last step is a summary, whose buttons send the application or correct
@@ -33,9 +38,11 @@ use tracing::{info, warn};
 use url::Url;
 
 use super::images::{self, Owner, Rejected};
+use super::moderation::{self, Held, Subject};
 use super::{browse, products};
 use crate::admin::approvals;
 use crate::admin::audit::{self, Entry, Target};
+use crate::ai;
 use crate::config::{Config, PaymentMethod};
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::{self, Item};
@@ -366,6 +373,7 @@ fn after(config: &Config, draft: &ShopFlow, step: Step) -> Step {
 pub async fn tapped(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ApplyForShop).await? {
@@ -394,7 +402,7 @@ pub async fn tapped(
         return again(turn, config, session).await;
     }
     match (action, postback.name(WHICH).and_then(Step::part)) {
-        (SUBMIT, _) => submit(turn, config, session.draft).await,
+        (SUBMIT, _) => submit(turn, config, ai, session.draft).await,
         (EDIT, _) => {
             let parts = parts(config, &session.draft);
             let choose = turn.templates.choose_part(parts);
@@ -496,7 +504,7 @@ async fn standing(
             let reason = shop.rejection_reason.as_deref();
             vec![templates.application_rejected(&shop.name, reason, again)]
         }
-        shop::Status::Approved => {
+        shop::Status::Approved | shop::Status::Held => {
             let item = |item: Item, label: &Label| item.postback().button(label.clone());
             let actions = vec![
                 settings::switch(shop.is_open),
@@ -505,10 +513,12 @@ async fn standing(
                 item(Item::ShopSettings, &labels::SHOP_SETTINGS),
                 settings::front_button(),
             ];
-            vec![
-                owners(),
-                templates.my_shop(&shop.name, shop.is_open, actions),
-            ]
+            let mine = if shop.status == shop::Status::Held {
+                templates.my_shop_held(&shop.name, actions)
+            } else {
+                templates.my_shop(&shop.name, shop.is_open, actions)
+            };
+            vec![owners(), mine]
         }
         shop::Status::Suspended => vec![templates.denied(Denied::ShopSuspended)],
         shop::Status::Closed => vec![templates.denied(Denied::NotAllowed)],
@@ -1013,10 +1023,12 @@ fn promptpay_phone(draft: &ShopFlow) -> Option<&str> {
 
 /// Sends the application (FR-SHOP-01, FR-SHOP-03): the user's shop, made or applied for again,
 /// `PENDING` for the admins, who are alerted, or `APPROVED` at once while `shop.requireApproval`
-/// is off. A user who has a shop other than a turned-down one can't apply (FR-SHOP-02).
+/// is off, unless moderation finds it suspicious (FR-PROD-09). A user who has a shop other than
+/// a turned-down one can't apply (FR-SHOP-02).
 async fn submit(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     mut draft: ShopFlow,
 ) -> Result<Vec<Message>, DbErr> {
     if let Some(step) = draft.missing() {
@@ -1024,6 +1036,8 @@ async fn submit(
         return flow::answered(turn, Answer::Next(Session { step, draft }, ask)).await;
     }
     let user_id = turn.actor.user.id;
+    // Before anything is locked, as the AI may take a while
+    let flag = moderation::check(turn.db, config, ai, &subject(&draft)).await?;
     // The shop and its photo change together, or not at all
     let txn = turn.db.begin().await?;
     let existing = shop::Entity::find()
@@ -1041,7 +1055,8 @@ async fn submit(
         return flow::answered(turn, Answer::<ShopFlow>::Done(standing)).await;
     }
 
-    let status = if config.shop.require_approval {
+    // Found suspicious, it waits for an admin even if no approval is asked for
+    let status = if config.shop.require_approval || flag.is_some() {
         shop::Status::Pending
     } else {
         shop::Status::Approved
@@ -1087,13 +1102,15 @@ async fn submit(
     }
     txn.commit().await?;
 
-    // #27 moderates the name and description here, and may hold the shop (FR-PROD-09)
     let templates = turn.templates;
     let mut messages = if shop.status == shop::Status::Pending {
         let photo = photo_url(config, images::first(turn.db, Owner::Shop(shop.id)).await?);
         let alert = approvals::alert(templates, &shop, &turn.actor.user, photo.as_ref());
         turn.notify(Kind::ShopApplication, To::Admins, vec![alert]);
-        info!(shop_id = shop.id, "shop applied for");
+        if let Some(flag) = &flag {
+            moderation::hold(turn, Held::Application(&shop), flag).await?;
+        }
+        info!(shop_id = shop.id, held = flag.is_some(), "shop applied for");
         vec![templates.application_sent(&shop.name)]
     } else {
         let entry = Entry {
@@ -1112,6 +1129,18 @@ async fn submit(
     let actor = Actor::load(turn.db, user_id).await?;
     messages.push(menu::main_menu(actor.as_ref().unwrap_or(&turn.actor)));
     flow::answered(turn, Answer::<ShopFlow>::Done(messages)).await
+}
+
+/// What moderation checks of the shop as `draft` has it, which has every part the shop can't do
+/// without: its name and description, and its photo if new (FR-PROD-09).
+fn subject(draft: &ShopFlow) -> Subject<'_> {
+    let photo = match draft.photo {
+        Some(Photo::New(id)) => Some(id),
+        Some(Photo::Current(_)) | None => None,
+    };
+    let name = draft.name.as_deref().expect("not missing");
+    let description = draft.description.as_deref().expect("not missing");
+    Subject::shop(name, description, photo)
 }
 
 /// What the shop's details become as `draft` has them, which has every part the shop can't do
@@ -1175,7 +1204,8 @@ fn photo_url(config: &Config, id: Option<Uuid>) -> Option<Url> {
 }
 
 /// Whether `shop` takes orders now: `APPROVED`, and open (FR-SHOP-05, FR-SHOP-10). Only then can
-/// its products go in a cart (#29) or be checked out (#32); closed, they stay visible.
+/// its products go in a cart (#29) or be checked out (#32); closed, they stay visible. Held for
+/// review, it takes none, whether open or not (FR-PROD-09).
 pub fn takes_orders(shop: &shop::Model) -> bool {
     shop.status == shop::Status::Approved && shop.is_open
 }
@@ -1194,12 +1224,13 @@ pub fn card<'a>(
     } else {
         PromptPay::Number(shop.promptpay_id.as_deref())
     };
-    let running =
-        (applicant.is_none() && shop.status == shop::Status::Approved).then_some(Running {
-            is_open: shop.is_open,
-            opening_hours: shop.opening_hours.as_deref(),
-            show_phone: shop.show_phone,
-        });
+    let runs = matches!(shop.status, shop::Status::Approved | shop::Status::Held);
+    let running = (applicant.is_none() && runs).then_some(Running {
+        is_open: shop.is_open,
+        held: shop.status == shop::Status::Held,
+        opening_hours: shop.opening_hours.as_deref(),
+        show_phone: shop.show_phone,
+    });
     ShopCard {
         name: &shop.name,
         description: &shop.description,
