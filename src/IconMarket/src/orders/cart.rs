@@ -25,7 +25,7 @@
 mod tests;
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::DateTimeUtc;
@@ -47,7 +47,7 @@ use crate::notifications::templates::{
     CART_SHOPS_PER_PAGE, CartLine, CartShop, labels, with_choices,
 };
 use crate::orders;
-use crate::persistence::entity::{cart_item, product, shop};
+use crate::persistence::entity::{cart_item, product, shop, user};
 use crate::thai::{self, Label, Money, NumberError};
 use crate::users::access::{self, Denied, authorize};
 
@@ -143,11 +143,26 @@ pub async fn lines(db: &impl ConnectionTrait, user_id: i64) -> Result<Vec<Line>,
         .into_iter()
         .map(|(product, shop)| (product.id, (product, shop)))
         .collect();
+    // A suspended user's shop takes no orders, as a suspended shop takes none (FR-ADM-04)
+    let suspended: HashSet<i64> = user::Entity::find()
+        .select_only()
+        .column(user::Column::Id)
+        .filter(user::Column::Id.is_in(products.values().map(|(_, shop)| shop.owner_id)))
+        .filter(user::Column::Status.ne(user::Status::Active))
+        .into_tuple::<i64>()
+        .all(db)
+        .await?
+        .into_iter()
+        .collect();
     let mut lines: Vec<Line> = items
         .into_iter()
         .filter_map(|item| {
             let (product, shop) = products.remove(&item.product_id)?;
-            let state = State::of(&product, &shop, item.quantity);
+            let state = match State::of(&product, &shop, item.quantity) {
+                State::Unavailable => State::Unavailable,
+                _ if suspended.contains(&shop.owner_id) => State::ShopClosed,
+                state => state,
+            };
             Some(Line {
                 item,
                 product,
@@ -203,7 +218,7 @@ impl Flow for QuantityFlow {
 /// A tap on "ตะกร้า", "ใส่ตะกร้า", or a button of the cart.
 pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Buy).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let action = postback.action();
     if action == Item::Cart.action() {
@@ -227,7 +242,7 @@ pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>
 /// "ตะกร้า", typed (FR-UI-12 step 4): the cart's first page.
 pub async fn show(turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Buy).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     Ok(vec![cart(turn, 0).await?])
 }
@@ -346,7 +361,7 @@ pub async fn answer(
     // A suspension ends it (NFR-SEC-10), and so does a product that can no longer go in the cart,
     // or a line that can take no more, as fewer are left than when asked
     let room = match authorize(turn.db, &turn.actor, access::Action::Buy).await? {
-        Err(denied) => Err(turn.templates.denied(denied)),
+        Err(denied) => Err(turn.denied(denied)),
         Ok(()) => room(turn, product_id, change).await?,
     };
     let done = match room {

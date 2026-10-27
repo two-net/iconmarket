@@ -100,7 +100,7 @@ impl Search {
 }
 
 /// `word` with `\`, `%` and `_` escaped by `\`, so that `LIKE` matches it as written.
-fn escaped(word: &str) -> String {
+pub(crate) fn escaped(word: &str) -> String {
     let mut escaped = String::with_capacity(word.len());
     for c in word.chars() {
         if matches!(c, '\\' | '%' | '_') {
@@ -128,7 +128,7 @@ impl Flow for SearchFlow {
 /// A tap on "ค้นหา": asks what to search for.
 pub async fn start(turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Browse).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     ask(turn, turn.templates.ask_keyword()).await
 }

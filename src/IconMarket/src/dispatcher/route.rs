@@ -30,8 +30,10 @@ use super::pending;
 use super::postback::Postback;
 use super::worker::Context;
 use super::{Finished, Turn};
+use crate::admin::accounts;
 use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
+use crate::admin::review;
 use crate::ai::Feature;
 use crate::catalog::browse;
 use crate::catalog::browse::search::{self, SearchFlow};
@@ -480,7 +482,8 @@ fn step_name(step: &Step) -> &'static str {
 /// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21),
 /// problem reports (#22), shop applications and the reasons for turning one down (#23), shop
 /// settings (#24), adding products (#25), changing them (#26), searching (#28), the quantity
-/// for the cart (#29) and checkout (#32).
+/// for the cart (#29), the reasons of the review queue and finding and suspending users (#31)
+/// and checkout (#32).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -513,6 +516,18 @@ async fn answer_flow(
         },
         RejectionFlow::NAME => match stored.read::<RejectionFlow>() {
             Some(session) => Some(approvals::answer(turn, config, session, input).await),
+            None => None,
+        },
+        review::ReasonFlow::NAME => match stored.read::<review::ReasonFlow>() {
+            Some(session) => Some(review::answer(turn, config, session, input).await),
+            None => None,
+        },
+        accounts::FindFlow::NAME => match stored.read::<accounts::FindFlow>() {
+            Some(session) => Some(accounts::answer_query(turn, session, input).await),
+            None => None,
+        },
+        accounts::ReasonFlow::NAME => match stored.read::<accounts::ReasonFlow>() {
+            Some(session) => Some(accounts::answer_reason(turn, session, input).await),
             None => None,
         },
         SettingsFlow::NAME => match stored.read::<SettingsFlow>() {
@@ -583,6 +598,12 @@ async fn tapped(
         action if action.starts_with(APPROVALS) => {
             return approvals::tapped(turn, &context.config, postback).await;
         }
+        action if action.starts_with(review::PREFIX) => {
+            return review::tapped(turn, &context.config, postback).await;
+        }
+        action if action.starts_with(accounts::PREFIX) => {
+            return accounts::tapped(turn, postback).await;
+        }
         action if action.starts_with(settings::PREFIX) => {
             return settings::tapped(turn, &context.config, postback).await;
         }
@@ -626,6 +647,8 @@ async fn menu_item(
         Search => return search::start(turn).await,
         MyShop => return shops::tapped(turn, &context.config, &context.ai, postback).await,
         ApproveShops => return approvals::tapped(turn, &context.config, postback).await,
+        ReviewQueue => return review::tapped(turn, &context.config, postback).await,
+        Users => return accounts::tapped(turn, postback).await,
         Categories => return categories::tapped(turn, postback).await,
         Help => return help::tapped(turn, &context.config, &context.ai, postback).await,
         OpenClose | ShopSettings => {
@@ -636,7 +659,6 @@ async fn menu_item(
         Cart => return cart::tapped(turn, postback).await,
         MyOrders | ShopOrders => 34,
         Sales => 39,
-        ReviewQueue | Users => 31,
         Stats => 38,
         Announcements => 49,
     };

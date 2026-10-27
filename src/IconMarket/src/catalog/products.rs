@@ -337,7 +337,7 @@ pub async fn tapped(
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let Some(shop) = &turn.actor.shop else {
         return Ok(vec![turn.templates.denied(Denied::NotAllowed)]);
@@ -417,7 +417,7 @@ pub async fn photo_sent(
     message_id: &str,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     if categories::active(turn.db).await?.is_empty() {
         let none = turn.templates.no_categories();
@@ -481,7 +481,7 @@ pub async fn answer(
 ) -> Result<Option<Vec<Message>>, DbErr> {
     // A suspension mid-flow ends it (NFR-SEC-10)
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
-        let done = Answer::<ProductFlow>::Done(vec![turn.templates.denied(denied)]);
+        let done = Answer::<ProductFlow>::Done(vec![turn.denied(denied)]);
         return flow::answered(turn, done).await.map(Some);
     }
     let Session { step, mut draft } = session;
@@ -1128,15 +1128,17 @@ async fn submit(
 
 /// Whether a product whose status is `from` may become `to` (FR-PROD-07). A product is listed
 /// from `DRAFT`; its seller hides and shows it ([`manage`]); a new or edited one may be held for
-/// review ([`moderation`]), and an admin then lists or removes it (#31); any but a deleted one
-/// may be deleted, for good (DR-04). Sold out isn't a status: it is the stock (FR-PROD-06).
+/// review ([`moderation`]), and an admin then lists or removes it; an admin may also remove one
+/// reported while listed or hidden ([review queue](crate::admin::review), FR-ADM-03); any but a
+/// deleted one may be deleted, for good (DR-04). Sold out isn't a status: it is the stock
+/// (FR-PROD-06).
 pub fn may_become(from: product::Status, to: product::Status) -> bool {
     use product::Status::{Active, Deleted, Draft, Held, Hidden, Removed};
     match (from, to) {
         (Deleted, _) => false,
         (_, Deleted) => true,
         (Draft, Active | Held) | (Active, Hidden | Held) | (Hidden, Active | Held) => true,
-        (Held, Active | Removed) => true,
+        (Held, Active | Removed) | (Active | Hidden, Removed) => true,
         _ => false,
     }
 }

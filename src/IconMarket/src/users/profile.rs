@@ -47,7 +47,7 @@ pub async fn tapped(
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::MyData).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let part = postback
         .name(PART)

@@ -431,8 +431,9 @@ async fn a_search_finds_what_contains_the_keyword() {
 }
 
 /// Acceptance, FR-SRCH-02: hidden, held, removed, draft and deleted products, and the products
-/// of shops that are pending, held, suspended, rejected or closed, are in no list, and their
-/// details and shops are not found. A closed-for-now shop's products are listed.
+/// of shops that are pending, held, suspended, rejected or closed, or whose owner is suspended
+/// (FR-ADM-04), are in no list, and their details and shops are not found. A closed-for-now
+/// shop's products are listed.
 #[tokio::test]
 async fn buyers_never_see_what_is_hidden_held_or_suspended() {
     let s = setup().await;
@@ -468,6 +469,27 @@ async fn buyers_never_see_what_is_hidden_held_or_suspended() {
         });
         hidden_products.push(product.await);
     }
+    let of_suspended = s
+        .shop("ร้านเจ้าของถูกระงับ", shop::Status::Approved, true)
+        .await;
+    let owner = shop::Entity::find_by_id(of_suspended)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_id;
+    let suspended = user::ActiveModel {
+        id: Set(owner),
+        status: Set(user::Status::Suspended),
+        ..Default::default()
+    };
+    suspended.update(&s.db).await.unwrap();
+    hidden_shops.push(of_suspended);
+    let product = s.insert(product::ActiveModel {
+        created_at: Set(now()),
+        ..testing::new_product(of_suspended, s.eggs, "ไข่ไก่ร้านเจ้าของถูกระงับ", Some(5))
+    });
+    hidden_products.push(product.await);
     let closed = s.shop("ร้านปิดชั่วคราว", shop::Status::Approved, false).await;
     s.list_in(closed, "ไข่ไก่ ร้านปิด", Some(5)).await;
     let listed = ["ไข่ไก่ ลงขาย", "ไข่ไก่ ร้านปิด"];

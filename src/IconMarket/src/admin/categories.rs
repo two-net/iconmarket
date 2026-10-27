@@ -135,7 +135,7 @@ impl Proposal for DeleteCategory {
     /// to an admin only.
     async fn current_state(stale: Stale<Self>, turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
         if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Administer).await? {
-            return Ok(vec![turn.templates.denied(denied)]);
+            return Ok(vec![turn.denied(denied)]);
         }
         let id = stale.proposal.map(|proposal| proposal.category_id);
         if let (Why::Changed, Some(id)) = (stale.why, id) {
@@ -151,7 +151,7 @@ impl Proposal for DeleteCategory {
 /// A tap on "หมวดหมู่", or on one of its buttons.
 pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Administer).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let action = postback.action();
     if action == Item::Categories.action() {
@@ -191,7 +191,7 @@ pub async fn answer(
     let templates = turn.templates;
     // The admin role can be lost mid-flow (FR-ADM-01)
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Administer).await? {
-        let done = Answer::<CategoryFlow>::Done(vec![templates.denied(denied)]);
+        let done = Answer::<CategoryFlow>::Done(vec![turn.denied(denied)]);
         return flow::answered(turn, done).await.map(Some);
     }
     let naming = session.draft.naming;

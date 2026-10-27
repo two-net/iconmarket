@@ -6,7 +6,8 @@
 //! Buyers see only `ACTIVE` products of `APPROVED` shops: never a hidden, held, removed or
 //! deleted product, nor one of a shop that is pending, held, suspended, rejected or closed
 //! (FR-PROD-07, FR-SHOP-10). A closed-for-now shop is still `APPROVED`: its products stay
-//! listed, after the open shops' (FR-SHOP-05).
+//! listed, after the open shops' (FR-SHOP-05). Nor do they see the shop of a suspended user,
+//! who can't sell (FR-ADM-04), until the suspension is lifted.
 //!
 //! Lists are paged in the database, a page and one more row at a time, so a long list never
 //! loads whole. A search scans the products, their descriptions and their shops' and categories'
@@ -24,7 +25,7 @@ use sea_orm::{
 
 use super::search::Search;
 use crate::notifications::templates::{PRODUCTS_PER_PAGE, SHOPS_PER_PAGE};
-use crate::persistence::entity::{product, shop};
+use crate::persistence::entity::{product, shop, user};
 
 /// How long a product stays in "ของใหม่วันนี้" once listed or restocked (FR-SRCH-09)
 pub const NEW_FOR: TimeDelta = TimeDelta::hours(24);
@@ -105,19 +106,16 @@ pub async fn product(db: &impl ConnectionTrait, id: i64) -> Result<Option<Listed
     visible().filter(product::Column::Id.eq(id)).one(db).await
 }
 
-/// Shop `id`, if buyers see it: `APPROVED`, open for now or not (FR-SHOP-10).
+/// Shop `id`, if buyers see it: `APPROVED`, open for now or not (FR-SHOP-10), and its owner not
+/// suspended (FR-ADM-04).
 pub async fn shop(db: &impl ConnectionTrait, id: i64) -> Result<Option<shop::Model>, DbErr> {
-    shop::Entity::find_by_id(id)
-        .filter(shop::Column::Status.eq(shop::Status::Approved))
-        .one(db)
-        .await
+    selling(shop::Entity::find_by_id(id)).one(db).await
 }
 
 /// Page `page` (from 0) of "ร้านค้าทั้งหมด" (FR-SRCH-06): the shops buyers see, open ones
 /// first, then by name, [`SHOPS_PER_PAGE`] a page. A page past the last is empty.
 pub async fn shops(db: &impl ConnectionTrait, page: usize) -> Result<Page<shop::Model>, DbErr> {
-    let select = shop::Entity::find()
-        .filter(shop::Column::Status.eq(shop::Status::Approved))
+    let select = selling(shop::Entity::find())
         .order_by_desc(shop::Column::IsOpen)
         .order_by_asc(shop::Column::Name)
         .order_by_asc(shop::Column::Id);
@@ -125,13 +123,21 @@ pub async fn shops(db: &impl ConnectionTrait, page: usize) -> Result<Page<shop::
     Ok(cut(rows, page, SHOPS_PER_PAGE))
 }
 
-/// The products buyers see, with their shops: `ACTIVE` ones of `APPROVED` shops.
+/// The products buyers see, with their shops: `ACTIVE` ones of the shops they see.
 fn visible() -> SelectTwoRequired<product::Entity, shop::Entity> {
-    product::Entity::find()
+    let products = product::Entity::find()
         .join(JoinType::InnerJoin, product::Relation::Shop.def())
-        .filter(product::Column::Status.eq(product::Status::Active))
+        .filter(product::Column::Status.eq(product::Status::Active));
+    selling(products).select_two_required(shop::Entity)
+}
+
+/// `select`, of shops or joined to them, limited to the shops buyers see: `APPROVED`, of an
+/// owner who isn't suspended.
+fn selling<S: QuerySelect + QueryFilter>(select: S) -> S {
+    select
+        .join(JoinType::InnerJoin, shop::Relation::Owner.def())
         .filter(shop::Column::Status.eq(shop::Status::Approved))
-        .select_two_required(shop::Entity)
+        .filter(user::Column::Status.eq(user::Status::Active))
 }
 
 /// `select` limited to page `page` of `per_page` rows, and one more, which says whether a next

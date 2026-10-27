@@ -114,7 +114,7 @@ impl Topic {
 /// "ช่วยเหลือ", typed or tapped: the topics for the user's roles.
 pub async fn show(turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Help).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let topics = Topic::for_roles(turn.actor.roles());
     Ok(vec![turn.templates.help(topics)])
@@ -138,7 +138,7 @@ pub async fn tapped(
         return show(turn).await;
     };
     if let Err(denied) = authorize(turn.db, actor, access::Action::Help).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let roles = actor.roles();
     let article = article(turn.templates, config, ai, roles, topic);

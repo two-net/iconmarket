@@ -377,7 +377,7 @@ pub async fn tapped(
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ApplyForShop).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let session = turn.flow.as_ref().and_then(|flow| flow.read::<ShopFlow>());
     let action = postback.action();
@@ -520,7 +520,10 @@ async fn standing(
             };
             vec![owners(), mine]
         }
-        shop::Status::Suspended => vec![templates.denied(Denied::ShopSuspended)],
+        shop::Status::Suspended => {
+            let reason = shop.suspension_reason.as_deref();
+            vec![templates.refused(Denied::ShopSuspended, reason)]
+        }
         shop::Status::Closed => vec![templates.denied(Denied::NotAllowed)],
     })
 }
@@ -537,7 +540,7 @@ pub async fn answer(
 ) -> Result<Option<Vec<Message>>, DbErr> {
     // A suspension mid-flow ends it (NFR-SEC-10)
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ApplyForShop).await? {
-        let done = Answer::<ShopFlow>::Done(vec![turn.templates.denied(denied)]);
+        let done = Answer::<ShopFlow>::Done(vec![turn.denied(denied)]);
         return flow::answered(turn, done).await.map(Some);
     }
     let Session { step, mut draft } = session;

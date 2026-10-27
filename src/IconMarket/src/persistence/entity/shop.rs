@@ -33,6 +33,9 @@ pub struct Model {
     /// Why an admin turned the application down, while `REJECTED` (FR-SHOP-04); cleared when
     /// the owner applies again
     pub rejection_reason: Option<String>,
+    /// Why an admin suspended the shop, while `SUSPENDED` (FR-ADM-03); its owner is told it
+    /// whenever an action is refused. Cleared when unsuspended.
+    pub suspension_reason: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     /// When the shop became `CLOSED`; shops are never removed (DR-04)

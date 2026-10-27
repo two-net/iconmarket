@@ -1181,6 +1181,128 @@ async fn help_and_a_report_end_to_end() {
     );
 }
 
+/// Acceptance (#31): an admin approves a held product from "รายการรอตรวจ", which a buyer then
+/// finds; then finds that buyer in "ผู้ใช้" by name and suspends them with a reason, which their
+/// next attempt to order is refused with.
+#[tokio::test]
+async fn the_review_queue_and_a_suspension_end_to_end() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut named = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    named.display_name = Set(Some("อลิซ".to_owned()));
+    named.update(&s.db).await.unwrap();
+    let bob = onboarded(&s.db, BOB).await;
+    let mut admin = user::Entity::find_by_id(bob)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    admin.is_admin = Set(true);
+    admin.menu_roles = Set(Some(MenuRoles::Admin));
+    admin.update(&s.db).await.unwrap();
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = testing::new_shop(seller.id).insert(&s.db).await.unwrap();
+    let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let held = product::ActiveModel {
+        status: Set(product::Status::Held),
+        ..testing::new_product(shop.id, eggs.id, "ไข่ไก่เบอร์ 2", Some(8))
+    };
+    let held = held.insert(&s.db).await.unwrap();
+    let filed = report::ActiveModel {
+        reporter_id: Set(None),
+        target_type: Set(report::TargetType::Product),
+        target_id: Set(held.id),
+        reason: Set("มีคำต้องห้าม \"กัญชา\"".to_owned()),
+        status: Set(report::Status::Open),
+        created_at: Set(testing::at()),
+        ..Default::default()
+    };
+    let filed = filed.insert(&s.db).await.unwrap();
+    let approve = format!(
+        "review.approve?p={}&v={}&r={}",
+        held.id,
+        held.updated_at.timestamp_micros(),
+        filed.id
+    );
+
+    store(
+        &s.db,
+        [
+            tapped("b1", BOB, "review_queue"),
+            tapped("b2", BOB, &approve),
+            tapped("b3", BOB, "users"),
+            said("b4", BOB, "อลิซ"),
+            tapped("b5", BOB, &format!("accounts.suspend?u={alice}")),
+            said("b6", BOB, "โกงเงินมัดจำ"),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 6).await;
+    // Alice comes once the admin is done
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, &format!("browse.product?product={}", held.id)),
+            tapped("a2", ALICE, &format!("cart.add?product={}", held.id)),
+        ],
+    )
+    .await;
+    running.wakeup.notify();
+    settled(&s.db, 8).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    assert_eq!(reply("b1")[0]["altText"], "รายการรอตรวจ");
+    let what = templates::Reported::Product {
+        name: "ไข่ไก่เบอร์ 2",
+        shop: "ร้านป้าแดง",
+    };
+    assert_eq!(reply("b2"), json!([t.review_approved(&what)]));
+    assert_eq!(reply("b4")[0]["altText"], "ผู้ใช้");
+    assert_eq!(reply("b6"), json!([t.user_suspended(Some("อลิซ"))]));
+    assert_eq!(reply("a1")[0]["altText"], "ไข่ไก่เบอร์ 2");
+    let refused = t.refused(Denied::Suspended, Some("โกงเงินมัดจำ"));
+    assert_eq!(reply("a2"), json!([refused]));
+
+    let product = product::Entity::find_by_id(held.id)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(product.status, product::Status::Active);
+    let actions: Vec<_> = audit_log::Entity::find()
+        .order_by_asc(audit_log::Column::Id)
+        .all(&s.db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.actor_id, row.action))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            (Some(bob), "product.approved".to_owned()),
+            (Some(bob), "user.suspended".to_owned()),
+        ]
+    );
+    let logs = push_log::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(
+        logs.iter()
+            .map(|log| (log.push_type.as_str(), log.recipient.as_str()))
+            .collect::<Vec<_>>(),
+        [("user.suspended", ALICE)]
+    );
+}
+
 /// NFR-REL-05: once stopped, the worker takes no more events.
 #[tokio::test]
 async fn a_stopped_worker_takes_no_more_events() {

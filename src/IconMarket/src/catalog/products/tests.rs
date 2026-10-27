@@ -191,8 +191,8 @@ fn names_and_units_are_on_one_line() {
     assert_eq!(bounded("", UNIT_CHARS), Err(Refused::Empty));
 }
 
-/// FR-PROD-07: `DRAFT` → `ACTIVE` ⇄ `HIDDEN`; held for review, then listed or removed; deleted
-/// for good.
+/// FR-PROD-07: `DRAFT` → `ACTIVE` ⇄ `HIDDEN`; held for review, then listed or removed; removed
+/// once reported (FR-ADM-03); deleted for good.
 #[test]
 fn statuses_change_as_fr_prod_07_says() {
     use product::Status::{Active, Deleted, Draft, Held, Hidden, Removed};
@@ -205,6 +205,8 @@ fn statuses_change_as_fr_prod_07_says() {
         (Hidden, Held),
         (Held, Active),
         (Held, Removed),
+        (Active, Removed),
+        (Hidden, Removed),
         (Draft, Deleted),
         (Active, Deleted),
         (Hidden, Deleted),
@@ -242,6 +244,7 @@ fn shop_of(status: shop::Status, is_open: bool) -> shop::Model {
         pickup_latitude: None,
         pickup_longitude: None,
         rejection_reason: None,
+        suspension_reason: None,
         created_at: t0(),
         updated_at: t0(),
         deleted_at: None,

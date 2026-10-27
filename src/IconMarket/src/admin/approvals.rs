@@ -26,6 +26,7 @@ use tracing::info;
 use url::Url;
 
 use super::audit::{self, Entry, Target};
+use super::reason::{REASON_CHARS, Refused, reason};
 use crate::catalog::images::{self, Owner};
 use crate::catalog::shops;
 use crate::config::Config;
@@ -48,9 +49,6 @@ const SHOP: &str = "s";
 const VERSION: &str = "v";
 /// The page "ดูเพิ่มเติม" shows, on the postback of "อนุมัติร้าน"
 const PAGE: &str = "page";
-
-/// The longest reason, in characters, as for a report (FR-HELP-02)
-const REASON_CHARS: usize = 300;
 
 /// The common reasons offered, sent as if typed (FR-UI-02)
 static REASONS: [&Label; 4] = [
@@ -120,7 +118,7 @@ pub async fn tapped(
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Administer).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let action = postback.action();
     if action == Item::ApproveShops.action() {
@@ -207,7 +205,7 @@ pub async fn answer(
     };
     // The admin role can be lost mid-flow (FR-ADM-01)
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Administer).await? {
-        return done(vec![templates.denied(denied)]).await;
+        return done(vec![turn.denied(denied)]).await;
     }
     let RejectionFlow { shop_id, version } = session.draft;
     // Another admin may have decided meanwhile
@@ -302,26 +300,6 @@ fn ask(turn: &Turn<'_>, name: &str) -> Message {
         .collect();
     turn.templates
         .ask_rejection_reason(name, REASON_CHARS, reasons)
-}
-
-/// Why a reason wasn't taken; the step asks again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Refused {
-    /// Nothing but spaces
-    Empty,
-    /// Longer than [`REASON_CHARS`], in characters
-    TooLong(usize),
-}
-
-/// `text` as a reason: without spaces around it, and each run of spaces or lines within it
-/// made one space.
-fn reason(text: &str) -> Result<String, Refused> {
-    let reason = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    match reason.chars().count() {
-        0 => Err(Refused::Empty),
-        chars if chars > REASON_CHARS => Err(Refused::TooLong(REASON_CHARS)),
-        _ => Ok(reason),
-    }
 }
 
 /// "อนุมัติร้าน" at page `page`: the applications awaiting an admin, oldest first, each with

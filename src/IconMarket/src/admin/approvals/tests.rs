@@ -38,21 +38,6 @@ fn t0() -> DateTimeUtc {
     Utc.with_ymd_and_hms(2026, 10, 25, 2, 0, 0).unwrap()
 }
 
-#[test]
-fn reasons_are_tidied_and_bounded() {
-    assert_eq!(
-        reason("  ไม่ได้อยู่ \n ในหมู่บ้าน ").as_deref(),
-        Ok("ไม่ได้อยู่ ในหมู่บ้าน")
-    );
-    let longest = "ก".repeat(REASON_CHARS);
-    assert_eq!(reason(&longest), Ok(longest.clone()));
-    assert_eq!(
-        reason(&format!("{longest}ก")),
-        Err(Refused::TooLong(REASON_CHARS))
-    );
-    assert_eq!(reason(" \n "), Err(Refused::Empty));
-}
-
 /// FR-LINE-11: a full page of the largest applications, with every button, fits one message.
 #[test]
 fn a_full_page_of_applications_fits() {

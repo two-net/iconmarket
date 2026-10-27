@@ -29,12 +29,25 @@ pub enum Action {
     CategoryActivated,
     CategoryDeleted,
     // Shops (FR-ADM-02)
-    /// By an admin, or by the system when `shop.requireApproval` is off (FR-SHOP-03)
+    /// By an admin, or by the system when `shop.requireApproval` is off (FR-SHOP-03); or by an
+    /// admin, once held for review (FR-ADM-03)
     ShopApproved,
     ShopRejected,
     /// A product or shop held for review by moderation, or an application left for an admin
     /// to approve (FR-PROD-09)
     HeldForReview,
+    // The review queue (FR-ADM-03)
+    /// A product held for review is listed after all
+    ProductApproved,
+    ProductRemoved,
+    ShopSuspended,
+    /// Its reports are closed, and it is left as it is
+    ReportsDismissed,
+    // Users (FR-ADM-04)
+    UserSuspended,
+    UserUnsuspended,
+    /// Its owner's card in "ผู้ใช้" lifts a shop's suspension
+    ShopUnsuspended,
 }
 
 impl Action {
@@ -52,6 +65,13 @@ impl Action {
             Self::ShopApproved => "shop.approved",
             Self::ShopRejected => "shop.rejected",
             Self::HeldForReview => "moderation.held",
+            Self::ProductApproved => "product.approved",
+            Self::ProductRemoved => "product.removed",
+            Self::ShopSuspended => "shop.suspended",
+            Self::ReportsDismissed => "report.dismissed",
+            Self::UserSuspended => "user.suspended",
+            Self::UserUnsuspended => "user.unsuspended",
+            Self::ShopUnsuspended => "shop.unsuspended",
         }
     }
 }

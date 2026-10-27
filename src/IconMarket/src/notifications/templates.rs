@@ -25,7 +25,7 @@ use crate::line::flex::{
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
 use crate::orders::cart;
 use crate::payments;
-use crate::persistence::entity::product;
+use crate::persistence::entity::{product, shop};
 use crate::thai::{self, Label, Money, NumberError};
 use crate::users::access::Denied;
 use crate::users::help::Topic;
@@ -100,13 +100,22 @@ impl Templates {
     /// Why an action was refused (NFR-SEC-02, NFR-SEC-10): what the user can still do, and
     /// where to ask. A button tapped too late gets this rather than a technical error.
     pub fn denied(&self, denied: Denied) -> Message {
+        self.refused(denied, None)
+    }
+
+    /// [`denied`](Self::denied), with `reason`, why an admin suspended the user or their shop,
+    /// when that is why (FR-ADM-04).
+    pub fn refused(&self, denied: Denied, reason: Option<&str>) -> Message {
         let (kha, help) = (self.kha(), labels::HELP.as_str());
+        let reason = reason
+            .map(|reason| format!(" เหตุผล: {reason}"))
+            .unwrap_or_default();
         let text = match denied {
             Denied::Suspended => format!(
-                "ขอโทษ{kha} บัญชีของคุณถูกระงับการใช้งานชั่วคราว ยังดูคำสั่งซื้อของคุณและเมนูช่วยเหลือได้ตามปกติ สอบถามได้ที่ \"{help}\" แล้วเลือก \"ติดต่อผู้ดูแล\"{kha}"
+                "ขอโทษ{kha} บัญชีของคุณถูกระงับการใช้งานชั่วคราว{reason} ยังดูคำสั่งซื้อของคุณและเมนูช่วยเหลือได้ตามปกติ สอบถามได้ที่ \"{help}\" แล้วเลือก \"ติดต่อผู้ดูแล\"{kha}"
             ),
             Denied::ShopSuspended => format!(
-                "ขอโทษ{kha} ร้านของคุณถูกระงับชั่วคราว จึงแก้ไขร้านและสินค้าไม่ได้ แต่ยังดูแลออเดอร์ที่มีอยู่ได้ตามปกติ สอบถามได้ที่ \"{help}\" แล้วเลือก \"ติดต่อผู้ดูแล\"{kha}"
+                "ขอโทษ{kha} ร้านของคุณถูกระงับชั่วคราว{reason} จึงแก้ไขร้านและสินค้าไม่ได้ แต่ยังดูแลออเดอร์ที่มีอยู่ได้ตามปกติ สอบถามได้ที่ \"{help}\" แล้วเลือก \"ติดต่อผู้ดูแล\"{kha}"
             ),
             Denied::NotAllowed => {
                 format!("ขอโทษ{kha} รายการนี้ทำไม่ได้ เลือกจากเมนูด้านล่างได้เลย{kha}")
@@ -1867,6 +1876,346 @@ impl Templates {
         notice(&headline, &details, vec![again])
     }
 
+    /// "รายการรอตรวจ" (FR-ADM-03): page `page` of the products and shops held for review or
+    /// reported, the one waiting longest first, a card each with its buttons, and "ดูเพิ่มเติม"
+    /// sending `more(next_page)`.
+    pub fn review_queue(
+        &self,
+        cards: &[ReviewCard<'_>],
+        page: usize,
+        more: impl FnOnce(usize) -> String,
+    ) -> Message {
+        if cards.is_empty() {
+            let kha = self.kha();
+            return Message::text(format!(
+                "ตอนนี้ไม่มีรายการรอตรวจ{kha} ถ้ามีสินค้าหรือร้านถูกพัก หรือมีผู้แจ้งปัญหา จะแสดงที่นี่{kha}"
+            ))
+            .with_quick_reply(review_menus());
+        }
+        let card = |card: &ReviewCard<'_>| self.review_bubble(card);
+        let page = carousel_page(cards, page, REVIEWS_PER_PAGE, card, more);
+        Message::flex(labels::REVIEW_QUEUE.as_str(), page).with_quick_reply(review_menus())
+    }
+
+    /// One card of "รายการรอตรวจ": `card`, as it is now.
+    pub fn review_card(&self, card: &ReviewCard<'_>) -> Message {
+        Message::flex(labels::REVIEW_QUEUE.as_str(), self.review_bubble(card))
+    }
+
+    /// What a card of "รายการรอตรวจ" shows changed since it was sent: its product or shop was
+    /// edited, or its state changed. Its current card follows (FR-UI-13).
+    pub fn review_changed(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "รายการนี้มีการเปลี่ยนแปลง{kha} ตรวจข้อมูลล่าสุดด้านล่างอีกครั้งนะ{kha_question}"
+        ))
+    }
+
+    /// What a card of "รายการรอตรวจ" shows was dealt with already, by an earlier tap or another
+    /// admin (FR-UI-13). The queue as it is now follows.
+    pub fn review_handled(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!("รายการนี้มีผู้ดูแลจัดการไปแล้ว{kha} ไม่ต้องทำอะไรเพิ่ม{kha}"))
+    }
+
+    /// Asks why product `name` of shop `shop` is removed, in at most `max_chars` (FR-ADM-03).
+    /// `reasons` are common ones, sent as if typed.
+    pub fn ask_removal_reason(
+        &self,
+        name: &str,
+        shop: &str,
+        max_chars: usize,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "นำสินค้า \"{name}\" ของ{}ออกเพราะอะไร{kha_question} เลือกด้านล่าง หรือพิมพ์เหตุผลมาได้เลย ไม่เกิน {max_chars} ตัวอักษร ผู้ขายจะเห็นเหตุผลนี้ และผู้ซื้อจะไม่เห็นสินค้านี้อีก{kha}",
+            shop_called(shop)
+        );
+        Message::text(text).with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// Asks why shop `name` is suspended, in at most `max_chars` (FR-ADM-03). `reasons` are
+    /// common ones, sent as if typed.
+    pub fn ask_shop_suspension_reason(
+        &self,
+        name: &str,
+        max_chars: usize,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ระงับ{}เพราะอะไร{kha_question} เลือกด้านล่าง หรือพิมพ์เหตุผลมาได้เลย ไม่เกิน {max_chars} ตัวอักษร เจ้าของร้านจะเห็นเหตุผลนี้ ระหว่างระงับ ผู้ซื้อจะไม่เห็นร้านและสินค้าของร้าน{kha}",
+            shop_called(name)
+        );
+        Message::text(text).with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// `what`, held for review, is approved (FR-ADM-03): a product listed, or a shop shown to
+    /// buyers again.
+    pub fn review_approved(&self, what: &Reported<'_>) -> Message {
+        let kha = self.kha();
+        let text = match what {
+            Reported::Product { name, .. } => format!("อนุมัติสินค้า \"{name}\" แล้ว{kha}"),
+            Reported::Shop { name } => {
+                format!("อนุมัติ{}แล้ว{kha} ผู้ซื้อเห็นร้านอีกครั้งแล้ว{kha}", shop_called(name))
+            }
+        };
+        Message::text(text).with_quick_reply(review_menus())
+    }
+
+    /// Product `name` is removed, and its seller told why (FR-ADM-03).
+    pub fn product_removed(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "นำสินค้า \"{name}\" ออกแล้ว{kha} แจ้งเหตุผลถึงผู้ขายแล้ว{kha}"
+        ))
+        .with_quick_reply(review_menus())
+    }
+
+    /// Shop `name` is suspended, and its owner told why (FR-ADM-03).
+    pub fn shop_suspended(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ระงับ{}แล้ว{kha} ผู้ซื้อจะไม่เห็นร้านและสินค้าของร้าน และแจ้งเหตุผลถึงเจ้าของร้านแล้ว{kha}",
+            shop_called(name)
+        ))
+        .with_quick_reply(review_menus())
+    }
+
+    /// The reports on `what` are closed, and it is left as it is (FR-ADM-03).
+    pub fn reports_dismissed(&self, what: &Reported<'_>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ปิดเรื่อง{} แล้ว{kha} ไม่ได้เปลี่ยนแปลงอะไร{kha}",
+            what.named()
+        ))
+        .with_quick_reply(review_menus())
+    }
+
+    /// Tells the seller their product `name` was removed, for `reason` (FR-ADM-03, Table 4.8-A):
+    /// `my_products` shows their products.
+    pub fn product_removed_notice(&self, name: &str, reason: &str, my_products: Action) -> Message {
+        let kha = self.kha();
+        let headline = format!("สินค้าของคุณถูกนำออก{kha}");
+        let details = [
+            format!("สินค้า \"{name}\""),
+            format!("เหตุผล: {reason}"),
+            format!(
+                "ผู้ซื้อจะไม่เห็นสินค้านี้อีก สอบถามได้ที่ \"{}\" แล้วเลือก \"{}\"{kha}",
+                labels::HELP.as_str(),
+                labels::CONTACT_ADMINS.as_str()
+            ),
+        ];
+        notice(&headline, &details, vec![my_products])
+    }
+
+    /// Tells the owner their shop `name` was suspended, for `reason` (FR-ADM-03, Table 4.8-A).
+    pub fn shop_suspended_notice(&self, name: &str, reason: &str) -> Message {
+        let kha = self.kha();
+        let headline = format!("ร้านของคุณถูกระงับชั่วคราว{kha}");
+        let details = [
+            shop_called(name),
+            format!("เหตุผล: {reason}"),
+            format!(
+                "ระหว่างนี้ผู้ซื้อจะไม่เห็นร้านและสินค้าของร้าน แต่ยังดูแลออเดอร์ที่มีอยู่ได้ สอบถามได้ที่ \"{}\" แล้วเลือก \"{}\"{kha}",
+                labels::HELP.as_str(),
+                labels::CONTACT_ADMINS.as_str()
+            ),
+        ];
+        let help = Action::message(labels::HELP.clone(), labels::HELP.as_str());
+        notice(&headline, &details, vec![help])
+    }
+
+    /// Tells the owner the suspension of their shop `name` was lifted (FR-ADM-04): `my_shop`
+    /// shows it.
+    pub fn shop_unsuspended_notice(&self, name: &str, my_shop: Action) -> Message {
+        let kha = self.kha();
+        let headline = format!("ร้านของคุณกลับมาขายได้แล้ว{kha}");
+        let details = [format!(
+            "ผู้ดูแลยกเลิกการระงับ{}แล้ว ผู้ซื้อเห็นร้านอีกครั้ง และดูแลร้านได้ตามปกติ{kha}",
+            shop_called(name)
+        )];
+        notice(&headline, &details, vec![my_shop])
+    }
+
+    /// Tells the user their account was suspended, for `reason` (FR-ADM-04, Table 4.8-A).
+    pub fn account_suspended_notice(&self, reason: &str) -> Message {
+        let kha = self.kha();
+        let headline = format!("บัญชีของคุณถูกระงับการใช้งานชั่วคราว{kha}");
+        let details = [
+            format!("เหตุผล: {reason}"),
+            format!(
+                "ระหว่างนี้สั่งซื้อ ขายของ และใช้ผู้ช่วยตอบแชตไม่ได้ แต่ยังดูคำสั่งซื้อของคุณและเมนูช่วยเหลือได้ตามปกติ สอบถามได้ที่ \"{}\" แล้วเลือก \"{}\"{kha}",
+                labels::HELP.as_str(),
+                labels::CONTACT_ADMINS.as_str()
+            ),
+        ];
+        let help = Action::message(labels::HELP.clone(), labels::HELP.as_str());
+        notice(&headline, &details, vec![help])
+    }
+
+    /// Tells the user the suspension of their account was lifted (FR-ADM-04).
+    pub fn account_unsuspended_notice(&self) -> Message {
+        let kha = self.kha();
+        let headline = format!("บัญชีของคุณใช้งานได้ตามปกติแล้ว{kha}");
+        let details = [format!("ผู้ดูแลยกเลิกการระงับแล้ว สั่งซื้อและขายของได้ตามปกติ{kha}")];
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        notice(&headline, &details, vec![menu])
+    }
+
+    /// Asks who to find in "ผู้ใช้" (FR-ADM-04): by display name, phone or order number.
+    pub fn ask_user_query(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ค้นหาผู้ใช้จากอะไรดี{kha_question} พิมพ์ชื่อ เบอร์โทร หรือเลขที่ออเดอร์มาได้เลย{kha}"
+        ))
+    }
+
+    /// No user matches `query`; the step asks again.
+    pub fn no_user_found(&self, query: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ไม่พบผู้ใช้จาก \"{query}\"{kha} ลองพิมพ์ชื่อ เบอร์โทร หรือเลขที่ออเดอร์อีกครั้ง{kha}"
+        ))
+    }
+
+    /// The users found in "ผู้ใช้" (FR-ADM-04), a card each with its buttons: at most
+    /// [`USERS_FOUND`], after a note when `more` matched than that.
+    pub fn users_found(&self, cards: &[UserCard<'_>], more: bool) -> Vec<Message> {
+        let mut messages = Vec::new();
+        if more {
+            let kha = self.kha();
+            messages.push(Message::text(format!(
+                "พบมากกว่า {USERS_FOUND} คน{kha} แสดง {USERS_FOUND} คนแรก ถ้าไม่พบคนที่ต้องการ พิมพ์ให้เจาะจงขึ้นแล้วค้นหาอีกครั้ง{kha}"
+            )));
+        }
+        let bubbles = cards
+            .iter()
+            .take(USERS_FOUND)
+            .map(|card| self.user_bubble(card))
+            .collect();
+        messages.push(
+            Message::flex(labels::USERS.as_str(), carousel(bubbles, None))
+                .with_quick_reply(users_menus()),
+        );
+        messages
+    }
+
+    /// One user's card in "ผู้ใช้": `card`, as it is now.
+    pub fn user_card(&self, card: &UserCard<'_>) -> Message {
+        Message::flex(labels::USERS.as_str(), self.user_bubble(card))
+            .with_quick_reply(users_menus())
+    }
+
+    /// Asks why the user called `name` is suspended, in at most `max_chars` (FR-ADM-04).
+    /// `reasons` are common ones, sent as if typed.
+    pub fn ask_suspension_reason(
+        &self,
+        name: Option<&str>,
+        max_chars: usize,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ระงับบัญชีของ{}เพราะอะไร{kha_question} เลือกด้านล่าง หรือพิมพ์เหตุผลมาได้เลย ไม่เกิน {max_chars} ตัวอักษร ผู้ใช้จะเห็นเหตุผลนี้ ระหว่างระงับ จะสั่งซื้อ ขายของ และใช้ผู้ช่วยตอบแชตไม่ได้ และผู้ซื้อจะไม่เห็นร้านของเขา{kha}",
+            user_called(name)
+        );
+        Message::text(text).with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// Asks why the suspension of the user called `name` is lifted, in at most `max_chars`
+    /// (FR-ADM-04). `reasons` are common ones, sent as if typed.
+    pub fn ask_unsuspension_reason(
+        &self,
+        name: Option<&str>,
+        max_chars: usize,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ยกเลิกการระงับบัญชีของ{}เพราะอะไร{kha_question} เลือกด้านล่าง หรือพิมพ์เหตุผลมาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha}",
+            user_called(name)
+        );
+        Message::text(text).with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// Asks why the suspension of shop `name` is lifted, in at most `max_chars` (FR-ADM-04).
+    /// `reasons` are common ones, sent as if typed.
+    pub fn ask_shop_unsuspension_reason(
+        &self,
+        name: &str,
+        max_chars: usize,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ยกเลิกการระงับ{}เพราะอะไร{kha_question} เลือกด้านล่าง หรือพิมพ์เหตุผลมาได้เลย ไม่เกิน {max_chars} ตัวอักษร{kha}",
+            shop_called(name)
+        );
+        Message::text(text).with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// The user called `name` is suspended, and told why (FR-ADM-04).
+    pub fn user_suspended(&self, name: Option<&str>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ระงับบัญชีของ{}แล้ว{kha} แจ้งเหตุผลถึงผู้ใช้แล้ว{kha}",
+            user_called(name)
+        ))
+        .with_quick_reply(users_menus())
+    }
+
+    /// The suspension of the user called `name` is lifted, and they are told (FR-ADM-04).
+    pub fn user_unsuspended(&self, name: Option<&str>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ยกเลิกการระงับบัญชีของ{}แล้ว{kha} แจ้งผู้ใช้แล้ว{kha}",
+            user_called(name)
+        ))
+        .with_quick_reply(users_menus())
+    }
+
+    /// The suspension of shop `name` is lifted, and its owner told (FR-ADM-04).
+    pub fn shop_unsuspended(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ยกเลิกการระงับ{}แล้ว{kha} ผู้ซื้อเห็นร้านอีกครั้ง และแจ้งเจ้าของร้านแล้ว{kha}",
+            shop_called(name)
+        ))
+        .with_quick_reply(users_menus())
+    }
+
+    /// The account of the user called `name` is `suspended` already, or not, by an earlier tap
+    /// or another admin (FR-UI-13). Their current card follows.
+    pub fn account_already(&self, name: Option<&str>, suspended: bool) -> Message {
+        let kha = self.kha();
+        let state = if suspended {
+            "ถูกระงับอยู่แล้ว"
+        } else {
+            "ใช้งานได้ตามปกติอยู่แล้ว"
+        };
+        Message::text(format!(
+            "บัญชีของ{}{state}{kha} ไม่ต้องทำอะไรเพิ่ม{kha}",
+            user_called(name)
+        ))
+    }
+
+    /// The user's shop isn't suspended, or no longer (FR-UI-13). Their current card follows.
+    pub fn shop_not_suspended(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!("ร้านนี้ไม่ได้ถูกระงับแล้ว{kha} ไม่ต้องทำอะไรเพิ่ม{kha}"))
+    }
+
+    /// An admin's account can't be suspended: the admin role comes from the configuration
+    /// (FR-ADM-01). Their card follows.
+    pub fn admin_not_suspended(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ระงับบัญชีผู้ดูแลไม่ได้{kha} ถ้าจำเป็น ให้ผู้ดูแลระบบนำออกจากรายชื่อผู้ดูแลก่อน{kha}"
+        ))
+    }
+
     /// Asks for a new product's photos, `count` of at most `max` given (FR-PROD-01): the first
     /// question of "เพิ่มสินค้า", which says how it goes, or, `editing`, a change to them.
     pub fn ask_product_photos(&self, count: usize, max: usize, editing: bool) -> Message {
@@ -2602,6 +2951,174 @@ impl Templates {
             ..Bubble::default()
         }
     }
+
+    /// A card of "รายการรอตรวจ" (FR-ADM-03): the photo, name and state of a product or shop,
+    /// its latest reports, who made them and when, and `card.buttons` at the foot, the first
+    /// one primary.
+    fn review_bubble(&self, card: &ReviewCard<'_>) -> Bubble {
+        let hero = card.photo.map(|url| {
+            Hero::Image(Image {
+                size: Some(Size::Full),
+                aspect_ratio: Some("20:13".to_owned()),
+                aspect_mode: Some(AspectMode::Cover),
+                ..Image::new(url)
+            })
+        });
+        let (name, kind) = match card.what {
+            Reported::Product { name, shop } => (name, format!("สินค้าของ{}", shop_called(shop))),
+            Reported::Shop { name } => (name, "ร้านค้า".to_owned()),
+        };
+        let name = Text {
+            size: Some(Size::Lg),
+            weight: Some(Weight::Bold),
+            wrap: Some(true),
+            ..Text::new(name)
+        };
+        let kind = Text {
+            size: Some(Size::Sm),
+            color: Some(MUTED.to_owned()),
+            wrap: Some(true),
+            ..Text::new(kind)
+        };
+        let mut top: Vec<Component> = vec![name.into(), kind.into()];
+        let (state, color, shop_state) = match card.state {
+            Reviewed::Product { status, shop } => {
+                let (state, color) = match status {
+                    product::Status::Held => ("รอตรวจ (ผู้ซื้อยังไม่เห็น)", MUTED),
+                    product::Status::Active => ("ลงขายอยู่", OPEN_COLOR),
+                    product::Status::Hidden => ("ผู้ขายซ่อนไว้ (ผู้ซื้อไม่เห็น)", MUTED),
+                    product::Status::Removed => ("ถูกนำออกแล้ว", CLOSED_COLOR),
+                    product::Status::Draft | product::Status::Deleted => ("ผู้ขายลบแล้ว", MUTED),
+                };
+                let shop = (shop != shop::Status::Approved).then(|| reviewed_shop(shop).0);
+                (state, color, shop)
+            }
+            Reviewed::Shop(status) => {
+                let (state, color) = reviewed_shop(status);
+                (state, color, None)
+            }
+        };
+        let state = Text {
+            size: Some(Size::Sm),
+            weight: Some(Weight::Bold),
+            color: Some(color.to_owned()),
+            wrap: Some(true),
+            ..Text::new(state)
+        };
+        top.push(state.into());
+        if let Some(shop_state) = shop_state {
+            top.push(line(&format!("ร้าน: {shop_state}")));
+        }
+        let mut reports: Vec<Component> = card
+            .reports
+            .iter()
+            .take(REVIEW_REPORTS)
+            .map(|report| {
+                let by = match report.by {
+                    Reporter::Moderation => "ระบบ",
+                    Reporter::User(name) => name.unwrap_or("ผู้ใช้"),
+                };
+                line(&format!(
+                    "{by} · {}: {}",
+                    self.date_time(report.at),
+                    report.reason
+                ))
+            })
+            .collect();
+        if let Some(rest) = card.reports.len().checked_sub(REVIEW_REPORTS)
+            && rest > 0
+        {
+            reports.push(line(&format!("และอีก {rest} เรื่อง")));
+        }
+        let reports = section(&format!("เรื่องที่แจ้ง {} เรื่อง", card.reports.len()), reports);
+        let body = FlexBox {
+            spacing: Some(Spacing::Md),
+            ..FlexBox::vertical(
+                top.into_iter()
+                    .chain([Separator::default().into(), reports.into()]),
+            )
+        };
+        Bubble {
+            size: Some(BubbleSize::Mega),
+            hero,
+            body: Some(body),
+            footer: footer(&card.buttons),
+            ..Bubble::default()
+        }
+    }
+
+    /// A user's card in "ผู้ใช้" (FR-ADM-04): their name, whether they are suspended and why,
+    /// their roles, zone and when they joined, their shop and how it stands, and `card.buttons`
+    /// at the foot, the first one primary. No phone or house number (NFR-PRIV-04).
+    fn user_bubble(&self, card: &UserCard<'_>) -> Bubble {
+        let name = Text {
+            size: Some(Size::Lg),
+            weight: Some(Weight::Bold),
+            wrap: Some(true),
+            ..Text::new(card.display_name.unwrap_or("ไม่มีชื่อ"))
+        };
+        let (state, color) = if card.suspended {
+            ("ถูกระงับ", CLOSED_COLOR)
+        } else {
+            ("ใช้งานอยู่", OPEN_COLOR)
+        };
+        let state = Text {
+            size: Some(Size::Sm),
+            weight: Some(Weight::Bold),
+            color: Some(color.to_owned()),
+            ..Text::new(state)
+        };
+        let mut roles = vec![labels::BUYER.as_str()];
+        if card.seller {
+            roles.push(labels::SELLER.as_str());
+        }
+        if card.admin {
+            roles.push(labels::ADMIN.as_str());
+        }
+        let mut rows = Vec::new();
+        if card.suspended {
+            rows.push(row("เหตุผลที่ระงับ", card.suspension_reason.unwrap_or(NONE)));
+        }
+        rows.extend([
+            row("บทบาท", &roles.join(", ")),
+            row("โซน", card.zone.unwrap_or(NOT_GIVEN)),
+            row("เข้าร่วมเมื่อ", &self.date(card.joined)),
+        ]);
+        if let Some(shop) = &card.shop {
+            let state = match shop.status {
+                shop::Status::Pending => "รออนุมัติ",
+                shop::Status::Approved => "อนุมัติแล้ว",
+                shop::Status::Rejected => "ไม่ผ่านการอนุมัติ",
+                shop::Status::Held => "รอตรวจ",
+                shop::Status::Suspended => "ถูกระงับ",
+                shop::Status::Closed => "ปิดถาวร",
+            };
+            rows.push(row("ร้าน", &shop_called(shop.name)));
+            rows.push(row("สถานะร้าน", state));
+            if shop.status == shop::Status::Suspended {
+                rows.push(row("เหตุผลที่ระงับร้าน", shop.suspension_reason.unwrap_or(NONE)));
+            }
+        }
+        let details = FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical(rows)
+        };
+        let body = FlexBox {
+            spacing: Some(Spacing::Md),
+            ..FlexBox::vertical([
+                name.into(),
+                state.into(),
+                Separator::default().into(),
+                details.into(),
+            ])
+        };
+        Bubble {
+            size: Some(BubbleSize::Mega),
+            body: Some(body),
+            footer: footer(&card.buttons),
+            ..Bubble::default()
+        }
+    }
 }
 
 /// A card's `buttons` at its foot, the first one primary; `None` without any.
@@ -2901,6 +3418,112 @@ fn admin_menus() -> QuickReply {
         Action::message(labels::MENU.clone(), labels::MENU.as_str()),
     ])
 }
+
+/// A product or shop in "รายการรอตรวจ" (FR-ADM-03), as the admins see it.
+pub struct ReviewCard<'a> {
+    pub what: Reported<'a>,
+    /// Its first photo's `/img/p` link
+    pub photo: Option<&'a Url>,
+    pub state: Reviewed,
+    /// Its open reports, the latest first; the card shows [`REVIEW_REPORTS`] of them
+    pub reports: Vec<ReviewReport<'a>>,
+    pub buttons: Vec<Action>,
+}
+
+/// How a product or shop in "รายการรอตรวจ" stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reviewed {
+    Product {
+        status: product::Status,
+        /// Its shop's
+        shop: shop::Status,
+    },
+    Shop(shop::Status),
+}
+
+/// An open report, as a card of "รายการรอตรวจ" shows it.
+pub struct ReviewReport<'a> {
+    pub by: Reporter<'a>,
+    pub reason: &'a str,
+    pub at: DateTime<Utc>,
+}
+
+/// Who filed a report (FR-HELP-02, FR-PROD-09).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reporter<'a> {
+    /// Moderation, holding what it found suspicious
+    Moderation,
+    /// A user, by their display name if LINE gave one
+    User(Option<&'a str>),
+}
+
+/// A user, as the admins see them in "ผู้ใช้" (FR-ADM-04).
+pub struct UserCard<'a> {
+    pub display_name: Option<&'a str>,
+    pub seller: bool,
+    pub admin: bool,
+    pub suspended: bool,
+    /// Why, while suspended
+    pub suspension_reason: Option<&'a str>,
+    pub zone: Option<&'a str>,
+    pub joined: DateTime<Utc>,
+    pub shop: Option<UserShop<'a>>,
+    pub buttons: Vec<Action>,
+}
+
+/// The shop of a user in "ผู้ใช้".
+pub struct UserShop<'a> {
+    pub name: &'a str,
+    pub status: shop::Status,
+    /// Why, while suspended
+    pub suspension_reason: Option<&'a str>,
+}
+
+/// Where an admin carries on in "รายการรอตรวจ": the queue, and the main menu.
+fn review_menus() -> QuickReply {
+    QuickReply::new([
+        Item::ReviewQueue
+            .postback()
+            .button(labels::REVIEW_QUEUE.clone()),
+        Action::message(labels::MENU.clone(), labels::MENU.as_str()),
+    ])
+}
+
+/// Where an admin carries on in "ผู้ใช้": another search, and the main menu.
+fn users_menus() -> QuickReply {
+    QuickReply::new([
+        Item::Users.postback().button(labels::FIND_AGAIN.clone()),
+        Action::message(labels::MENU.clone(), labels::MENU.as_str()),
+    ])
+}
+
+/// The user called `name` as a sentence names them: ` "ป้าแดง" `, or `ผู้ใช้คนนี้` when LINE
+/// gave no name.
+fn user_called(name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!(" \"{name}\" "),
+        None => "ผู้ใช้คนนี้".to_owned(),
+    }
+}
+
+/// How a shop in "รายการรอตรวจ" stands, and the colour that says it.
+fn reviewed_shop(status: shop::Status) -> (&'static str, &'static str) {
+    match status {
+        shop::Status::Held => ("รอตรวจ (ผู้ซื้อยังไม่เห็นร้าน)", MUTED),
+        shop::Status::Approved => ("เปิดให้ผู้ซื้อเห็นอยู่", OPEN_COLOR),
+        shop::Status::Suspended => ("ถูกระงับแล้ว", CLOSED_COLOR),
+        shop::Status::Closed => ("ปิดร้านถาวรแล้ว", MUTED),
+        shop::Status::Pending | shop::Status::Rejected => ("ยังไม่ได้รับอนุมัติ", MUTED),
+    }
+}
+
+/// Products and shops on a page of "รายการรอตรวจ". Their cards carry reports as long as a
+/// report's reason may be, so fewer than a carousel holds fit its 50 KB (FR-LINE-11).
+pub const REVIEWS_PER_PAGE: usize = 6;
+/// The reports a card of "รายการรอตรวจ" shows, the latest; it counts the rest
+pub const REVIEW_REPORTS: usize = 3;
+/// The users one search of "ผู้ใช้" shows, as many as a carousel holds (FR-LINE-11)
+pub const USERS_FOUND: usize = limits::BUBBLES_PER_CAROUSEL - 2;
 
 /// What "ข้อมูลของฉัน" shows for a value the user hasn't given
 const NOT_GIVEN: &str = "ยังไม่ได้ให้ไว้";
@@ -4030,6 +4653,23 @@ pub mod labels {
         REASON_INCOMPLETE = "ข้อมูลไม่ครบ",
         REASON_NOT_RESIDENT = "ไม่ได้อยู่ในหมู่บ้าน",
         REASON_UNREACHABLE = "ติดต่อไม่ได้",
+
+        // The review queue (FR-ADM-03), with APPROVE
+        /// Takes a product off sale for good, telling its seller why
+        REMOVE_PRODUCT = "นำออก",
+        SUSPEND_SHOP = "ระงับร้าน",
+        /// Closes the reports on a product or shop, leaving it as it is
+        DISMISS = "ปิดเรื่อง",
+
+        // Users (FR-ADM-04)
+        SUSPEND_ACCOUNT = "ระงับบัญชี",
+        UNSUSPEND_ACCOUNT = "ยกเลิกการระงับ",
+        UNSUSPEND_SHOP = "ยกเลิกระงับร้าน",
+        /// Finds another user
+        FIND_AGAIN = "ค้นหาอีกครั้ง",
+        // Common reasons for lifting a suspension, sent as typed
+        REASON_RESOLVED = "แก้ไขแล้ว",
+        REASON_CHECKED = "ตรวจสอบแล้ว",
     }
 
     /// The units a product is suggested to be sold by, as Quick Replies (FR-PROD-03)
@@ -4099,6 +4739,13 @@ mod tests {
 
     /// Every message text, for checks that apply to all of them.
     fn all_texts(t: &Templates) -> Vec<String> {
+        let egg = Reported::Product {
+            name: "ไข่ไก่",
+            shop: "ร้านป้าแดง",
+        };
+        let shop = Reported::Shop {
+            name: "ร้านป้าแดง"
+        };
         let mut texts = vec![
             t.something_went_wrong(),
             text(&t.ai_resting()).to_owned(),
@@ -4211,6 +4858,32 @@ mod tests {
             text(&t.application_changed()).to_owned(),
             text(&t.ask_rejection_reason("ร้านป้าแดง", 300, Vec::new())).to_owned(),
             text(&t.shop_rejected("ร้านป้าแดง")).to_owned(),
+            text(&t.review_queue(&[], 0, |_| unreachable!())).to_owned(),
+            text(&t.review_changed()).to_owned(),
+            text(&t.review_handled()).to_owned(),
+            text(&t.ask_removal_reason("ไข่ไก่", "ร้านป้าแดง", 300, Vec::new())).to_owned(),
+            text(&t.ask_shop_suspension_reason("ร้านป้าแดง", 300, Vec::new())).to_owned(),
+            text(&t.review_approved(&egg)).to_owned(),
+            text(&t.review_approved(&shop)).to_owned(),
+            text(&t.product_removed("ไข่ไก่")).to_owned(),
+            text(&t.shop_suspended("ร้านป้าแดง")).to_owned(),
+            text(&t.reports_dismissed(&egg)).to_owned(),
+            text(&t.ask_user_query()).to_owned(),
+            text(&t.no_user_found("ป้าแดง")).to_owned(),
+            text(&t.users_found(&[], true)[0]).to_owned(),
+            text(&t.ask_suspension_reason(Some("ป้าแดง"), 300, Vec::new())).to_owned(),
+            text(&t.ask_suspension_reason(None, 300, Vec::new())).to_owned(),
+            text(&t.ask_unsuspension_reason(Some("ป้าแดง"), 300, Vec::new())).to_owned(),
+            text(&t.ask_shop_unsuspension_reason("ร้านป้าแดง", 300, Vec::new())).to_owned(),
+            text(&t.user_suspended(Some("ป้าแดง"))).to_owned(),
+            text(&t.user_unsuspended(None)).to_owned(),
+            text(&t.shop_unsuspended("ร้านป้าแดง")).to_owned(),
+            text(&t.account_already(Some("ป้าแดง"), true)).to_owned(),
+            text(&t.account_already(None, false)).to_owned(),
+            text(&t.shop_not_suspended()).to_owned(),
+            text(&t.admin_not_suspended()).to_owned(),
+            text(&t.refused(Denied::Suspended, Some("ขายของปลอม"))).to_owned(),
+            text(&t.refused(Denied::ShopSuspended, Some("ขายของปลอม"))).to_owned(),
             text(&t.ask_product_photos(0, 3, false)).to_owned(),
             text(&t.ask_product_photos(0, 3, true)).to_owned(),
             text(&t.ask_product_photos(1, 3, false)).to_owned(),
@@ -4769,12 +5442,26 @@ mod tests {
         }
     }
 
-    /// NFR-SEC-10, FR-ADM-04: a refusal says what still works and offers the menus.
+    /// NFR-SEC-10, FR-ADM-04: a refusal says what still works and offers the menus; a
+    /// suspension's, why.
     #[test]
     fn refusals_say_what_still_works_and_offer_the_menus() {
         let t = templates(PoliteParticle::Kha);
         assert!(text(&t.denied(Denied::Suspended)).contains("ยังดูคำสั่งซื้อของคุณ"));
         assert!(text(&t.denied(Denied::ShopSuspended)).contains("ยังดูแลออเดอร์ที่มีอยู่"));
+        assert_eq!(
+            text(&t.refused(Denied::Suspended, Some("โกงเงินมัดจำ"))),
+            "ขอโทษค่ะ บัญชีของคุณถูกระงับการใช้งานชั่วคราว เหตุผล: โกงเงินมัดจำ ยังดูคำสั่งซื้อของคุณและเมนูช่วยเหลือได้ตามปกติ สอบถามได้ที่ \"ช่วยเหลือ\" แล้วเลือก \"ติดต่อผู้ดูแล\"ค่ะ"
+        );
+        assert!(
+            text(&t.refused(Denied::ShopSuspended, Some("ขายของปลอม")))
+                .starts_with("ขอโทษค่ะ ร้านของคุณถูกระงับชั่วคราว เหตุผล: ขายของปลอม จึงแก้ไข")
+        );
+        // Only a suspension has a reason
+        assert_eq!(
+            t.refused(Denied::NotFound, Some("ขายของปลอม")),
+            t.denied(Denied::NotFound)
+        );
         for denied in DENIALS {
             let message = t.denied(denied);
             assert!(text(&message).starts_with("ขอโทษค่ะ"), "{denied:?}");

@@ -207,7 +207,7 @@ pub async fn confirm<P: Proposal>(turn: &Turn<'_>, id: Uuid) -> Result<Vec<Messa
 
     if let Err(denied) = authorize(&txn, &turn.actor, proposal.requires()).await? {
         txn.rollback().await?;
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     match proposal.apply(id, &txn, turn).await? {
         Applied::Done(messages) => {

@@ -133,7 +133,7 @@ impl Proposal for DeleteProduct {
     /// or been cancelled; to its seller only.
     async fn current_state(stale: Stale<Self>, turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
         if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
-            return Ok(vec![turn.templates.denied(denied)]);
+            return Ok(vec![turn.denied(denied)]);
         }
         let Some(id) = stale.proposal.map(|proposal| proposal.product_id) else {
             return Ok(vec![turn.templates.denied(Denied::NotFound)]);
@@ -141,7 +141,7 @@ impl Proposal for DeleteProduct {
         if let Err(denied) =
             authorize(turn.db, &turn.actor, access::Action::ManageProduct(id)).await?
         {
-            return Ok(vec![turn.templates.denied(denied)]);
+            return Ok(vec![turn.denied(denied)]);
         }
         let product = product::Entity::find_by_id(id).one(turn.db).await?;
         Ok(vec![match product {
@@ -277,7 +277,7 @@ impl Proposal for UpdateProduct {
     /// its seller only.
     async fn current_state(stale: Stale<Self>, turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
         if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
-            return Ok(vec![turn.templates.denied(denied)]);
+            return Ok(vec![turn.denied(denied)]);
         }
         // Cancelled, or expired and deleted: which product it was is gone with it
         let Some(proposal) = stale.proposal else {
@@ -288,7 +288,7 @@ impl Proposal for UpdateProduct {
         if let Err(denied) =
             authorize(turn.db, &turn.actor, access::Action::ManageProduct(id)).await?
         {
-            return Ok(vec![turn.templates.denied(denied)]);
+            return Ok(vec![turn.denied(denied)]);
         }
         let Some(product) = listed(turn.db, id).await?.filter(editable) else {
             return Ok(vec![turn.templates.denied(Denied::NotFound)]);
@@ -327,7 +327,7 @@ pub async fn tapped(
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let Some(shop) = &turn.actor.shop else {
         return Ok(vec![turn.templates.denied(Denied::NotAllowed)]);
@@ -346,7 +346,7 @@ pub async fn tapped(
         return Ok(vec![turn.templates.denied(Denied::NotFound)]);
     };
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageProduct(id)).await? {
-        return Ok(vec![turn.templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let Some(product) = listed(turn.db, id).await? else {
         return not_found(turn, config, shop.id).await;
@@ -488,7 +488,7 @@ pub async fn answer(
     };
     // A suspension, of the seller or of the shop, ends it (NFR-SEC-10)
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageProduct(id)).await? {
-        let done = Answer::<EditFlow>::Done(vec![turn.templates.denied(denied)]);
+        let done = Answer::<EditFlow>::Done(vec![turn.denied(denied)]);
         return flow::answered(turn, done).await.map(Some);
     }
     let text = match (step, input) {

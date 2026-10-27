@@ -216,7 +216,7 @@ async fn update(
     )
     .await?
     {
-        return Ok(vec![templates.denied(denied)]);
+        return Ok(vec![turn.denied(denied)]);
     }
     let new_price = part(answer, "price").map(price).transpose();
     let new_stock = part(answer, "stock")

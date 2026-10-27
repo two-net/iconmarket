@@ -350,7 +350,7 @@ No other endpoints are exposed.
 | FR-PROD-04 | Images: at most `image.maxPerProduct` per product; uploads over `image.maxUploadMB` are rejected with guidance; content verified as JPEG or PNG; re-encoded as JPEG with the longest side ≤ `image.maxDimensionPx`; all metadata (including GPS location) removed; stored in the database and served from `/img/p/{imageId}`. | M |
 | FR-PROD-05 | "สินค้าของฉัน" shall list the seller's products (paged) with actions: edit price, edit stock, edit details, change photo, hide/show, delete. Stock always means the quantity still available for new orders. | M |
 | FR-PROD-06 | A product with stock 0 shows "หมด" and cannot be added to a cart; the seller can restock in one action. | M |
-| FR-PROD-07 | Product statuses: `DRAFT` → `ACTIVE` ⇄ `HIDDEN`; a new or edited product may become `HELD` (under review) → `ACTIVE` or `REMOVED`; `DELETED` is a soft delete. "Sold out" is derived from stock, not a status. | M |
+| FR-PROD-07 | Product statuses: `DRAFT` → `ACTIVE` ⇄ `HIDDEN`; a new or edited product may become `HELD` (under review) → `ACTIVE` or `REMOVED`; an admin may also remove a reported `ACTIVE` or `HIDDEN` product (FR-ADM-03); `DELETED` is a soft delete. "Sold out" is derived from stock, not a status. | M |
 | FR-PROD-08 | Price and stock changes apply to new checkouts only; existing orders keep their snapshots (DR-03). | M |
 | FR-PROD-09 | Moderation: new or edited product and shop text shall be checked against `catalog.prohibitedKeywords`, and also by the AI when `ai.features.moderation` is on (images too, if the model accepts images). Suspicious items become `HELD`, the seller is told the item is under review, and admins are alerted. Content is never deleted automatically. | M |
 | FR-PROD-10 | Quick text updates for sellers (e.g., *ขนมครก เหลือ 10*, *ไข่ไก่ ราคา 115*) are interpreted by the AI and applied only after the seller taps confirm. | S |
@@ -454,7 +454,7 @@ No other endpoints are exposed.
 | Order status change | Buyer | `notification.orderStatusToBuyer` | on |
 | Order cancelled by the buyer, expired, cancellation request | Seller | always | on |
 | Payment slip received | Seller | always | on |
-| Shop approved/rejected, item held/removed, account suspended | Affected user | always | on |
+| Shop approved/rejected/suspended, item held/removed, account suspended, account or shop suspension lifted | Affected user | always | on |
 | Shop application, item held, user report | Admins | `notification.adminAlerts` | on |
 | Daily sales summary | Seller | `notification.dailySummary` | off (C) |
 | "ของใหม่วันนี้" digest | Village LINE group | `notification.groupDigest` | off (C) |

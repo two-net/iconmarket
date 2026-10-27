@@ -52,7 +52,7 @@ use crate::line::limits::MESSAGES_PER_REQUEST;
 use crate::notifications::templates::Templates;
 use crate::notifications::{Kind, Outbox, To};
 use crate::persistence::entity::{pending_action, session};
-use crate::users::access::Actor;
+use crate::users::access::{Actor, Denied};
 
 pub use event::Location;
 pub use route::Input;
@@ -141,6 +141,21 @@ impl<'a> Turn<'a> {
             messages.insert(0, notice);
         }
         messages
+    }
+
+    /// Why the actor's action was refused (NFR-SEC-02, NFR-SEC-10), with the reason an admin gave
+    /// when that is their suspension or their shop's (FR-ADM-04).
+    pub fn denied(&self, denied: Denied) -> Message {
+        let reason = match denied {
+            Denied::Suspended => self.actor.user.suspension_reason.as_deref(),
+            Denied::ShopSuspended => self
+                .actor
+                .shop
+                .as_ref()
+                .and_then(|shop| shop.suspension_reason.as_deref()),
+            Denied::NotAllowed | Denied::NotFound => None,
+        };
+        self.templates.refused(denied, reason)
     }
 
     /// Notifies `to` of what handling the event did (Table 4.8-A), once the event takes effect:

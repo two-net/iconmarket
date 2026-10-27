@@ -49,6 +49,7 @@ fn onboarding_is_consent_then_the_join_code() {
         menu_roles: None,
         is_following: true,
         status: user::Status::Active,
+        suspension_reason: None,
         consent_version: None,
         consented_at: None,
         joined_at: None,

@@ -83,10 +83,16 @@ pub enum Kind {
     /// To the seller: their product or shop was held for review. Moderation holds it while
     /// the seller is changing it, so tells them in the reply instead (FR-LINE-07).
     ItemHeld,
-    /// To the seller: their product was removed
+    /// To the seller: their product was removed, with why (FR-ADM-03)
     ItemRemoved,
-    /// To the user: their account was suspended
+    /// To the owner: their shop was suspended, with why (FR-ADM-03)
+    ShopSuspended,
+    /// To the owner: their shop's suspension was lifted (FR-ADM-04)
+    ShopUnsuspended,
+    /// To the user: their account was suspended, with why (FR-ADM-04)
     AccountSuspended,
+    /// To the user: their account's suspension was lifted (FR-ADM-04)
+    AccountUnsuspended,
     /// To the admins: a shop application to decide on
     ShopApplication,
     /// To the admins: a product or shop held for review, or a shop's application to look at
@@ -110,7 +116,10 @@ impl Kind {
             Self::ShopRejected => "shop.rejected",
             Self::ItemHeld => "product.held",
             Self::ItemRemoved => "product.removed",
+            Self::ShopSuspended => "shop.suspended",
+            Self::ShopUnsuspended => "shop.unsuspended",
             Self::AccountSuspended => "user.suspended",
+            Self::AccountUnsuspended => "user.unsuspended",
             Self::ShopApplication => "admin.shop_application",
             Self::HeldForReview => "admin.held_for_review",
             Self::UserReport => "admin.user_report",
@@ -131,7 +140,10 @@ impl Kind {
             | Self::ShopRejected
             | Self::ItemHeld
             | Self::ItemRemoved
-            | Self::AccountSuspended => true,
+            | Self::ShopSuspended
+            | Self::ShopUnsuspended
+            | Self::AccountSuspended
+            | Self::AccountUnsuspended => true,
         }
     }
 }

@@ -26,6 +26,9 @@ pub struct Model {
     /// False after `unfollow`; no pushes are sent until they follow again (FR-ONB-06)
     pub is_following: bool,
     pub status: Status,
+    /// Why an admin suspended the user, while `SUSPENDED`; they are told it whenever an action
+    /// is refused (FR-ADM-04). Cleared when unsuspended.
+    pub suspension_reason: Option<String>,
     /// The privacy notice version consented to (FR-ONB-02)
     pub consent_version: Option<String>,
     pub consented_at: Option<DateTimeUtc>,

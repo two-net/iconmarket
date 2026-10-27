@@ -205,7 +205,7 @@ async fn check(turn: &Turn<'_>, target: Target) -> Result<Result<Found, Message>
     let templates = turn.templates;
     let user_id = turn.actor.user.id;
     if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Report).await? {
-        return Ok(Err(templates.denied(denied)));
+        return Ok(Err(turn.denied(denied)));
     }
     let Some(found) = find(turn.db, target).await? else {
         return Ok(Err(templates.denied(Denied::NotFound)));

@@ -652,6 +652,44 @@ async fn suspended_users_cant_use_the_cart() {
     assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 2)]);
 }
 
+/// FR-ADM-04: a suspended seller's shop takes no orders: buyers can't add its products, and
+/// lines already in a cart show it closed, until the suspension is lifted.
+#[tokio::test]
+async fn a_suspended_sellers_products_cant_be_ordered() {
+    let s = setup().await;
+    let t = &s.templates;
+    let fine = s.product(s.other_shop, "ขนมกล้วย", None).await;
+    s.put(s.buyer, s.eggs, 2, t0()).await;
+    s.put(s.buyer, fine, 1, t0() + TimeDelta::minutes(1)).await;
+    let suspend = |status| {
+        user::Entity::update_many()
+            .col_expr(user::Column::Status, Expr::value(status))
+            .filter(user::Column::Id.eq(s.seller))
+            .exec(&s.db)
+    };
+    suspend(user::Status::Suspended).await.unwrap();
+    assert_eq!(s.adds(s.eggs).await, [t.denied(Denied::NotFound)]);
+    let states: Vec<_> = lines(&s.db, s.buyer)
+        .await
+        .unwrap()
+        .iter()
+        .map(|line| (line.product.id, line.state))
+        .collect();
+    assert_eq!(
+        states,
+        [(fine, State::Orderable), (s.eggs, State::ShopClosed)]
+    );
+
+    suspend(user::Status::Active).await.unwrap();
+    let states: Vec<_> = lines(&s.db, s.buyer)
+        .await
+        .unwrap()
+        .iter()
+        .map(|line| line.state)
+        .collect();
+    assert_eq!(states, [State::Orderable, State::Orderable]);
+}
+
 /// FR-CART-03: "ตะกร้า" shows a card per shop, the shop added to last first, each line's name,
 /// quantity and unit price, and total, with "แก้จำนวน" and "ลบออก", then the shop's subtotal and
 /// "สั่งซื้อร้านนี้"; typed, the same.
