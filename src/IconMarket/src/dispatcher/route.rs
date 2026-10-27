@@ -34,6 +34,7 @@ use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::ai::Feature;
 use crate::catalog::browse;
+use crate::catalog::browse::search::{self, SearchFlow};
 use crate::catalog::products::manage::{self, EditFlow};
 use crate::catalog::products::{self, ProductFlow};
 use crate::catalog::shops::settings::{self, SettingsFlow};
@@ -41,13 +42,13 @@ use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
 use crate::notifications::Queued;
 use crate::notifications::templates::labels;
-use crate::payments;
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
 use crate::users::address::{self, AddressFlow};
 use crate::users::onboarding::{self, Said};
 use crate::users::report::{self, ReportFlow};
 use crate::users::{self, help, profile, roles};
+use crate::{orders, payments};
 
 /// Typed by the operator to get their own LINE user ID, for `admin.lineUserIds` (FR-ONB-08)
 const MY_ID: &str = "#myid";
@@ -453,7 +454,8 @@ fn step_name(step: &Step) -> &'static str {
 ///
 /// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21),
 /// problem reports (#22), shop applications and the reasons for turning one down (#23), shop
-/// settings (#24), adding products (#25), changing them (#26) and checkout (#32).
+/// settings (#24), adding products (#25), changing them (#26), searching (#28) and checkout
+/// (#32).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -474,6 +476,10 @@ async fn answer_flow(
         },
         ReportFlow::NAME => match stored.read::<ReportFlow>() {
             Some(session) => Some(report::answer(turn, session, input).await),
+            None => None,
+        },
+        SearchFlow::NAME => match stored.read::<SearchFlow>() {
+            Some(session) => Some(search::answer(turn, config, session, input).await),
             None => None,
         },
         ShopFlow::NAME => match stored.read::<ShopFlow>() {
@@ -560,8 +566,12 @@ async fn tapped(
             return help::tapped(turn, &context.config, &context.ai, postback).await;
         }
         report::REPORT => return report::tapped(turn, postback).await,
-        browse::CATEGORY => return Ok(not_built("browsing a category", 28, fallback(turn))),
-        browse::SHOP => return Ok(not_built("a shop's products", 28, fallback(turn))),
+        action if action == browse::CATEGORY || action.starts_with(browse::PREFIX) => {
+            return browse::tapped(turn, &context.config, postback).await;
+        }
+        orders::ADD_TO_CART => {
+            return Ok(not_built("adding to the cart", 29, fallback(turn)));
+        }
         users::DELETE_ACCOUNT => {
             return Ok(not_built("deleting the account", 36, fallback(turn)));
         }
@@ -583,7 +593,8 @@ async fn menu_item(
 ) -> Result<Vec<Message>, DbErr> {
     use Item::*;
     let issue = match item {
-        Buy => return browse::tapped(turn, postback).await,
+        Buy => return browse::tapped(turn, &context.config, postback).await,
+        Search => return search::start(turn).await,
         MyShop => return shops::tapped(turn, &context.config, &context.ai, postback).await,
         ApproveShops => return approvals::tapped(turn, &context.config, postback).await,
         Categories => return categories::tapped(turn, postback).await,
@@ -593,7 +604,6 @@ async fn menu_item(
         }
         AddProduct => return products::tapped(turn, &context.config, &context.ai, postback).await,
         MyProducts => return manage::tapped(turn, &context.config, postback).await,
-        Search => 28,
         Cart => 29,
         MyOrders | ShopOrders => 34,
         Sales => 39,

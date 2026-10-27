@@ -20,5 +20,6 @@ use crate::http::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/img/p/{image_id}", get(images::serve_product))
+        .route("/img/placeholder.png", get(images::serve_placeholder))
         .route("/img/s/{token}", get(images::serve_slip))
 }

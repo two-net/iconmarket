@@ -25,6 +25,9 @@ pub struct Model {
     pub status: Status,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
+    /// When its seller last made more of it available for new orders: with `created_at`, what
+    /// "ของใหม่วันนี้" lists it by (FR-SRCH-09)
+    pub restocked_at: Option<DateTimeUtc>,
     /// Set together with `DELETED`; products are never removed (DR-04)
     pub deleted_at: Option<DateTimeUtc>,
 }

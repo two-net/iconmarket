@@ -501,6 +501,8 @@ async fn a_sold_out_product_is_restocked_with_a_tap_and_the_quantity() {
 
     let restocked = s.get(eggs).await;
     assert_eq!((restocked.stock, restocked.updated_at), (Some(30), t0()));
+    // In "ของใหม่วันนี้" for a day (FR-SRCH-09)
+    assert_eq!(restocked.restocked_at, Some(t0()));
     let orderable = Availability::of(&restocked, &shop);
     assert_eq!(orderable, Availability::Left(30));
     assert!(orderable.orderable());
@@ -586,6 +588,8 @@ async fn the_stock_is_what_is_left_for_new_orders() {
     assert_eq!(texts(now)[2], "หมด");
     assert_eq!(labels_of(now)[0], "เติมของ");
     assert_eq!(s.get(eggs).await.stock, Some(0));
+    // Less isn't restocking (FR-SRCH-09)
+    assert_eq!(s.get(eggs).await.restocked_at, None);
 
     s.changes(eggs, "stock").await;
     let unlimited = s.types("ไม่จำกัด").await;
@@ -593,6 +597,7 @@ async fn the_stock_is_what_is_left_for_new_orders() {
     assert_eq!(unlimited[0], t.product_stock_saved(None, "แผง", true));
     assert_eq!(row(card(&unlimited[1]), "จำนวน"), "ไม่จำกัด / ทำตามสั่ง");
     assert_eq!(s.get(eggs).await.stock, None);
+    assert_eq!(s.get(eggs).await.restocked_at, Some(t0()));
 
     s.changes(eggs, "stock").await;
     let kept = s.types("ใช้ของเดิม").await;

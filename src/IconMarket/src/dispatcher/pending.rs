@@ -11,6 +11,10 @@
 //!
 //! A kind of proposal is a type implementing [`Proposal`], in the module that owns what it
 //! changes, with an arm in [`tapped`].
+//!
+//! A value the user gave that a button must come back to without changing anything, such as the
+//! search that "ดูเพิ่มเติม" pages, is [`keep`]: a pending action that is never consumed, so its
+//! buttons work, as often as tapped, until it expires. Like a proposal, `ยกเลิก` discards it.
 
 use std::future::Future;
 
@@ -104,13 +108,27 @@ pub enum Why {
 /// Stores `proposal` for the user to confirm within `session.pendingActionMinutes`, and returns
 /// the postback for its confirm button, which the caller labels.
 pub async fn propose<P: Proposal>(turn: &Turn<'_>, proposal: &P) -> Result<Postback, DbErr> {
+    let id = keep(turn, P::KIND, proposal).await?;
+    Ok(Postback::new(CONFIRM)
+        .with_name(KIND, P::KIND)
+        .with_uuid(ID, id))
+}
+
+/// Stores `value` as `kind` for the user's buttons to come back to within
+/// `session.pendingActionMinutes`, and returns its random ID, for them to carry. Unless a
+/// proposal confirms it, it is never consumed: [`kept`] reads it as often as asked.
+pub async fn keep<T: Serialize>(
+    turn: &Turn<'_>,
+    kind: &'static str,
+    value: &T,
+) -> Result<Uuid, DbErr> {
     let id = random_id();
-    let payload = serde_json::to_value(proposal).map_err(|e| DbErr::Json(e.to_string()))?;
+    let payload = serde_json::to_value(value).map_err(|e| DbErr::Json(e.to_string()))?;
     let lifetime = TimeDelta::minutes(turn.session.pending_action_minutes.into());
     let row = pending_action::ActiveModel {
         id: Set(id),
         user_id: Set(turn.actor.user.id),
-        kind: Set(P::KIND.to_owned()),
+        kind: Set(kind.to_owned()),
         payload: Set(payload),
         expires_at: Set(turn.now + lifetime),
         consumed_at: Set(None),
@@ -119,9 +137,27 @@ pub async fn propose<P: Proposal>(turn: &Turn<'_>, proposal: &P) -> Result<Postb
     pending_action::Entity::insert(row)
         .exec_without_returning(turn.db)
         .await?;
-    Ok(Postback::new(CONFIRM)
-        .with_name(KIND, P::KIND)
-        .with_uuid(ID, id))
+    Ok(id)
+}
+
+/// What the user [`keep`]s as `kind` under `id`, while it lasts. `None` once it expired or was
+/// discarded, if it is someone else's or another kind, or if this release can't read it.
+pub async fn kept<T: DeserializeOwned>(
+    turn: &Turn<'_>,
+    kind: &'static str,
+    id: Uuid,
+) -> Result<Option<T>, DbErr> {
+    let row = pending_action::Entity::find_by_id(id)
+        .filter(pending_action::Column::UserId.eq(turn.actor.user.id))
+        .filter(pending_action::Column::Kind.eq(kind))
+        .filter(pending_action::Column::ExpiresAt.gt(turn.now))
+        .one(turn.db)
+        .await?;
+    Ok(row.and_then(|row| {
+        serde_json::from_value(row.payload)
+            .inspect_err(|e| warn!(kind, error = %e, "cannot read a kept value"))
+            .ok()
+    }))
 }
 
 /// A tap on a confirm button: confirms its pending action as the kind it names. Each kind of
@@ -188,9 +224,9 @@ pub async fn confirm<P: Proposal>(turn: &Turn<'_>, id: Uuid) -> Result<Vec<Messa
     }
 }
 
-/// Deletes the changes user `user_id` has yet to confirm, so their buttons show the current
-/// state (FR-UI-04). Confirmed ones are kept until they expire, so a repeated tap is still
-/// recognised. Returns how many were deleted.
+/// Deletes the changes user `user_id` has yet to confirm, and the values [kept](keep) for their
+/// buttons, so those buttons show the current state (FR-UI-04). Confirmed ones are kept until
+/// they expire, so a repeated tap is still recognised. Returns how many were deleted.
 pub async fn discard(db: &impl ConnectionTrait, user_id: i64) -> Result<u64, DbErr> {
     let deleted = pending_action::Entity::delete_many()
         .filter(pending_action::Column::UserId.eq(user_id))

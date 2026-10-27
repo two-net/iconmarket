@@ -38,7 +38,7 @@ use url::Url;
 
 use super::{
     ProductFlow, Step, Taken, ask_category, choices, max_photos, may_become, photos_done_label,
-    prompt, receive, take, why,
+    prompt, receive, restocks, take, why,
 };
 use crate::ai;
 use crate::catalog::images::{self, Owner};
@@ -486,6 +486,11 @@ async fn save(
         updated_at: Set(turn.now),
         ..change.unwrap_or_default()
     };
+    if let Set(stock) = update.stock
+        && restocks(product.stock, stock)
+    {
+        update.restocked_at = Set(Some(turn.now));
+    }
     // Unless it was held, or removed, meanwhile
     let flag = flag.filter(|_| may_become(product.status, product::Status::Held));
     if flag.is_some() {

@@ -261,6 +261,7 @@ fn product_of(stock: Option<i32>) -> product::Model {
         status: product::Status::Active,
         created_at: t0(),
         updated_at: t0(),
+        restocked_at: None,
         deleted_at: None,
     }
 }
@@ -277,6 +278,23 @@ fn an_open_shops_product_goes_by_its_stock() {
     for (stock, availability, orderable) in cases {
         assert_eq!(Availability::of(&product_of(stock), &open), availability);
         assert_eq!(availability.orderable(), orderable, "{availability:?}");
+    }
+}
+
+/// FR-SRCH-09: making more available for new orders restocks a product, a larger number or
+/// unlimited; less, or the same, doesn't.
+#[test]
+fn more_for_sale_is_a_restock() {
+    for (from, to, restocks) in [
+        (Some(0), Some(30), true),
+        (Some(5), Some(6), true),
+        (Some(5), None, true),
+        (Some(5), Some(5), false),
+        (Some(30), Some(0), false),
+        (None, Some(99_999), false),
+        (None, None, false),
+    ] {
+        assert_eq!(super::restocks(from, to), restocks, "{from:?} → {to:?}");
     }
 }
 

@@ -586,7 +586,8 @@ async fn deactivating_hides_a_category_from_browsing_and_listing() {
     assert_eq!(s.active().await, ["อาหาร", "ไข่/นม"]);
     let browse = s
         .at(s.buyer, async |turn| {
-            crate::catalog::browse::tapped(turn, &Item::Buy.postback()).await
+            let config = config::sample();
+            crate::catalog::browse::tapped(turn, &config, &Item::Buy.postback()).await
         })
         .await;
     let items = &browse[0].quick_reply.as_ref().unwrap().items;
@@ -594,7 +595,7 @@ async fn deactivating_hides_a_category_from_browsing_and_listing() {
         .iter()
         .map(|item| item.action.label().as_str())
         .collect();
-    assert_eq!(offered, ["อาหาร", "ไข่/นม"]);
+    assert_eq!(offered, ["ของใหม่วันนี้", "ร้านค้าทั้งหมด", "อาหาร", "ไข่/นม"]);
     // The products stay as they are
     let products = product::Entity::find().all(&s.db).await.unwrap();
     assert_eq!(products.len(), 1);

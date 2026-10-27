@@ -23,7 +23,7 @@
 
 #![allow(
     dead_code,
-    reason = "the product card (#28), the cart (#29) and checkout (#32) are built by later issues"
+    reason = "the cart (#29) and checkout (#32) are built by later issues"
 )]
 
 pub mod manage;
@@ -118,6 +118,17 @@ impl Stock {
     /// What `products.stock` keeps, `column`.
     pub fn of(column: Option<i32>) -> Self {
         column.map_or(Self::Unlimited, Self::Count)
+    }
+}
+
+/// Whether changing a product's stock from `from` to `to`, as `products.stock` keeps them,
+/// restocks it: makes more available for new orders, a larger number or unlimited. A restocked
+/// product is in "ของใหม่วันนี้" for a day (FR-SRCH-09).
+pub fn restocks(from: Option<i32>, to: Option<i32>) -> bool {
+    match (from, to) {
+        (Some(from), Some(to)) => to > from,
+        (Some(_), None) => true,
+        (None, _) => false,
     }
 }
 

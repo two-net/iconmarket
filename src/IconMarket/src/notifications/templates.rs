@@ -698,6 +698,101 @@ impl Templates {
         ))
     }
 
+    /// "ค้นหา" (FR-SRCH-04): what to search for. The cancel button follows.
+    pub fn ask_keyword(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "อยากหาอะไรดี{kha_question} พิมพ์ชื่อสินค้า ร้าน หรือหมวดที่อยากหามาได้เลย เช่น ขนมครก{kha}"
+        ))
+    }
+
+    /// "ดูเพิ่มเติม" under a search's results, once the search is no longer kept: what to search
+    /// for, again. The cancel button follows.
+    pub fn search_expired(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ผลการค้นหานี้หมดเวลาแล้ว{kha} พิมพ์สิ่งที่อยากหาอีกครั้งได้เลย{kha}"
+        ))
+    }
+
+    /// A page of a product list (FR-SRCH-02, FR-SRCH-03): of what was `browsed`, a card for each
+    /// of `cards` (FR-SRCH-07) and, when more follow, "ดูเพิ่มเติม" sending the postback `more`;
+    /// `next` are its Quick Replies.
+    pub fn product_list(
+        &self,
+        browsed: Browsed<'_>,
+        cards: &[ProductCard<'_>],
+        more: Option<String>,
+        next: Vec<Action>,
+    ) -> Message {
+        let bubbles = cards.iter().map(product_card).collect();
+        Message::flex(headline(browsed), carousel(bubbles, more))
+            .with_quick_reply(QuickReply::new(next))
+    }
+
+    /// A product's details, from a tap on its card (FR-SRCH-07): its card with its description
+    /// and shop, then the rest of its photos; `next` are its Quick Replies.
+    pub fn product_details(&self, details: &ProductDetails<'_>, next: Vec<Action>) -> Message {
+        let (first, rest) = details
+            .photos
+            .split_first()
+            .expect("a photo, or the placeholder");
+        let card = product_details_card(details, first);
+        let contents: FlexContainer = if rest.is_empty() {
+            card.into()
+        } else {
+            // Beside the card, as many as a carousel holds
+            let photos = rest
+                .iter()
+                .take(limits::BUBBLES_PER_CAROUSEL - 1)
+                .map(photo_card);
+            Carousel::new(std::iter::once(card).chain(photos).collect()).into()
+        };
+        Message::flex(details.name, contents).with_quick_reply(QuickReply::new(next))
+    }
+
+    /// A page of "ร้านค้าทั้งหมด" (FR-SRCH-06): a card for each of `fronts`, as buyers see shops
+    /// (FR-SHOP-09), and, when more follow, "ดูเพิ่มเติม" sending the postback `more`; `next`
+    /// are its Quick Replies.
+    pub fn shop_list(
+        &self,
+        fronts: &[ShopFront<'_>],
+        more: Option<String>,
+        next: Vec<Action>,
+    ) -> Message {
+        let bubbles = fronts
+            .iter()
+            .map(|front| self.shop_front_bubble(front))
+            .collect();
+        Message::flex(headline(Browsed::Shops), carousel(bubbles, more))
+            .with_quick_reply(QuickReply::new(next))
+    }
+
+    /// Nothing to show of what was `browsed` (FR-SRCH-08): says so, and suggests where else to
+    /// look, `suggestions`.
+    pub fn nothing_found(&self, browsed: Browsed<'_>, suggestions: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let text = match browsed {
+            Browsed::Category(name) => {
+                format!("ตอนนี้หมวด {name} ยังไม่มีสินค้า{kha} ลองดูหมวดอื่น หรือค้นหาจากชื่อสินค้าได้เลย{kha}")
+            }
+            Browsed::Shop(name) => format!(
+                "ตอนนี้{}ยังไม่มีสินค้าลงขาย{kha} ลองดูร้านอื่น หรือเลือกดูจากหมวดได้เลย{kha}",
+                shop_called(name)
+            ),
+            Browsed::NewToday => {
+                format!("วันนี้ยังไม่มีของใหม่{kha} ลองเลือกดูจากหมวดได้เลย{kha}")
+            }
+            Browsed::Search(keyword) => format!(
+                "ไม่พบสินค้าที่ตรงกับ \"{keyword}\"{kha} ลองพิมพ์ให้สั้นลงหรือใช้คำอื่น หรือเลือกดูจากหมวดได้เลย{kha}"
+            ),
+            Browsed::Shops => {
+                format!("ตอนนี้ยังไม่มีร้านค้าในตลาด{kha} ลองใหม่ภายหลังได้เลย{kha}")
+            }
+        };
+        Message::text(text).with_quick_reply(QuickReply::new(suggestions))
+    }
+
     /// "ช่วยเหลือ" (FR-HELP-01): a button for each of `topics`, those of the user's roles.
     pub fn help(&self, topics: impl IntoIterator<Item = Topic>) -> Message {
         let (kha, kha_question) = (self.kha(), self.kha_question());
@@ -2217,9 +2312,14 @@ impl Templates {
 
 /// A card's `buttons` at its foot, the first one primary; `None` without any.
 fn footer(buttons: &[Action]) -> Option<FlexBox> {
+    footer_of(buttons, true)
+}
+
+/// A card's `buttons` at its foot, the first one primary if `primary`; `None` without any.
+fn footer_of(buttons: &[Action], primary: bool) -> Option<FlexBox> {
     (!buttons.is_empty()).then(|| {
         let buttons = buttons.iter().enumerate().map(|(i, action)| {
-            let style = if i == 0 {
+            let style = if i == 0 && primary {
                 ButtonStyle::Primary
             } else {
                 ButtonStyle::Secondary
@@ -2357,6 +2457,55 @@ pub struct MyProductCard<'a> {
     pub buttons: Vec<Vec<Action>>,
     /// Whether the first button is primary: "เติมของ", for a sold-out product (FR-PROD-06)
     pub primary: bool,
+}
+
+/// What a buyer browsed (FR-SRCH): what a list's headline, and the reply when it has nothing,
+/// name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Browsed<'a> {
+    /// The products of the category with this name (FR-SRCH-01)
+    Category(&'a str),
+    /// The products of the shop with this name (FR-SHOP-09)
+    Shop(&'a str),
+    /// "ของใหม่วันนี้" (FR-SRCH-09)
+    NewToday,
+    /// What a search for this keyword found (FR-SRCH-04)
+    Search(&'a str),
+    /// "ร้านค้าทั้งหมด" (FR-SRCH-06)
+    Shops,
+}
+
+/// A product's card as buyers see it in a list (FR-SRCH-07).
+pub struct ProductCard<'a> {
+    pub name: &'a str,
+    pub price: Money,
+    pub unit: &'a str,
+    /// Its shop's name
+    pub shop: &'a str,
+    pub availability: Availability,
+    /// Its first photo's `/img/p` link, or the placeholder's
+    pub photo: &'a Url,
+    /// "ใส่ตะกร้า", while it can be ordered (FR-PROD-06)
+    pub add_to_cart: Option<Action>,
+    /// "ดูร้าน": its shop's card
+    pub view_shop: Action,
+    /// A tap anywhere else on the card: its details
+    pub details: Action,
+}
+
+/// A product's details as buyers see them, from a tap on its card (FR-SRCH-07).
+pub struct ProductDetails<'a> {
+    pub name: &'a str,
+    pub price: Money,
+    pub unit: &'a str,
+    pub description: Option<&'a str>,
+    /// Its shop's name
+    pub shop: &'a str,
+    pub availability: Availability,
+    /// Its photos' `/img/p` links, in order, or the placeholder's alone
+    pub photos: &'a [Url],
+    /// "ใส่ตะกร้า" first while it can be ordered, then "ดูร้าน" and "แจ้งปัญหา"
+    pub buttons: Vec<Action>,
 }
 
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
@@ -2549,6 +2698,145 @@ fn category_card(card: &CategoryCard<'_>) -> Bubble {
 
 /// Products on a page of a list, leaving room for "ดูเพิ่มเติม" (FR-SRCH-03)
 pub const PRODUCTS_PER_PAGE: usize = 10;
+/// Shops on a page of "ร้านค้าทั้งหมด", leaving room for "ดูเพิ่มเติม" (FR-SRCH-06)
+pub const SHOPS_PER_PAGE: usize = 10;
+
+/// The headline of a list of what was `browsed`: its alt text.
+fn headline(browsed: Browsed<'_>) -> String {
+    match browsed {
+        Browsed::Category(name) => format!("สินค้าหมวด {name}"),
+        Browsed::Shop(name) => format!("สินค้าของ{}", shop_called(name)),
+        Browsed::NewToday => labels::NEW_TODAY.as_str().to_owned(),
+        Browsed::Search(keyword) => format!("ผลการค้นหา \"{keyword}\""),
+        Browsed::Shops => labels::ALL_SHOPS.as_str().to_owned(),
+    }
+}
+
+/// A product's card in a list (FR-SRCH-07): its photo, name, price per unit, shop and whether it
+/// can be ordered, with "ใส่ตะกร้า" while it can, and "ดูร้าน". A tap anywhere else shows its
+/// details.
+fn product_card(card: &ProductCard<'_>) -> Bubble {
+    let name = Text {
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        max_lines: Some(2),
+        ..Text::new(card.name)
+    };
+    let price = Text {
+        size: Some(Size::Sm),
+        wrap: Some(true),
+        ..Text::new(price_per_unit(card.price, card.unit))
+    };
+    let shop = Text {
+        size: Some(Size::Xs),
+        color: Some(MUTED.to_owned()),
+        wrap: Some(true),
+        max_lines: Some(1),
+        ..Text::new(card.shop)
+    };
+    let body = FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::vertical([
+            name.into(),
+            price.into(),
+            shop.into(),
+            availability_line(card.availability),
+        ])
+    };
+    let buttons: Vec<Action> = card
+        .add_to_cart
+        .iter()
+        .chain([&card.view_shop])
+        .cloned()
+        .collect();
+    Bubble {
+        size: Some(BubbleSize::Kilo),
+        hero: Some(photo(card.photo)),
+        body: Some(body),
+        footer: footer_of(&buttons, card.add_to_cart.is_some()),
+        action: Some(card.details.clone()),
+        ..Bubble::default()
+    }
+}
+
+/// A product's details (FR-SRCH-07): its photo `first`, name, price per unit, whether it can be
+/// ordered, description and shop, with its buttons, "ใส่ตะกร้า" primary while it can be.
+fn product_details_card(details: &ProductDetails<'_>, first: &Url) -> Bubble {
+    let name = Text {
+        size: Some(Size::Lg),
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(details.name)
+    };
+    let price = Text {
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(price_per_unit(details.price, details.unit))
+    };
+    let mut top: Vec<Component> = vec![
+        name.into(),
+        price.into(),
+        availability_line(details.availability),
+    ];
+    if let Some(description) = details.description {
+        let description = Text {
+            size: Some(Size::Sm),
+            wrap: Some(true),
+            ..Text::new(description)
+        };
+        top.push(description.into());
+    }
+    let body = FlexBox {
+        spacing: Some(Spacing::Md),
+        ..FlexBox::vertical(
+            top.into_iter()
+                .chain([Separator::default().into(), row("ร้าน", details.shop)]),
+        )
+    };
+    Bubble {
+        size: Some(BubbleSize::Mega),
+        hero: Some(photo(first)),
+        body: Some(body),
+        footer: footer_of(&details.buttons, details.availability.orderable()),
+        ..Bubble::default()
+    }
+}
+
+/// One more of a product's photos, beside its details.
+fn photo_card(url: &Url) -> Bubble {
+    Bubble {
+        size: Some(BubbleSize::Mega),
+        hero: Some(photo(url)),
+        ..Bubble::default()
+    }
+}
+
+/// A product's photo at the top of its card, as large as cards show photos (20:13).
+fn photo(url: &Url) -> Hero {
+    Hero::Image(Image {
+        size: Some(Size::Full),
+        aspect_ratio: Some("20:13".to_owned()),
+        aspect_mode: Some(AspectMode::Cover),
+        ..Image::new(url)
+    })
+}
+
+/// Whether a product can be ordered, as its card says it (FR-SRCH-07): in the colour of an
+/// open shop if it can, of a closed one if not.
+fn availability_line(of: Availability) -> Component {
+    let color = if of.orderable() {
+        OPEN_COLOR
+    } else {
+        CLOSED_COLOR
+    };
+    let text = Text {
+        size: Some(Size::Sm),
+        weight: Some(Weight::Bold),
+        color: Some(color.to_owned()),
+        ..Text::new(availability(of))
+    };
+    text.into()
+}
 
 /// A product's card in "สินค้าของฉัน" (FR-PROD-05): its first photo, name and price per unit,
 /// whether buyers see it and whether it is sold out (FR-PROD-06), its stock, category and
@@ -3009,16 +3297,26 @@ pub fn carousel_page<T>(
 ) -> FlexContainer {
     let per_page = per_page.clamp(1, limits::BUBBLES_PER_CAROUSEL - 1);
     let page = limits::page(items, number, per_page);
-    let mut bubbles: Vec<Bubble> = page.items.iter().map(card).collect();
-    if let Some(next) = page.next {
+    carousel(page.items.iter().map(card).collect(), page.next.map(more))
+}
+
+/// `cards`, a page of a list already paged, as a carousel (FR-LINE-11, FR-SRCH-03): with a
+/// "ดูเพิ่มเติม" bubble last whose button sends the postback `more`, when more follow. There
+/// must be room for that bubble.
+pub fn carousel(mut cards: Vec<Bubble>, more: Option<String>) -> FlexContainer {
+    debug_assert!(
+        cards.len() < limits::BUBBLES_PER_CAROUSEL,
+        "no room for ดูเพิ่มเติม"
+    );
+    if let Some(more) = more {
         // A carousel's bubbles must all be the same size
-        let size = bubbles.first().and_then(|bubble| bubble.size);
-        bubbles.push(more_bubble(
+        let size = cards.first().and_then(|bubble| bubble.size);
+        cards.push(more_bubble(
             size,
-            Action::postback(labels::MORE.clone(), more(next)),
+            Action::postback(labels::MORE.clone(), more),
         ));
     }
-    Carousel::new(bubbles).into()
+    Carousel::new(cards).into()
 }
 
 /// The last bubble of a carousel page: one button for the next page.
@@ -3210,6 +3508,18 @@ pub mod labels {
         /// A shop's products, from its card (FR-SHOP-09)
         VIEW_PRODUCTS = "ดูสินค้า",
 
+        // Browsing and searching (FR-SRCH), with BUY and SEARCH
+        /// Products listed or restocked in the last day (FR-SRCH-09)
+        NEW_TODAY = "ของใหม่วันนี้",
+        /// The shops buyers see (FR-SRCH-06)
+        ALL_SHOPS = "ร้านค้าทั้งหมด",
+        /// Asks for another keyword (FR-SRCH-08)
+        SEARCH_AGAIN = "ค้นหาใหม่",
+        /// Puts a product in the cart (FR-SRCH-07, #29)
+        ADD_TO_CART = "ใส่ตะกร้า",
+        /// A product's shop, from its card (FR-SRCH-07)
+        VIEW_SHOP = "ดูร้าน",
+
         // Adding a product (FR-PROD-01, FR-PROD-03)
         /// Lists the product previewed; buyers see it from then on
         CONFIRM_LISTING = "ยืนยันลงขาย",
@@ -3366,6 +3676,8 @@ mod tests {
             text(&t.categories(&[], 0, |_| unreachable!(), add_category())).to_owned(),
             text(&t.choose_category(vec![add_category()])).to_owned(),
             text(&t.nothing_to_browse()).to_owned(),
+            text(&t.ask_keyword()).to_owned(),
+            text(&t.search_expired()).to_owned(),
             text(&t.ask_report_reason(&REPORTED, 300, Vec::new())).to_owned(),
             text(&t.already_reported(&REPORTED)).to_owned(),
             text(&t.report_received(&REPORTED)).to_owned(),
@@ -3467,11 +3779,22 @@ mod tests {
             let visibility = t.product_visibility("ไข่ไก่เบอร์ 2", visible, changed);
             texts.push(text(&visibility).to_owned());
         }
+        for browsed in BROWSED {
+            texts.push(text(&t.nothing_found(browsed, Vec::new())).to_owned());
+        }
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
         texts.extend(DENIALS.map(|denied| text(&t.denied(denied)).to_owned()));
         texts
     }
+
+    const BROWSED: [Browsed<'static>; 5] = [
+        Browsed::Category("ขนม/ของหวาน"),
+        Browsed::Shop("ร้านป้าแดง"),
+        Browsed::NewToday,
+        Browsed::Search("ขนมครก"),
+        Browsed::Shops,
+    ];
 
     const REPORTED: Reported<'static> = Reported::Product {
         name: "ไข่ไก่เบอร์ 2",
@@ -4470,6 +4793,195 @@ mod tests {
         assert!(texts.contains(&format!("99,999 {unit}")), "{texts:?}");
         assert!(texts.contains(&"3 รูป".to_owned()), "{texts:?}");
         limits::check(&[t.my_product(&cards[0])]).unwrap();
+    }
+
+    /// A postback button labelled `label` sending `data`, as browsing's are.
+    fn postback(label: &Label, data: String) -> Action {
+        Action::Postback {
+            label: label.clone(),
+            data,
+            display_text: Some(label.as_str().to_owned()),
+        }
+    }
+
+    /// FR-SRCH-03, FR-SRCH-07, FR-LINE-11: a full page of a product list, with the longest values
+    /// a product and its shop take, the longest keyword and every button, fits in one carousel
+    /// with "ดูเพิ่มเติม", its cards all the size of the "ดูเพิ่มเติม" bubble.
+    #[test]
+    fn a_full_page_of_products_fits() {
+        let t = templates(PoliteParticle::Kha);
+        let (name, unit, shop) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(50));
+        let keyword = "ข".repeat(80);
+        let photo =
+            Url::parse("https://iconmarket.example.com/img/p/6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b")
+                .unwrap();
+        let max = i64::MAX;
+        let cards: Vec<_> = (0..PRODUCTS_PER_PAGE)
+            .map(|_| ProductCard {
+                name: &name,
+                price: Money::from_baht(100_000),
+                unit: &unit,
+                shop: &shop,
+                availability: Availability::Left(99_999),
+                photo: &photo,
+                add_to_cart: Some(postback(
+                    &labels::ADD_TO_CART,
+                    format!("cart.add?product={max}"),
+                )),
+                view_shop: postback(&labels::VIEW_SHOP, format!("browse.front?shop={max}")),
+                details: postback(
+                    &Label::fit(name.as_str()),
+                    format!("browse.product?product={max}"),
+                ),
+            })
+            .collect();
+        let more = format!("browse.search?pa=6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b&page={max}");
+        let next = vec![postback(&labels::BUY, "buy".to_owned())];
+        let page = t.product_list(Browsed::Search(&keyword), &cards, Some(more), next);
+        limits::check(slice::from_ref(&page)).unwrap();
+        let Body::Flex {
+            alt_text,
+            contents: FlexContainer::Carousel(carousel),
+        } = &page.body
+        else {
+            panic!("not a carousel");
+        };
+        assert_eq!(alt_text, &format!("ผลการค้นหา \"{keyword}\""));
+        assert_eq!(carousel.contents.len(), PRODUCTS_PER_PAGE + 1);
+        assert!(
+            carousel
+                .contents
+                .iter()
+                .all(|card| card.size == Some(BubbleSize::Kilo))
+        );
+        assert_eq!(
+            card_texts(&carousel.contents[0]),
+            [
+                name.clone(),
+                format!("฿100,000 / {unit}"),
+                shop.clone(),
+                "เหลือ 99999".to_owned()
+            ]
+        );
+    }
+
+    /// FR-SRCH-07: a product's details show its card and every other photo, as many as a carousel
+    /// holds, with the longest values it takes.
+    #[test]
+    fn a_products_details_fit_with_every_photo() {
+        let t = templates(PoliteParticle::Kha);
+        let (name, unit, shop) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(50));
+        let description = "ข".repeat(500);
+        let photos: Vec<Url> = (0..20)
+            .map(|i| {
+                Url::parse(&format!(
+                    "https://iconmarket.example.com/img/p/6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a{i:02}"
+                ))
+                .unwrap()
+            })
+            .collect();
+        let max = i64::MAX;
+        let details = |photos| ProductDetails {
+            name: &name,
+            price: Money::from_baht(100_000),
+            unit: &unit,
+            description: Some(&description),
+            shop: &shop,
+            availability: Availability::Orderable,
+            photos,
+            buttons: vec![
+                postback(&labels::ADD_TO_CART, format!("cart.add?product={max}")),
+                postback(&labels::VIEW_SHOP, format!("browse.front?shop={max}")),
+                postback(&labels::REPORT, format!("report?p={max}")),
+            ],
+        };
+        let next = vec![postback(&labels::BUY, "buy".to_owned())];
+
+        let shown = t.product_details(&details(&photos), next.clone());
+        limits::check(slice::from_ref(&shown)).unwrap();
+        let Body::Flex {
+            contents: FlexContainer::Carousel(carousel),
+            ..
+        } = &shown.body
+        else {
+            panic!("not a carousel");
+        };
+        assert_eq!(carousel.contents.len(), limits::BUBBLES_PER_CAROUSEL);
+        assert_eq!(
+            card_texts(&carousel.contents[0])[..4],
+            [
+                name.clone(),
+                format!("฿100,000 / {unit}"),
+                "สั่งได้".to_owned(),
+                description.clone()
+            ]
+        );
+
+        // One photo, one card
+        let one = t.product_details(&details(&photos[..1]), next);
+        let Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } = &one.body
+        else {
+            panic!("not one card");
+        };
+        assert_eq!(card.footer.as_ref().unwrap().contents.len(), 3);
+    }
+
+    /// FR-SRCH-06, FR-LINE-11: a full page of "ร้านค้าทั้งหมด", with the longest values a shop
+    /// takes, fits in one carousel with "ดูเพิ่มเติม".
+    #[test]
+    fn a_full_page_of_shops_fits() {
+        let t = templates(PoliteParticle::Kha);
+        let (name, description, hours) = ("ข".repeat(50), "ข".repeat(300), "ข".repeat(50));
+        let photo =
+            Url::parse("https://iconmarket.example.com/img/p/6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b")
+                .unwrap();
+        let max = i64::MAX;
+        let fronts: Vec<_> = (0..SHOPS_PER_PAGE)
+            .map(|_| ShopFront {
+                name: &name,
+                description: &description,
+                photo: Some(&photo),
+                is_open: false,
+                opening_hours: Some(&hours),
+                minimum_order: Some(Money::from_baht(100_000)),
+                delivery_fee: Money::from_baht(1_000),
+                products: postback(&labels::VIEW_PRODUCTS, format!("browse.shop?shop={max}")),
+                ..shop_front()
+            })
+            .collect();
+        let more = format!("browse.shops?page={max}");
+        let next = vec![postback(&labels::BUY, "buy".to_owned())];
+        let page = t.shop_list(&fronts, Some(more), next);
+        limits::check(slice::from_ref(&page)).unwrap();
+        let Body::Flex {
+            alt_text,
+            contents: FlexContainer::Carousel(carousel),
+        } = &page.body
+        else {
+            panic!("not a carousel");
+        };
+        assert_eq!(alt_text, "ร้านค้าทั้งหมด");
+        assert_eq!(carousel.contents.len(), SHOPS_PER_PAGE + 1);
+    }
+
+    /// FR-SRCH-07: a card says whether the product can be ordered, in the colour of an open
+    /// shop if it can.
+    #[test]
+    fn availability_is_coloured_by_whether_it_can_be_ordered() {
+        for (of, color) in [
+            (Availability::Left(5), OPEN_COLOR),
+            (Availability::Orderable, OPEN_COLOR),
+            (Availability::SoldOut, CLOSED_COLOR),
+            (Availability::ShopClosed, CLOSED_COLOR),
+        ] {
+            let Component::Text(text) = availability_line(of) else {
+                panic!("not text");
+            };
+            assert_eq!(text.color.as_deref(), Some(color), "{of:?}");
+        }
     }
 
     /// FR-PROD-05 – FR-PROD-07: a product's card says whether buyers see it and whether it is

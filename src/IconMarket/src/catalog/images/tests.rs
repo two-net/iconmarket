@@ -283,6 +283,27 @@ fn links_are_built_under_the_base_url() {
         slip_image_url(&Url::parse("https://example.com/market/").unwrap(), id).as_str(),
         "https://example.com/market/img/s/01234567-89ab-cdef-0123-456789abcdef"
     );
+    assert_eq!(
+        placeholder_url(&Url::parse("https://example.com/market/").unwrap()).as_str(),
+        "https://example.com/market/img/placeholder.png"
+    );
+}
+
+/// FR-SRCH-07: a product card without a photo shows the placeholder, a PNG as large as the cards
+/// show photos, 20:13, served without the database.
+#[tokio::test]
+async fn the_placeholder_is_served_as_cards_show_photos() {
+    let db = orm(testing::unreachable());
+    let response = get(&db, "/img/placeholder.png").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(headers[header::CACHE_CONTROL], PLACEHOLDER_CACHE);
+    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    let png = body(response).await;
+    let placeholder = ::image::load_from_memory_with_format(&png, ImageFormat::Png).unwrap();
+    let (width, height) = (placeholder.width(), placeholder.height());
+    assert_eq!(width * 13, height * 20, "{width}×{height}");
 }
 
 #[test]

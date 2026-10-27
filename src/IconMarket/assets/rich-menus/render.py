@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Draws the rich-menu images (SRS §3.1.2, FR-UI-11) from menus.json, next to this script.
+"""Draws the rich-menu images (SRS §3.1.2, FR-UI-11) from menus.json, next to this script, and
+the photo placeholder of product cards without a photo (FR-SRCH-07), ../placeholder.png.
 
     python3 assets/rich-menus/render.py
 
@@ -66,6 +67,9 @@ CARD = (255, 255, 255)
 CARD_EDGE = (214, 220, 226)
 IDLE_TAB = (236, 239, 242)
 IDLE_TEXT = (84, 96, 108)
+# The product photo placeholder: its size, and the colour of its icon and text
+PLACEHOLDER = {"width": 1040, "height": 676}
+PLACEHOLDER_INK = (150, 160, 170)
 
 TAB_ICONS = {"buyer": "shopping_basket", "seller": "storefront", "admin": "shield_person"}
 ICONS = {
@@ -211,6 +215,23 @@ def draw_menu(fonts, size, menu):
     return image.resize((size["width"], size["height"]), Image.Resampling.LANCZOS)
 
 
+def draw_placeholder(fonts):
+    """A product card's photo when it has none: an image icon over ไม่มีรูปสินค้า, on grey, as
+    large as the cards show photos (20:13)."""
+    width, height = PLACEHOLDER["width"] * SCALE, PLACEHOLDER["height"] * SCALE
+    image = Image.new("RGB", (width, height), IDLE_TAB)
+    draw = ImageDraw.Draw(image)
+    font = fonts.text(64 * SCALE)
+    icon_size = 240 * SCALE
+    gap = 24 * SCALE
+    line_height = font.size * 1.32
+    top = (height - icon_size - gap - line_height) / 2
+    draw_icon(image, fonts, "image", (width / 2, top + icon_size / 2), icon_size, PLACEHOLDER_INK)
+    middle = top + icon_size + gap + line_height / 2
+    draw.text((width / 2, middle), "ไม่มีรูปสินค้า", font=font, fill=PLACEHOLDER_INK, anchor="mm")
+    return image.resize((PLACEHOLDER["width"], PLACEHOLDER["height"]), Image.Resampling.LANCZOS)
+
+
 def main():
     if not features.check("raqm"):
         sys.exit("Pillow has no raqm, so it can't shape Thai text")
@@ -222,6 +243,9 @@ def main():
         path = HERE / menu["image"]
         image.save(path, optimize=True)
         print(f"{path.name}: {path.stat().st_size} bytes")
+    path = HERE.parent / "placeholder.png"
+    draw_placeholder(fonts).save(path, optimize=True)
+    print(f"{path.name}: {path.stat().st_size} bytes")
 
 
 if __name__ == "__main__":

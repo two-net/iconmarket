@@ -367,6 +367,7 @@ async fn every_attribute_can_be_stored() {
             status: product::Status::Held,
             created_at: at,
             updated_at: at,
+            restocked_at: Some(at),
             deleted_at: Some(at),
         },
     )

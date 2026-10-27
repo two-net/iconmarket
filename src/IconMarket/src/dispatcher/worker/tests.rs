@@ -26,7 +26,7 @@ use crate::dispatcher::Turn;
 use crate::dispatcher::menu::{Item, Tab};
 use crate::line::testing::{Answer, Fake, PUSH, REPLY};
 use crate::line::{Action, QuickReply};
-use crate::notifications::templates::labels;
+use crate::notifications::templates::{Browsed, labels};
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{
@@ -585,7 +585,7 @@ async fn input_is_routed_by_its_priority() {
             sent("a3", ALICE, sticker),
             sent("a4", ALICE, location),
             tapped("a5", ALICE, "Browse"),
-            tapped("a6", ALICE, "search"),
+            tapped("a6", ALICE, "cart"),
             said("a7", ALICE, "ขอไข่ 2 แผง"),
             said("a8", ALICE, "ยกเลิก"),
             event(
@@ -965,9 +965,11 @@ async fn categories_set_by_an_admin_are_what_buyers_browse() {
         let data = format!("browse?category={}", category.id);
         postback(Label::fit(category.name.as_str()), data)
     };
+    let new_today = postback(labels::NEW_TODAY.clone(), "browse.new".to_owned());
+    let all_shops = postback(labels::ALL_SHOPS.clone(), "browse.shops".to_owned());
     assert_eq!(
         reply("b1"),
-        json!([t.choose_category(vec![choice(&sweets), choice(&food)])])
+        json!([t.choose_category(vec![new_today, all_shops, choice(&sweets), choice(&food)])])
     );
     assert_eq!(replies.len(), 5);
 
@@ -992,6 +994,78 @@ async fn categories_set_by_an_admin_are_what_buyers_browse() {
             ),
         ]
     );
+}
+
+/// Acceptance (#28), FR-SRCH-03, FR-SRCH-04: a buyer taps "ค้นหา", types part of a name and gets
+/// what contains it, ten at a time; "ดูเพิ่มเติม" pages through the rest, and the search ends
+/// once answered, so what they type next is routed as usual.
+#[tokio::test]
+async fn a_buyer_searches_and_pages_through_what_is_found() {
+    let s = setup().await;
+    let t = &s.templates;
+    onboarded(&s.db, ALICE).await;
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = testing::new_shop(seller.id).insert(&s.db).await.unwrap();
+    let sweets = testing::new_category("ขนม/ของหวาน")
+        .insert(&s.db)
+        .await
+        .unwrap();
+    for number in 1..=11 {
+        let name = format!("ขนมครก {number}");
+        testing::new_product(shop.id, sweets.id, &name, Some(5))
+            .insert(&s.db)
+            .await
+            .unwrap();
+    }
+    let hidden = product::ActiveModel {
+        status: Set(product::Status::Hidden),
+        ..testing::new_product(shop.id, sweets.id, "ขนมครกซ่อน", Some(5))
+    };
+    hidden.insert(&s.db).await.unwrap();
+
+    store(
+        &s.db,
+        [tapped("a1", ALICE, "search"), said("a2", ALICE, "ครก")],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 2).await;
+    replied(&s, 2).await;
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let found = replies[&token("a2")][0].clone();
+    let cards = found["contents"]["contents"].as_array().unwrap().clone();
+    let more = cards.last().unwrap()["body"]["contents"][0]["action"]["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    store(
+        &s.db,
+        [tapped("a3", ALICE, &more), said("a4", ALICE, "ครก")],
+    )
+    .await;
+    running.wakeup.notify();
+    settled(&s.db, 4).await;
+    replied(&s, 4).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    assert_eq!(
+        replies[&token("a1")],
+        json!([templates::with_cancel(t.ask_keyword())])
+    );
+    assert_eq!(found["altText"], "ผลการค้นหา \"ครก\"");
+    assert_eq!(cards.len(), 11, "ten cards and ดูเพิ่มเติม");
+    assert!(more.starts_with("browse.search?pa="), "{more}");
+    let rest = replies[&token("a3")][0]["contents"]["contents"].clone();
+    let rest: Vec<_> = rest
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|card| card["body"]["contents"][0]["text"].clone())
+        .collect();
+    assert_eq!(rest, [json!("ขนมครก 1")]);
+    // The search ended once answered
+    assert_eq!(replies[&token("a4")], json!(s.fallback()));
 }
 
 /// AC (FR-HELP-01, FR-HELP-02): "ช่วยเหลือ" offers each user their roles' topics, and a buyer's
@@ -1468,9 +1542,9 @@ async fn a_shop_is_run_end_to_end() {
         !front.contains("081-234-5678") && !front.contains("ซอย 3"),
         "{front}"
     );
-    // #28 lists the shop's products
-    let menu = templates::main_menu([Tab::Buyer, Tab::Seller], true);
-    assert_eq!(reply("a6"), json!([t.fallback(), menu]));
+    // Its products, of which it has none yet (FR-SRCH-08)
+    let none = t.nothing_found(Browsed::Shop("ร้านป้าแดง"), Vec::new());
+    assert_eq!(reply("a6")[0]["text"], json!(none)["text"]);
     assert_eq!(replies.len(), 6);
 
     let shop = shop::Entity::find_by_id(shop.id)

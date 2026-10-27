@@ -4,7 +4,8 @@
 //! A user's photo is downloaded from LINE while its event is processed (FR-LINE-09), checked
 //! and re-encoded ([`process`]), then [`store`]d under a random ID. A product or shop image is
 //! public by that ID at `/img/p/{id}`. A slip image is reachable only through its payment slip's
-//! [`SlipLink`] at `/img/s/{token}`, until the link expires (AC-14).
+//! [`SlipLink`] at `/img/s/{token}`, until the link expires (AC-14). A product without a photo
+//! shows the [placeholder](placeholder_url) instead (FR-SRCH-07).
 //!
 //! A photo sent in a guided flow before what it is for exists, such as the photo of a shop
 //! applied for or those of a product being added, is a [draft](Owner::Draft) of the user who
@@ -63,6 +64,12 @@ const TARGET: Duration = Duration::from_secs(5);
 const PUBLIC: &str = "public, max-age=31536000, immutable";
 /// A slip shows the payer's name and account, so no cache keeps it past its link's expiry.
 const PRIVATE: &str = "private, no-store";
+/// The placeholder may change with a release, so caches keep it a day.
+const PLACEHOLDER_CACHE: &str = "public, max-age=86400";
+
+/// What a product card shows without a photo (FR-SRCH-07), drawn by
+/// `assets/rich-menus/render.py` at the size cards show photos, 20:13
+const PLACEHOLDER: &[u8] = include_bytes!("../../assets/placeholder.png");
 
 /// How long after their flow was last live a user's drafts are kept. Whether a flow is live is
 /// judged when an event starts, and the sweep may run while one is handled, so a draft is kept a
@@ -392,31 +399,49 @@ pub async fn media(db: &impl ConnectionTrait, ids: &[Uuid]) -> Result<Vec<ai::Me
         .collect())
 }
 
-/// The IDs of the images of products `ids`, each product's in their order: what "สินค้าของฉัน"
-/// shows of their photos. A product without any has no entry.
+/// The IDs of the images of products `ids`, each product's in their order: what product lists
+/// show of their photos. A product without any has no entry.
 pub async fn of_products(
     db: &impl ConnectionTrait,
     ids: &[i64],
 ) -> Result<HashMap<i64, Vec<Uuid>>, DbErr> {
-    let mut photos: HashMap<i64, Vec<Uuid>> = HashMap::new();
+    of_owners(db, OwnerType::Product, ids).await
+}
+
+/// The IDs of the images of shops `ids`, likewise: what "ร้านค้าทั้งหมด" shows of their photos.
+pub async fn of_shops(
+    db: &impl ConnectionTrait,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<Uuid>>, DbErr> {
+    of_owners(db, OwnerType::Shop, ids).await
+}
+
+/// The IDs of the images of the owners of `owner_type` with `ids`, each one's in their order,
+/// in one query. An owner without any has no entry.
+async fn of_owners(
+    db: &impl ConnectionTrait,
+    owner_type: OwnerType,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<Uuid>>, DbErr> {
+    let mut images: HashMap<i64, Vec<Uuid>> = HashMap::new();
     if ids.is_empty() {
-        return Ok(photos);
+        return Ok(images);
     }
     let rows: Vec<(i64, Uuid)> = image::Entity::find()
         .select_only()
         .column(image::Column::OwnerId)
         .column(image::Column::Id)
-        .filter(image::Column::OwnerType.eq(OwnerType::Product))
+        .filter(image::Column::OwnerType.eq(owner_type))
         .filter(image::Column::OwnerId.is_in(ids.iter().copied()))
         .order_by_asc(image::Column::Position)
         .order_by_asc(image::Column::CreatedAt)
         .into_tuple()
         .all(db)
         .await?;
-    for (product_id, id) in rows {
-        photos.entry(product_id).or_default().push(id);
+    for (owner_id, id) in rows {
+        images.entry(owner_id).or_default().push(id);
     }
-    Ok(photos)
+    Ok(images)
 }
 
 /// Deletes, at `now`, the drafts of users whose guided flow ended more than [`DRAFT_GRACE`]
@@ -468,6 +493,17 @@ pub fn slip_image_url(base: &Url, token: Uuid) -> Url {
     link(base, "s", token)
 }
 
+/// `/img/placeholder.png` under `app.baseUrl`: what a product card shows without a photo
+/// (FR-SRCH-07).
+pub fn placeholder_url(base: &Url) -> Url {
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .expect("an https base URL")
+        .pop_if_empty()
+        .extend(["img", "placeholder.png"]);
+    url
+}
+
 fn link(base: &Url, kind: &str, id: Uuid) -> Url {
     let mut url = base.clone();
     url.path_segments_mut()
@@ -516,6 +552,19 @@ pub async fn serve_slip(State(state): State<AppState>, Path(token): Path<String>
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => unavailable(&e),
     }
+}
+
+/// `GET /img/placeholder.png`: what a product card shows without a photo (FR-SRCH-07).
+pub async fn serve_placeholder() -> Response {
+    (
+        [(CONTENT_TYPE, "image/png")],
+        [
+            (CACHE_CONTROL, PLACEHOLDER_CACHE),
+            (X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        PLACEHOLDER,
+    )
+        .into_response()
 }
 
 fn serve(image: image::Model, cache: &'static str) -> Response {
