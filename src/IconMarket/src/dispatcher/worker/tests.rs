@@ -34,7 +34,7 @@ use crate::persistence::entity::{
     audit_log, category, image, join_attempt, product, push_log, report, session, shop, user,
 };
 use crate::persistence::{orm, testing};
-use crate::thai::Label;
+use crate::thai::{Label, Money};
 use crate::users::access::{Actor, Denied};
 use crate::users::help::Topic;
 use crate::users::roles::Roles;
@@ -1562,6 +1562,170 @@ async fn a_shop_is_run_end_to_end() {
         .unwrap();
     assert!(!shop.is_open);
     assert_eq!(shop.opening_hours.as_deref(), Some("ทุกวัน 06:00–10:00"));
+}
+
+/// Appendix A.3, AC-15, NFR-USE-02, end to end, with the AI on: a seller's photo, one short
+/// message and one tap list ขนมครก at ฿20 a กล่อง, 30 of them, in ขนม/ของหวาน, and nothing is
+/// listed before the tap. Then a few words restock another product once confirmed (FR-PROD-10).
+#[tokio::test]
+async fn a_product_is_listed_from_a_photo_and_a_message_end_to_end() {
+    use crate::ai::Feature;
+    use crate::ai::testing::{self as scripted, Turn as Scripted};
+
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut seller = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    seller.menu_roles = Set(Some(MenuRoles::Seller));
+    seller.update(&s.db).await.unwrap();
+    let shop = testing::new_shop(alice).insert(&s.db).await.unwrap();
+    let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let sweets = testing::new_category("ขนม/ของหวาน")
+        .insert(&s.db)
+        .await
+        .unwrap();
+    let sold_out = testing::new_product(shop.id, eggs.id, "ไข่ไก่", Some(0))
+        .insert(&s.db)
+        .await
+        .unwrap();
+    let jpeg = include_bytes!("../../ai/provider/fixtures/media/slip.jpg");
+    s.line.script(
+        "/v2/bot/message/p1/content",
+        [Answer::bytes("image/jpeg", jpeg)],
+    );
+    let draft = json!({
+        "name": "ขนมครก",
+        "price": "20",
+        "unit": "กล่อง",
+        "category": "ขนม/ของหวาน",
+        "stock": "30",
+        "description": "ทำสดวันนี้",
+    });
+    let allow = json!({ "verdict": "allow", "reason": "" });
+    let restock = json!({ "intent": "update", "product": sold_out.id.to_string(), "stock": "12" });
+    let mut context = s.context(&s.pool, 20);
+    context.ai = scripted::scripted(
+        &s.pool,
+        [
+            Scripted::Json(draft),
+            Scripted::Json(allow),
+            Scripted::Json(restock),
+        ],
+        true,
+        &[Feature::Assistant],
+    )
+    .0;
+    let photo = json!({ "id": "p1", "type": "image", "contentProvider": { "type": "line" } });
+
+    store(
+        &s.db,
+        [
+            sent("a1", ALICE, photo),
+            said("a2", ALICE, "ขนมครก กล่องละ 20 วันนี้ทำ 30 กล่อง"),
+        ],
+    )
+    .await;
+    let running = s.run_with(context, 2);
+    settled(&s.db, 2).await;
+    replied(&s, 2).await;
+    let products = || async {
+        product::Entity::find()
+            .order_by_asc(product::Column::Id)
+            .all(&s.db)
+            .await
+            .unwrap()
+    };
+    // Drafted, and nothing a buyer could see
+    assert_eq!(products().await, std::slice::from_ref(&sold_out));
+
+    store(
+        &s.db,
+        [
+            // The one tap: the draft is the first answer since the photo
+            tapped("a3", ALICE, "add_product.submit?r=1"),
+            said("a4", ALICE, "ไข่ไก่ มีแล้ว 12 แผง"),
+        ],
+    )
+    .await;
+    running.wakeup.notify();
+    settled(&s.db, 4).await;
+    replied(&s, 4).await;
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    let offered = reply("a1")[0]["text"].as_str().unwrap().to_owned();
+    assert!(
+        offered.starts_with("ได้รับรูปแล้วค่ะ จะลงขายใช่ไหมคะ พิมพ์ชื่อ ราคา และจำนวนมาได้เลย"),
+        "{offered}"
+    );
+    let preview = serde_json::to_string(&reply("a2")).unwrap();
+    for shown in [
+        "ร่างสินค้าให้แล้วค่ะ ตรวจดูก่อนนะคะ",
+        "฿20 / กล่อง",
+        "30 กล่อง",
+        "ขนม/ของหวาน",
+        "ยืนยันลงขาย",
+        "add_product.submit?r=1",
+    ] {
+        assert!(preview.contains(shown), "{shown} in {preview}");
+    }
+    let next = vec![
+        Item::MyProducts
+            .postback()
+            .button(labels::MY_PRODUCTS.clone()),
+        Item::AddProduct
+            .postback()
+            .button(labels::ADD_ANOTHER.clone()),
+    ];
+    assert_eq!(reply("a3"), json!([t.product_listed("ขนมครก", next)]));
+    let listed = products().await;
+    assert_eq!(listed.len(), 2);
+    assert_eq!(
+        (
+            listed[1].name.as_str(),
+            listed[1].price,
+            listed[1].stock,
+            listed[1].category_id,
+            listed[1].status,
+        ),
+        (
+            "ขนมครก",
+            Money::from_baht(20),
+            Some(30),
+            sweets.id,
+            product::Status::Active,
+        )
+    );
+
+    // A quick update, asked to be confirmed, and confirmed
+    let asked = reply("a4");
+    let text = asked[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("จำนวน: 0 แผง (ลูกค้าจะเห็นว่าหมด) → 12 แผง"),
+        "{text}"
+    );
+    assert_eq!(products().await[0].stock, Some(0));
+    let confirm = asked[0]["quickReply"]["items"][0]["action"]["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    store(&s.db, [tapped("a5", ALICE, &confirm)]).await;
+    running.wakeup.notify();
+    settled(&s.db, 5).await;
+    replied(&s, 5).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let saved = replies[&token("a5")][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(saved.starts_with("เติมของแล้วค่ะ"), "{saved}");
+    assert_eq!(products().await[0].stock, Some(12));
 }
 
 /// FR-PROD-01, FR-UI-14, end to end: a seller's photo that no flow takes starts "เพิ่มสินค้า"

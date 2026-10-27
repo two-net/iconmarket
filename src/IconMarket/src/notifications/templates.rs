@@ -1034,8 +1034,11 @@ impl Templates {
                     quoted(&labels::ADD_PRODUCT)
                 ));
                 if facts.listing {
+                    lines.push(format!(
+                        "- หรือส่งรูปสินค้าพร้อมข้อความสั้นๆ เช่น \"{LISTING_EXAMPLE}\" ผู้ช่วยจะร่างให้ตรวจก่อนลงขาย"
+                    ));
                     lines.push(
-                        "- หรือส่งรูปสินค้าพร้อมข้อความสั้นๆ เช่น \"ขนมครก กล่องละ 20 มี 30 กล่อง\" ผู้ช่วยจะร่างให้ตรวจก่อนลงขาย"
+                        "- แก้ราคาหรือจำนวนได้ด้วยข้อความสั้นๆ เช่น \"ขนมครก เหลือ 10\" หรือ \"ไข่ไก่ ราคา 115\" แล้วกดยืนยัน"
                             .to_owned(),
                     );
                 }
@@ -1919,6 +1922,77 @@ impl Templates {
         ))
     }
 
+    /// Asks for a new product in one message while the AI drafts listings (FR-PROD-02), at the
+    /// photos step: `count` of at most `max` photos are given. "ข้าม" or "ถัดไป" goes step by
+    /// step instead.
+    pub fn ask_listing_message(&self, count: usize, max: usize) -> Message {
+        let kha = self.kha();
+        let ask = format!(
+            "พิมพ์ชื่อ ราคา และจำนวนมาในข้อความเดียวได้เลย{kha} เช่น \"{LISTING_EXAMPLE}\" ผู้ช่วยจะร่างให้ตรวจก่อนลงขาย"
+        );
+        let text = if count == 0 {
+            format!(
+                "มาลงสินค้ากัน{kha} {ask} ส่งรูปสินค้ามาด้วยก็ได้ ไม่เกิน {max} รูป ถ้าจะตอบทีละข้อ กด \"{}\" ได้เลย{kha}",
+                labels::SKIP.as_str()
+            )
+        } else {
+            let more = if count < max {
+                format!(" ส่งรูปเพิ่มได้อีก {} รูป", max - count)
+            } else {
+                String::new()
+            };
+            format!(
+                "ตอนนี้มีรูปสินค้า {count} รูป{kha} {ask}{more} ถ้าจะตอบทีละข้อ กด \"{}\" ได้เลย{kha}",
+                labels::NEXT.as_str()
+            )
+        };
+        Message::text(text)
+    }
+
+    /// A seller's photo that nothing asked for (FR-UI-14), while the AI drafts listings: an
+    /// offer to list it from one message (Appendix A.3), which `left` more photos can join.
+    pub fn listing_draft_offered(&self, left: usize) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let more = if left > 0 {
+            format!(" ส่งรูปเพิ่มได้อีก {left} รูป")
+        } else {
+            String::new()
+        };
+        Message::text(format!(
+            "ได้รับรูปแล้ว{kha} จะลงขายใช่ไหม{kha_question} พิมพ์ชื่อ ราคา และจำนวนมาได้เลย เช่น \"{LISTING_EXAMPLE}\"{more} ถ้าจะตอบทีละข้อ กด \"{}\" ถ้าไม่ได้จะขาย กด \"{}\" ได้เลย{kha}",
+            labels::NEXT.as_str(),
+            labels::CANCEL.as_str()
+        ))
+    }
+
+    /// The AI drafted the product but some parts it must have (FR-PROD-02); the question for the
+    /// first follows.
+    pub fn listing_drafted_partly(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!("ร่างสินค้าให้แล้ว{kha} ขอข้อมูลเพิ่มอีกนิดนะ{kha_question}"))
+    }
+
+    /// The AI found nothing of a product in the seller's message; the question for its name
+    /// follows, step by step.
+    pub fn listing_not_understood(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขอโทษ{kha} ยังอ่านข้อมูลสินค้าจากข้อความนี้ไม่ได้ มาตอบทีละข้อกันนะ{kha_question}"
+        ))
+    }
+
+    /// The AI couldn't draft the product, `resting` at a daily limit (FR-AI-09) or failing
+    /// (FR-AI-10); the question for its name follows, step by step.
+    pub fn listing_not_drafted(&self, resting: bool) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let why = if resting {
+            format!("ตอนนี้ผู้ช่วยขอพักก่อนนะ{kha_question}")
+        } else {
+            format!("ขอโทษ{kha} ตอนนี้ผู้ช่วยร่างสินค้าให้ไม่ได้")
+        };
+        Message::text(format!("{why} มาตอบทีละข้อกันแทน{kha}"))
+    }
+
     /// A photo was added to the product being added, which now has `count` of at most `max`.
     /// The step's question follows.
     pub fn product_photo_added(&self, count: usize, max: usize) -> Message {
@@ -2049,8 +2123,14 @@ impl Templates {
     /// a part.
     pub fn product_preview(&self, preview: &ProductPreview<'_>) -> Vec<Message> {
         let (kha, kha_question) = (self.kha(), self.kha_question());
+        // Appendix A.3
+        let check = if preview.drafted {
+            format!("ร่างสินค้าให้แล้ว{kha} ตรวจดูก่อนนะ{kha_question}")
+        } else {
+            format!("ตรวจสินค้าอีกครั้งนะ{kha_question}")
+        };
         let text = format!(
-            "ตรวจสินค้าอีกครั้งนะ{kha_question} ถ้าถูกต้อง กด \"{}\" แล้วลูกค้าจะเห็นสินค้าทันที ถ้าต้องการแก้ กด \"{}\" ได้เลย{kha}",
+            "{check} ถ้าถูกต้อง กด \"{}\" แล้วลูกค้าจะเห็นสินค้าทันที ถ้าต้องการแก้ กด \"{}\" ได้เลย{kha}",
             labels::CONFIRM_LISTING.as_str(),
             labels::EDIT.as_str()
         );
@@ -2209,6 +2289,66 @@ impl Templates {
             confirm.label().as_str()
         );
         with_cancel(Message::text(text).with_quick_reply(QuickReply::new([confirm])))
+    }
+
+    /// Asks to confirm a quick update (FR-PROD-10, FR-UI-13): `update`'s price and stock, from what
+    /// they are to what the seller asked. `confirm` saves them; cancelling leaves them.
+    pub fn confirm_product_update(&self, update: &ProductUpdate<'_>, confirm: Action) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let unit = update.unit;
+        let mut lines = vec![format!("เปลี่ยน \"{}\" ตามนี้ใช่ไหม{kha_question}", update.name)];
+        if let Some((from, to)) = update.price {
+            lines.push(format!(
+                "ราคา: {} → {}",
+                price_per_unit(from, unit),
+                price_per_unit(to, unit)
+            ));
+        }
+        if let Some((from, to)) = update.stock {
+            lines.push(format!(
+                "จำนวน: {} → {}",
+                stock_line(from, unit),
+                stock_line(to, unit)
+            ));
+        }
+        lines.push(format!(
+            "ถ้าถูกต้อง กด \"{}\" ได้เลย{kha}",
+            confirm.label().as_str()
+        ));
+        let text = Message::text(lines.join("\n")).with_quick_reply(QuickReply::new([confirm]));
+        with_cancel(text)
+    }
+
+    /// The product a quick update was confirmed for changed since it was asked; it is asked
+    /// again as it is now, which follows.
+    pub fn product_update_changed(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ข้อมูลสินค้านี้เปลี่ยนไปแล้ว{kha} ตรวจอีกครั้งนะ{kha_question}"
+        ))
+    }
+
+    /// A quick update to product `name`, if still known, wasn't confirmed in time, or was
+    /// cancelled, so it is as it was. Where to carry on follows.
+    pub fn product_not_updated(&self, name: Option<&str>) -> Message {
+        let kha = self.kha();
+        let what = name.map_or_else(|| "สินค้านี้".to_owned(), |name| format!(" \"{name}\""));
+        Message::text(format!(
+            "ยังไม่ได้เปลี่ยน{what}{kha} ถ้าจะเปลี่ยน พิมพ์บอกมาใหม่ หรือแก้ที่ \"{}\" ได้เลย{kha}",
+            labels::MY_PRODUCTS.as_str()
+        ))
+    }
+
+    /// The product a quick update names isn't one of the seller's (FR-PROD-10): `my_products`
+    /// lists those, then the menu.
+    pub fn quick_update_not_found(&self, my_products: Action) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "ไม่พบสินค้านี้ในร้าน{kha} ดูและแก้สินค้าได้ที่ \"{}\"{kha}",
+            my_products.label().as_str()
+        );
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(text).with_quick_reply(QuickReply::new([my_products, menu]))
     }
 
     /// Product `name` was deleted (DR-04), or kept, the deletion not having been confirmed in
@@ -2553,6 +2693,8 @@ pub fn stock_line(stock: Option<i32>, unit: &str) -> String {
 
 /// What a closed shop and its products show (FR-SHOP-05)
 const CLOSED: &str = "ร้านปิด";
+/// A product in one message, for the AI to draft (FR-PROD-02, Appendix A.3)
+const LISTING_EXAMPLE: &str = "ขนมครก กล่องละ 20 มี 30 กล่อง";
 /// The colours of whether a shop is open, on its card
 const OPEN_COLOR: &str = "#06C755";
 const CLOSED_COLOR: &str = "#D93025";
@@ -2589,7 +2731,19 @@ pub struct ProductPreview<'a> {
     pub photo: Option<&'a Url>,
     /// How many photos it has
     pub photos: usize,
+    /// Whether the AI drafted it (FR-PROD-02), for the seller to check
+    pub drafted: bool,
     pub buttons: Vec<Action>,
+}
+
+/// A quick update to a product's price or stock, to confirm (FR-PROD-10): each from what it is
+/// to what the seller asked, `None` where it doesn't change.
+pub struct ProductUpdate<'a> {
+    pub name: &'a str,
+    pub unit: &'a str,
+    pub price: Option<(Money, Money)>,
+    /// As `products.stock` keeps it: `None` is unlimited or made to order
+    pub stock: Option<(Option<i32>, Option<i32>)>,
 }
 
 /// A product as its seller sees it in "สินค้าของฉัน" (FR-PROD-05).
@@ -4064,6 +4218,15 @@ mod tests {
             text(&t.ask_product_photos(3, 3, true)).to_owned(),
             text(&t.listing_offered(2)).to_owned(),
             text(&t.listing_offered(0)).to_owned(),
+            text(&t.ask_listing_message(0, 3)).to_owned(),
+            text(&t.ask_listing_message(1, 3)).to_owned(),
+            text(&t.ask_listing_message(3, 3)).to_owned(),
+            text(&t.listing_draft_offered(2)).to_owned(),
+            text(&t.listing_draft_offered(0)).to_owned(),
+            text(&t.listing_drafted_partly()).to_owned(),
+            text(&t.listing_not_understood()).to_owned(),
+            text(&t.listing_not_drafted(true)).to_owned(),
+            text(&t.listing_not_drafted(false)).to_owned(),
             text(&t.product_photo_added(2, 3)).to_owned(),
             text(&t.product_photos_full(3)).to_owned(),
             text(&t.product_photos_lost(&labels::SKIP)).to_owned(),
@@ -4080,6 +4243,13 @@ mod tests {
             text(&t.ask_product_description(500, &labels::SKIP, None)).to_owned(),
             text(&t.ask_product_description(500, &labels::REMOVE, Some("ไข่สด"))).to_owned(),
             text(&t.product_preview(&product_preview())[0]).to_owned(),
+            text(
+                &t.product_preview(&ProductPreview {
+                    drafted: true,
+                    ..product_preview()
+                })[0],
+            )
+            .to_owned(),
             text(&t.product_listed("ไข่ไก่เบอร์ 2", Vec::new())).to_owned(),
             text(&t.product_flow_gone(add_product())).to_owned(),
             text(&t.my_products(&[], 0, |_| unreachable!(), add_product())).to_owned(),
@@ -4091,6 +4261,11 @@ mod tests {
             text(&t.product_saved()).to_owned(),
             text(&t.product_unchanged()).to_owned(),
             text(&t.confirm_delete_product("ไข่ไก่เบอร์ 2", confirm_delete())).to_owned(),
+            text(&t.confirm_product_update(&product_update(), confirm_update())).to_owned(),
+            text(&t.product_update_changed()).to_owned(),
+            text(&t.product_not_updated(Some("ขนมครก"))).to_owned(),
+            text(&t.product_not_updated(None)).to_owned(),
+            text(&t.quick_update_not_found(my_products())).to_owned(),
             text(&t.product_deleted("ไข่ไก่เบอร์ 2", true)).to_owned(),
             text(&t.product_deleted("ไข่ไก่เบอร์ 2", false)).to_owned(),
             text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 0, false)).to_owned(),
@@ -4146,6 +4321,24 @@ mod tests {
         )
     }
 
+    fn confirm_update() -> Action {
+        Action::postback(labels::CONFIRM.clone(), "confirm?k=product.update&pa=1")
+    }
+
+    fn my_products() -> Action {
+        Action::postback(labels::MY_PRODUCTS.clone(), "my_products")
+    }
+
+    /// FR-PROD-10's *ขนมครก เหลือ 10*, and a new price with it
+    fn product_update() -> ProductUpdate<'static> {
+        ProductUpdate {
+            name: "ขนมครก",
+            unit: "กล่อง",
+            price: Some((Money::from_baht(20), Money::from_baht(25))),
+            stock: Some((Some(30), Some(10))),
+        }
+    }
+
     fn deactivate() -> Action {
         Action::postback(labels::DEACTIVATE.clone(), "categories.deactivate?c=1")
     }
@@ -4193,6 +4386,7 @@ mod tests {
             description: None,
             photo: None,
             photos: 0,
+            drafted: false,
             buttons: Vec::new(),
         }
     }
@@ -4446,6 +4640,7 @@ mod tests {
             description: Some(&description),
             photo: Some(&photo),
             photos: 3,
+            drafted: true,
             buttons: vec![button(&labels::CONFIRM_LISTING), button(&labels::EDIT)],
         };
         let messages = t.product_preview(&preview);
@@ -4480,6 +4675,38 @@ mod tests {
             price_per_unit(Money::from_satang(1_250), "ถุง"),
             "฿12.50 / ถุง"
         );
+    }
+
+    /// FR-PROD-10, FR-AI-04: a quick update says what it changes, from what it is, as the
+    /// database has it, to what the seller asked; only what changes.
+    #[test]
+    fn a_quick_update_says_from_what_to_what() {
+        let t = templates(PoliteParticle::Kha);
+        let both = t.confirm_product_update(&product_update(), confirm_update());
+        assert_eq!(
+            text(&both),
+            "เปลี่ยน \"ขนมครก\" ตามนี้ใช่ไหมคะ\nราคา: ฿20 / กล่อง → ฿25 / กล่อง\nจำนวน: 30 กล่อง → 10 กล่อง\nถ้าถูกต้อง กด \"ยืนยัน\" ได้เลยค่ะ"
+        );
+        let sold_out = ProductUpdate {
+            price: None,
+            stock: Some((None, Some(0))),
+            ..product_update()
+        };
+        let sold_out = t.confirm_product_update(&sold_out, confirm_update());
+        assert!(!text(&sold_out).contains("ราคา"), "{}", text(&sold_out));
+        assert!(
+            text(&sold_out).contains("จำนวน: ไม่จำกัด / ทำตามสั่ง → 0 กล่อง (ลูกค้าจะเห็นว่าหมด)"),
+            "{}",
+            text(&sold_out)
+        );
+        let (name, unit) = ("ข".repeat(80), "ข".repeat(20));
+        let longest = ProductUpdate {
+            name: &name,
+            unit: &unit,
+            price: Some((Money::from_baht(100_000), Money::from_satang(1))),
+            stock: Some((Some(99_999), None)),
+        };
+        limits::check(&[t.confirm_product_update(&longest, confirm_update())]).unwrap();
     }
 
     #[test]

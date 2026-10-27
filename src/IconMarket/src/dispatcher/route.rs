@@ -6,7 +6,7 @@
 //! 2. onboarding, until it is complete; only `#myid` and `ช่วยเหลือ` work besides;
 //! 3. the user's guided flow, which takes the input as an answer (`ยกเลิก` always cancels);
 //! 4. the global keywords;
-//! 5. the AI assistant, if enabled;
+//! 5. the AI: for a seller, the listing assistant, if enabled; then the assistant, if enabled;
 //! 6. a short help text and the main menu.
 //!
 //! A photo no flow step takes goes on by FR-UI-14, and what the dispatcher can't take gets a
@@ -36,7 +36,7 @@ use crate::ai::Feature;
 use crate::catalog::browse;
 use crate::catalog::browse::search::{self, SearchFlow};
 use crate::catalog::products::manage::{self, EditFlow};
-use crate::catalog::products::{self, ProductFlow};
+use crate::catalog::products::{self, ProductFlow, listing};
 use crate::catalog::shops::settings::{self, SettingsFlow};
 use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
@@ -276,6 +276,9 @@ fn group_event(context: &Context, kind: &Kind) {
 struct State {
     onboarded: bool,
     in_flow: bool,
+    /// Whether the user's text goes to the listing assistant (FR-PROD-02, FR-PROD-10): a
+    /// seller's, while it is on
+    listing: bool,
     assistant: bool,
     voice: bool,
 }
@@ -291,6 +294,8 @@ enum Step {
     /// To the user's guided flow, which may not take this kind of input
     Flow,
     Keyword(Keyword),
+    /// To the listing assistant, which may leave it to the assistant
+    Listing,
     Assistant,
     Fallback,
     Image,
@@ -370,6 +375,7 @@ fn decide(input: &Input, state: State) -> Step {
         // 4. – 6.
         Input::Text(_) => match keyword {
             Some(keyword) => Step::Keyword(keyword),
+            None if state.listing => Step::Listing,
             None if state.assistant => Step::Assistant,
             None => Step::Fallback,
         },
@@ -391,6 +397,7 @@ async fn route(
     let state = State {
         onboarded: users::pending(&turn.actor.user, &config.privacy, &config.village).is_none(),
         in_flow: turn.flow.is_some(),
+        listing: context.ai.is_enabled(Feature::Listing) && turn.actor.roles().seller,
         assistant: context.ai.is_enabled(Feature::Assistant),
         voice: context.ai.is_enabled(Feature::Voice),
     };
@@ -403,6 +410,21 @@ async fn route(
             &input,
             State {
                 in_flow: false,
+                ..state
+            },
+        );
+    }
+    if step == Step::Listing {
+        if let Input::Text(text) = &input
+            && let Some(messages) = listing::typed(turn, config, &context.ai, text).await?
+        {
+            return Ok(messages);
+        }
+        // Not about listing: on as for anyone else
+        step = decide(
+            &input,
+            State {
+                listing: false,
                 ..state
             },
         );
@@ -422,6 +444,7 @@ async fn route(
             return onboarding::answer(turn, config, said).await;
         }
         Step::Flow => unreachable!("decided again without the flow"),
+        Step::Listing => unreachable!("decided again without listing"),
         Step::Keyword(keyword) => return typed(turn, keyword).await,
         Step::Assistant => not_built("the AI assistant", 37, fallback(turn)),
         Step::Fallback => fallback(turn),
@@ -440,6 +463,7 @@ fn step_name(step: &Step) -> &'static str {
         Step::Onboarding => "onboarding",
         Step::Flow => "flow",
         Step::Keyword(_) => "keyword",
+        Step::Listing => "listing",
         Step::Assistant => "assistant",
         Step::Fallback => "fallback",
         Step::Image => "image",
@@ -499,7 +523,8 @@ async fn answer_flow(
         },
         ProductFlow::NAME => match stored.read::<ProductFlow>() {
             Some(session) => {
-                Some(products::answer(turn, config, &context.line, session, input).await)
+                let line = &context.line;
+                Some(products::answer(turn, config, &context.ai, line, session, input).await)
             }
             None => None,
         },
@@ -633,14 +658,15 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
 }
 
 /// A photo no flow step took (FR-UI-14), sent as `input`. Whoever takes it downloads it while
-/// the event is processed (FR-LINE-09). #30 has the AI draft a seller's listing from it, once
-/// `ai.features.listing` is on.
+/// the event is processed (FR-LINE-09). A seller's is offered for listing, from one message the
+/// AI drafts it from while `ai.features.listing` is on (FR-PROD-02).
 async fn image(context: &Context, turn: &Turn<'_>, input: &Input) -> Result<Vec<Message>, DbErr> {
     let unexpected = || vec![turn.templates.image_not_expected()];
     if turn.actor.roles().seller
         && let Input::Image { message_id } = input
     {
-        return products::photo_sent(turn, &context.config, &context.line, message_id).await;
+        let (config, line) = (&context.config, &context.line);
+        return products::photo_sent(turn, config, &context.ai, line, message_id).await;
     }
     if payments::awaiting_transfer(turn.db, turn.actor.user.id)
         .await?
@@ -672,6 +698,7 @@ mod tests {
     const ON: State = State {
         onboarded: true,
         in_flow: false,
+        listing: false,
         assistant: false,
         voice: false,
     };
@@ -762,6 +789,7 @@ mod tests {
         let new = State {
             onboarded: false,
             in_flow: true,
+            listing: true,
             assistant: true,
             voice: true,
         };
@@ -838,6 +866,41 @@ mod tests {
             decide(&text("ตะกร้า"), assistant),
             Step::Keyword(Keyword::Cart)
         );
+    }
+
+    /// FR-UI-12 step 5, FR-PROD-02, FR-PROD-10: a seller's text goes to the listing assistant
+    /// first, after the flow and the keywords; their photos go on as anyone's.
+    #[test]
+    fn a_sellers_text_goes_to_the_listing_assistant_first() {
+        let seller = State {
+            listing: true,
+            assistant: true,
+            ..ON
+        };
+        assert_eq!(decide(&text("ขนมครก เหลือ 10"), seller), Step::Listing);
+        assert_eq!(
+            decide(
+                &text("ขนมครก เหลือ 10"),
+                State {
+                    assistant: false,
+                    ..seller
+                }
+            ),
+            Step::Listing
+        );
+        assert_eq!(decide(&text("เมนู"), seller), Step::Keyword(Keyword::Menu));
+        let in_flow = State {
+            in_flow: true,
+            ..seller
+        };
+        assert_eq!(decide(&text("ขนมครก เหลือ 10"), in_flow), Step::Flow);
+        assert_eq!(decide(&image(), seller), Step::Image);
+        // Left by the listing assistant, it goes on as anyone's
+        let left = State {
+            listing: false,
+            ..seller
+        };
+        assert_eq!(decide(&text("ขนมครก เหลือ 10"), left), Step::Assistant);
     }
 
     /// FR-UI-09, FR-UI-14: photos, locations and what can't be taken.

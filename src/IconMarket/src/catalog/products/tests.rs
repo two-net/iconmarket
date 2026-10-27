@@ -419,7 +419,7 @@ impl Setup {
                 .as_ref()
                 .and_then(|flow| flow.read::<ProductFlow>());
             let session = session.expect("adding a product");
-            answered = answer(turn, &self.config, &line, session, &input).await?;
+            answered = answer(turn, &self.config, &self.ai, &line, session, &input).await?;
             Ok(answered.clone().unwrap_or_default())
         })
         .await;
@@ -1364,7 +1364,7 @@ async fn a_sellers_photo_is_offered_for_listing() {
     s.serves("m1", PHOTO);
     let offered = s
         .handle(a, async |turn| {
-            photo_sent(turn, &s.config, &line, "m1").await
+            photo_sent(turn, &s.config, &s.ai, &line, "m1").await
         })
         .await;
     assert_eq!(offered.len(), 1);
@@ -1389,7 +1389,7 @@ async fn a_sellers_photo_is_offered_for_listing() {
     s.serves("m2", PHOTO);
     let offered = s
         .handle(a, async |turn| {
-            photo_sent(turn, &s.config, &line, "m2").await
+            photo_sent(turn, &s.config, &s.ai, &line, "m2").await
         })
         .await;
     assert_eq!(
@@ -1406,7 +1406,7 @@ async fn a_sellers_photo_is_offered_for_listing() {
     s.serves("m3", b"not a photo");
     let refused = s
         .handle(a, async |turn| {
-            photo_sent(turn, &s.config, &line, "m3").await
+            photo_sent(turn, &s.config, &s.ai, &line, "m3").await
         })
         .await;
     assert_eq!(

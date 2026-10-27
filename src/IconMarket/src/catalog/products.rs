@@ -12,6 +12,11 @@
 //! a seller's photo that no flow takes starts one with it (FR-UI-14). What the user types is
 //! never logged (NFR-PRIV-05).
 //!
+//! While `ai.features.listing` is on, the photos step also takes one message saying what the
+//! product is, such as *ขนมครก กล่องละ 20 วันนี้ทำ 30 กล่อง*, from which the AI [drafts](listing)
+//! its parts (FR-PROD-02). Each is taken as if typed at its step, the flow asks for any still
+//! missing, and the preview says the product was drafted, to be checked before it is listed.
+//!
 //! A listed product is `ACTIVE`, or `HELD` for review if [moderation] finds it suspicious, so that
 //! buyers don't see it until an admin lists it (#31); [`may_become`] says which status it can go
 //! to from there (FR-PROD-07). Its price and stock are what new checkouts see: an order keeps the
@@ -21,6 +26,7 @@
 //! that it is made to order, sold out (FR-PROD-06) or of a closed shop (FR-SHOP-05). Only an
 //! orderable one can go in a [cart](crate::orders::cart) or be checked out (#32).
 
+pub mod listing;
 pub mod manage;
 #[cfg(test)]
 mod tests;
@@ -36,7 +42,7 @@ use tracing::{info, warn};
 use super::images::{self, Owner, Rejected};
 use super::moderation::{self, Held, Subject};
 use super::{categories, shops};
-use crate::ai;
+use crate::ai::{self, Feature};
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::{self, Item};
@@ -90,6 +96,21 @@ pub struct ProductFlow {
     /// adding one, and missing from drafts saved before it was added
     #[serde(default)]
     product_id: Option<i64>,
+    /// What the AI does with it (FR-PROD-02); missing from drafts saved before it was added
+    #[serde(default)]
+    ai: Drafting,
+}
+
+/// Whether the AI drafts a product being added from the seller's message (FR-PROD-02).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Drafting {
+    /// Asked for step by step
+    #[default]
+    Off,
+    /// The photos step takes one message saying what it is, for the AI to draft
+    Offered,
+    /// The AI drafted it, so the preview says it is to be checked
+    Drafted,
 }
 
 /// How many of a product there are for new orders (FR-PROD-03, FR-PROD-05).
@@ -205,7 +226,27 @@ impl ProductFlow {
             editing: false,
             revision: 0,
             product_id: None,
+            ai: Drafting::Off,
         }
+    }
+
+    /// The same, the AI drafting it from a message if `ai` can (FR-PROD-02).
+    fn offered(self, ai: &ai::Gateway) -> Self {
+        let drafting = if ai.is_enabled(Feature::Listing) {
+            Drafting::Offered
+        } else {
+            Drafting::Off
+        };
+        Self {
+            ai: drafting,
+            ..self
+        }
+    }
+
+    /// Whether the photos step takes a message for the AI to draft from: while adding, not
+    /// correcting.
+    fn offers_drafting(&self) -> bool {
+        self.ai == Drafting::Offered && !self.editing
     }
 
     /// What listed `product` has, its photos `photos` in order, to change a part of it in
@@ -222,6 +263,7 @@ impl ProductFlow {
             editing: true,
             revision: 0,
             product_id: Some(product.id),
+            ai: Drafting::Off,
         }
     }
 
@@ -308,7 +350,7 @@ pub async fn tapped(
     if action == Item::AddProduct.action() {
         return match session {
             Some(session) => again(turn, config, session).await,
-            None => start(turn, config).await,
+            None => start(turn, config, ai).await,
         };
     }
     let Some(session) = session else {
@@ -348,14 +390,14 @@ pub async fn tapped(
     }
 }
 
-/// A new product, from its photos on; none can be listed while there is no active category to
-/// put it in (FR-PROD-03).
-async fn start(turn: &Turn<'_>, config: &Config) -> Result<Vec<Message>, DbErr> {
+/// A new product, from its photos on, or from one message the AI drafts it from; none can be
+/// listed while there is no active category to put it in (FR-PROD-03).
+async fn start(turn: &Turn<'_>, config: &Config, ai: &ai::Gateway) -> Result<Vec<Message>, DbErr> {
     if categories::active(turn.db).await?.is_empty() {
         let none = turn.templates.no_categories();
         return Ok(vec![none, menu::main_menu(&turn.actor)]);
     }
-    let draft = ProductFlow::new(Vec::new());
+    let draft = ProductFlow::new(Vec::new()).offered(ai);
     let ask = prompt(turn, config, &draft, Step::Photos).await?;
     let session = Session {
         step: Step::Photos,
@@ -365,10 +407,12 @@ async fn start(turn: &Turn<'_>, config: &Config) -> Result<Vec<Message>, DbErr> 
 }
 
 /// A photo that no flow took, sent in `message_id` by a seller (FR-UI-14): an offer to list it,
-/// as the first photo of a new product. Until the seller says what it is, nothing is listed.
+/// as the first photo of a new product, from one message the AI drafts it from if `ai` can
+/// (Appendix A.3). Until the seller says what it is, nothing is listed.
 pub async fn photo_sent(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     line: &line::Client,
     message_id: &str,
 ) -> Result<Vec<Message>, DbErr> {
@@ -386,11 +430,15 @@ pub async fn photo_sent(
             return Ok(vec![rejected, menu::main_menu(&turn.actor)]);
         }
     };
-    let draft = ProductFlow::new(vec![id]);
+    let draft = ProductFlow::new(vec![id]).offered(ai);
     let left = max_photos(config).saturating_sub(draft.photos.len());
-    let offer = turn.templates.listing_offered(left);
-    // With room for no more, on to the name
-    let (step, ask) = if left == 0 {
+    let offer = if draft.offers_drafting() {
+        turn.templates.listing_draft_offered(left)
+    } else {
+        turn.templates.listing_offered(left)
+    };
+    // With room for no more, on to the name, unless the message is awaited
+    let (step, ask) = if left == 0 && !draft.offers_drafting() {
         let step = after(&draft, Step::Photos);
         let mut ask = vec![offer];
         ask.extend(prompt(turn, config, &draft, step).await?);
@@ -421,10 +469,12 @@ fn gone(turn: &Turn<'_>) -> Message {
 }
 
 /// The answer to the step the user is on (FR-UI-12 step 3). A photo is taken at any step;
-/// `None` for a location, so routing goes on (FR-UI-14).
+/// `None` for a location, so routing goes on (FR-UI-14). A message where photos are asked for
+/// is drafted from by the AI, while `ai` can (FR-PROD-02).
 pub async fn answer(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     line: &line::Client,
     session: Session<ProductFlow>,
     input: &Input,
@@ -444,6 +494,15 @@ pub async fn answer(
         Input::Text(text) => text,
         _ => return Ok(None),
     };
+    if step == Step::Photos
+        && draft.offers_drafting()
+        && ai.is_enabled(Feature::Listing)
+        && !is_photos_choice(text)
+    {
+        return listing::drafted(turn, config, ai, draft, text)
+            .await
+            .map(Some);
+    }
     if step == Step::Summary {
         let ask = prompt(turn, config, &draft, step).await?;
         return flow::answered(turn, Answer::<ProductFlow>::Again(ask))
@@ -541,7 +600,8 @@ async fn photo(
     }
 
     draft.revision += 1;
-    let next = if step == Step::Photos && draft.photos.len() >= max {
+    // Once they are all there, on to the name, unless the message is awaited
+    let next = if step == Step::Photos && draft.photos.len() >= max && !draft.offers_drafting() {
         after(&draft, step)
     } else {
         step
@@ -627,6 +687,14 @@ async fn take(
         Step::Summary => Err(Refused::NotAChoice),
     };
     Ok(taken.map(|()| Taken::Changed))
+}
+
+/// Whether `text` is one of the photos step's choices, rather than a message for the AI.
+fn is_photos_choice(text: &str) -> bool {
+    let text = text.trim();
+    [&labels::NEXT, &labels::SKIP, &labels::REMOVE]
+        .iter()
+        .any(|label| label.as_str() == text)
 }
 
 /// Takes `text`, where photos are asked for, into `draft`: "ถัดไป" or "ข้าม" moves on, and
@@ -770,6 +838,9 @@ async fn prompt(
     let current = |value: Option<String>| value.filter(|_| draft.editing);
     let unit = draft.unit.as_deref().unwrap_or_default();
     let ask = match step {
+        Step::Photos if draft.offers_drafting() => {
+            templates.ask_listing_message(draft.photos.len(), max_photos(config))
+        }
         Step::Photos => {
             templates.ask_product_photos(draft.photos.len(), max_photos(config), draft.editing)
         }
@@ -934,6 +1005,7 @@ async fn summary(
         description: draft.description.as_deref(),
         photo: photo.as_ref(),
         photos: draft.photos.len(),
+        drafted: draft.ai == Drafting::Drafted,
         buttons: vec![
             button(SUBMIT, &labels::CONFIRM_LISTING),
             button(EDIT, &labels::EDIT),
@@ -1031,6 +1103,7 @@ async fn submit(
         product_id = listed.id,
         shop_id = shop.id,
         photos = draft.photos.len(),
+        drafted = draft.ai == Drafting::Drafted,
         held = flag.is_some(),
         "product listed"
     );

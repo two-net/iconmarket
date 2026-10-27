@@ -20,6 +20,10 @@
 //! A changed name, unit or description, or new photos, are [moderated](moderation) before they
 //! are saved: found suspicious, the product is saved `HELD` for review, so buyers don't see it
 //! until an admin lists it again (#31). Its other parts change as they are.
+//!
+//! A price or stock may also be changed in a few words the AI reads, such as *ขนมครก เหลือ 10*
+//! ([`listing`](super::listing), FR-PROD-10): that is an [`UpdateProduct`] to confirm, saved
+//! only once tapped, and only if the product is still as the confirmation showed it.
 
 #[cfg(test)]
 mod tests;
@@ -37,8 +41,8 @@ use tracing::info;
 use url::Url;
 
 use super::{
-    ProductFlow, Step, Taken, ask_category, choices, max_photos, may_become, photos_done_label,
-    prompt, receive, restocks, take, why,
+    ProductFlow, Step, Stock, Taken, ask_category, choices, max_photos, may_become,
+    photos_done_label, prompt, receive, restocks, take, why,
 };
 use crate::ai;
 use crate::catalog::images::{self, Owner};
@@ -46,15 +50,15 @@ use crate::catalog::moderation::{self, Flag, Held, Subject};
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::Item;
-use crate::dispatcher::pending::{self, Applied, Proposal, Stale};
+use crate::dispatcher::pending::{self, Applied, Proposal, Stale, Why};
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{self, Action, Message};
 use crate::notifications::templates::{
-    MyProductCard, PRODUCTS_PER_PAGE, Templates, labels, with_choices,
+    MyProductCard, PRODUCTS_PER_PAGE, ProductUpdate, Templates, labels, with_choices,
 };
 use crate::persistence::entity::{category, product};
-use crate::thai::Label;
+use crate::thai::{Label, Money};
 use crate::users::access::{self, Denied, authorize};
 
 /// What the actions of the buttons of "สินค้าของฉัน" start with, but the list's own, which is
@@ -148,6 +152,171 @@ impl Proposal for DeleteProduct {
             None => turn.templates.denied(Denied::NotFound),
         }])
     }
+}
+
+/// A quick update to a product's price or stock (FR-PROD-10), once confirmed (FR-UI-13): what the
+/// seller asked for, and what the confirmation showed they were, from the database (FR-AI-04).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateProduct {
+    product_id: i64,
+    /// `None` where it doesn't change
+    price: Option<Money>,
+    stock: Option<Stock>,
+    was_price: Money,
+    /// As `products.stock` keeps it
+    was_stock: Option<i32>,
+}
+
+impl UpdateProduct {
+    /// What changes `product`'s price to `price` and its stock to `stock`, those of them that
+    /// differ from what it has; `None` if neither does.
+    pub(super) fn of(
+        product: &product::Model,
+        price: Option<Money>,
+        stock: Option<Stock>,
+    ) -> Option<Self> {
+        let price = price.filter(|&price| price != product.price);
+        let stock = stock.filter(|stock| stock.column() != product.stock);
+        (price.is_some() || stock.is_some()).then_some(Self {
+            product_id: product.id,
+            price,
+            stock,
+            was_price: product.price,
+            was_stock: product.stock,
+        })
+    }
+
+    /// Asks the seller to confirm it for `product`, which it was made [`of`](Self::of): from
+    /// what each part is to what they asked.
+    pub(super) async fn propose(
+        &self,
+        turn: &Turn<'_>,
+        product: &product::Model,
+    ) -> Result<Message, DbErr> {
+        let confirm = pending::propose(turn, self).await?;
+        let confirm = confirm.button(labels::CONFIRM.clone());
+        let update = ProductUpdate {
+            name: &product.name,
+            unit: &product.unit,
+            price: self.price.map(|price| (self.was_price, price)),
+            stock: self.stock.map(|stock| (self.was_stock, stock.column())),
+        };
+        Ok(turn.templates.confirm_product_update(&update, confirm))
+    }
+}
+
+impl Proposal for UpdateProduct {
+    const KIND: &'static str = "product.update";
+
+    fn requires(&self) -> access::Action {
+        access::Action::ManageProduct(self.product_id)
+    }
+
+    /// Saves the new price and stock, unless the product changed since it was proposed: no
+    /// longer one to change, or its price or stock not what the confirmation showed. They apply
+    /// to new checkouts only (FR-PROD-08), and neither is moderated, as in "สินค้าของฉัน".
+    async fn apply(
+        &self,
+        _id: Uuid,
+        txn: &DatabaseTransaction,
+        turn: &Turn<'_>,
+    ) -> Result<Applied, DbErr> {
+        // Locked, so that a checkout or a deletion at the same time waits for this
+        let Some(product) = product::Entity::find_by_id(self.product_id)
+            .filter(product::Column::Status.ne(product::Status::Deleted))
+            .lock_exclusive()
+            .one(txn)
+            .await?
+        else {
+            return Ok(Applied::Changed);
+        };
+        if !editable(&product) || product.price != self.was_price || product.stock != self.was_stock
+        {
+            return Ok(Applied::Changed);
+        }
+        let mut update = product::ActiveModel {
+            updated_at: Set(turn.now),
+            ..Default::default()
+        };
+        if let Some(price) = self.price {
+            update.price = Set(price);
+        }
+        if let Some(stock) = self.stock.map(Stock::column) {
+            update.stock = Set(stock);
+            if restocks(product.stock, stock) {
+                update.restocked_at = Set(Some(turn.now));
+            }
+        }
+        let saved = product::Entity::update_many()
+            .set(update)
+            .filter(product::Column::Id.eq(product.id))
+            .exec_with_returning(txn)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DbErr::RecordNotFound(format!("product {}", product.id)))?;
+        info!(
+            product_id = saved.id,
+            price = self.price.is_some(),
+            stock = self.stock.is_some(),
+            "product updated"
+        );
+        let templates = turn.templates;
+        let done = match (self.price, self.stock) {
+            (Some(_), None) => templates.product_price_saved(saved.price, &saved.unit),
+            (None, Some(_)) => {
+                templates.product_stock_saved(saved.stock, &saved.unit, sold_out(&product))
+            }
+            _ => templates.product_saved(),
+        };
+        Ok(Applied::Done(with_choices(vec![done], carry_on())))
+    }
+
+    /// Whether the update was saved by an earlier tap, or not, having expired or been
+    /// cancelled; or, the product having changed since, the update asked again as it is now. To
+    /// its seller only.
+    async fn current_state(stale: Stale<Self>, turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
+        if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::ManageShop).await? {
+            return Ok(vec![turn.templates.denied(denied)]);
+        }
+        // Cancelled, or expired and deleted: which product it was is gone with it
+        let Some(proposal) = stale.proposal else {
+            let not_updated = turn.templates.product_not_updated(None);
+            return Ok(with_choices(vec![not_updated], carry_on()));
+        };
+        let id = proposal.product_id;
+        if let Err(denied) =
+            authorize(turn.db, &turn.actor, access::Action::ManageProduct(id)).await?
+        {
+            return Ok(vec![turn.templates.denied(denied)]);
+        }
+        let Some(product) = listed(turn.db, id).await?.filter(editable) else {
+            return Ok(vec![turn.templates.denied(Denied::NotFound)]);
+        };
+        let templates = turn.templates;
+        let said = match stale.why {
+            Why::Changed => match Self::of(&product, proposal.price, proposal.stock) {
+                Some(again) => {
+                    let again = again.propose(turn, &product).await?;
+                    return Ok(vec![templates.product_update_changed(), again]);
+                }
+                // As asked already
+                None => templates.product_saved(),
+            },
+            Why::Confirmed => templates.product_saved(),
+            Why::Gone => templates.product_not_updated(Some(&product.name)),
+        };
+        Ok(with_choices(vec![said], carry_on()))
+    }
+}
+
+/// Where to carry on after a quick update: "สินค้าของฉัน" and the menu.
+fn carry_on() -> Vec<Action> {
+    let mine = Item::MyProducts
+        .postback()
+        .button(labels::MY_PRODUCTS.clone());
+    let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+    vec![mine, menu]
 }
 
 /// A tap on "สินค้าของฉัน", or on one of its buttons: only for the owner of an approved shop
@@ -770,7 +939,7 @@ async fn list(
 }
 
 /// `product`'s card as it is now, with its buttons.
-async fn card(
+pub(super) async fn card(
     db: &impl ConnectionTrait,
     templates: &Templates,
     config: &Config,
