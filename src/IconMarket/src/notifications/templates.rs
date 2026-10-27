@@ -19,10 +19,11 @@ use crate::catalog::products::Availability;
 use crate::config::{AiProvider, AppConfig, PoliteParticle};
 use crate::dispatcher::menu::{Item, Tab};
 use crate::line::flex::{
-    AspectMode, Bubble, BubbleSize, Button, ButtonHeight, ButtonStyle, Carousel, Component,
+    Align, AspectMode, Bubble, BubbleSize, Button, ButtonHeight, ButtonStyle, Carousel, Component,
     FlexBox, FlexContainer, Hero, Image, Justify, Separator, Size, Spacing, Text, Weight,
 };
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
+use crate::orders::cart;
 use crate::payments;
 use crate::persistence::entity::product;
 use crate::thai::{self, Label, Money, NumberError};
@@ -791,6 +792,159 @@ impl Templates {
             }
         };
         Message::text(text).with_quick_reply(QuickReply::new(suggestions))
+    }
+
+    /// "ใส่ตะกร้า" (FR-CART-01), or "แก้จำนวน" on its line if `change`: how many of product
+    /// `name`, sold by `unit`, as in Appendix A.2; `in_cart` is what its line holds now. The
+    /// quantities that fit follow as Quick Replies, then "ระบุเอง" and the cancel button.
+    pub fn ask_cart_quantity(&self, name: &str, unit: &str, in_cart: i32, change: bool) -> Message {
+        let kha_question = self.kha_question();
+        Message::text(match (change, in_cart) {
+            (true, _) => {
+                format!("\"{name}\" ในตะกร้ามี {in_cart} {unit} เปลี่ยนเป็นกี่{unit}{kha_question}")
+            }
+            (false, 0) => format!("\"{name}\" เอากี่{unit}{kha_question}"),
+            (false, _) => {
+                format!("\"{name}\" อยู่ในตะกร้าแล้ว {in_cart} {unit} เอาเพิ่มอีกกี่{unit}{kha_question}")
+            }
+        })
+    }
+
+    /// "ระบุเอง": asks to type the quantity, from 1 to `most` of `unit` (FR-CART-01). The cancel
+    /// button follows.
+    pub fn ask_typed_quantity(&self, most: i32, unit: &str) -> Message {
+        let kha = self.kha();
+        let range = if most > 1 {
+            format!("ตั้งแต่ 1 ถึง {most} {unit}")
+        } else {
+            format!("แค่ 1 {unit}")
+        };
+        Message::text(format!(
+            "พิมพ์จำนวนเป็นตัวเลขได้เลย{kha} ใส่ได้{range} เช่น 1 หรือ ๑"
+        ))
+    }
+
+    /// A quantity more than the line of product `name`, sold by `unit`, can take (FR-CART-01):
+    /// says what is `left` of it, or `max`, the most a line holds, if fewer are left or it is
+    /// unlimited; then what the line holds already, `in_cart`, when adding to it, and how many
+    /// more fit. The quantities that fit follow as Quick Replies, if any do.
+    pub fn quantity_too_many(
+        &self,
+        name: &str,
+        unit: &str,
+        left: Option<i32>,
+        max: i32,
+        in_cart: i32,
+    ) -> Message {
+        let kha = self.kha();
+        let room = (left.map_or(max, |left| left.min(max)) - in_cart).max(0);
+        let most = match left {
+            Some(left) if left < max => format!("\"{name}\" เหลือ {left} {unit}"),
+            _ => format!("ใส่ตะกร้าได้รายการละไม่เกิน {max} {unit}"),
+        };
+        let held = if in_cart > 0 {
+            format!(" ในตะกร้ามีแล้ว {in_cart} {unit}")
+        } else {
+            String::new()
+        };
+        let then = match (room, in_cart) {
+            (0, _) => format!("จึงใส่เพิ่มไม่ได้แล้ว{kha}"),
+            (_, 0) => format!("พิมพ์ใหม่หรือเลือกจากปุ่มด้านล่างได้เลย{kha}"),
+            (room, _) => {
+                format!("จึงใส่เพิ่มได้อีกไม่เกิน {room} {unit} พิมพ์ใหม่หรือเลือกจากปุ่มด้านล่างได้เลย{kha}")
+            }
+        };
+        Message::text(format!("ขอโทษ{kha} {most}{held} {then}"))
+    }
+
+    /// A quantity of 0 of a product sold by `unit` (FR-CART-01).
+    pub fn quantity_too_small(&self, unit: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ใส่ได้ตั้งแต่ 1 {unit} ขึ้นไป พิมพ์ใหม่หรือเลือกจากปุ่มด้านล่างได้เลย{kha}"
+        ))
+    }
+
+    /// A product of the user's own shop, which they can't order (FR-CART-07).
+    pub fn own_product(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} สินค้านี้เป็นของร้านคุณเอง จึงใส่ตะกร้าไม่ได้ ลองดูสินค้าร้านอื่นได้เลย{kha}"
+        ))
+    }
+
+    /// Product `name` of shop `shop` can't be ordered now, as its `availability` says
+    /// (FR-PROD-06, FR-SHOP-05), so it can't go in the cart.
+    pub fn not_orderable(&self, name: &str, shop: &str, availability: Availability) -> Message {
+        let kha = self.kha();
+        Message::text(match availability {
+            Availability::ShopClosed => format!(
+                "ขอโทษ{kha} ตอนนี้{}ปิดอยู่ จึงใส่ \"{name}\" ลงตะกร้าไม่ได้ ลองใหม่ตอนร้านเปิด หรือดูสินค้าร้านอื่นได้เลย{kha}",
+                shop_called(shop)
+            ),
+            _ => format!("ขอโทษ{kha} \"{name}\" หมดแล้ว จึงใส่ตะกร้าไม่ได้ ลองดูสินค้าอื่นได้เลย{kha}"),
+        })
+    }
+
+    /// The cart holds `max` products already, as many as it may (FR-CART-07).
+    pub fn cart_full(&self, max: usize) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขอโทษ{kha} ตะกร้ามีสินค้าครบ {max} รายการแล้ว สั่งซื้อหรือลบบางรายการออกก่อน แล้วค่อยใส่เพิ่มนะ{kha_question}"
+        ))
+    }
+
+    /// Product `name` is in the cart (FR-CART-01): its line holds `quantity` of `unit`, `total`
+    /// in all, as in Appendix A.2; `more` if it was there already and now holds more. Where to
+    /// carry on follows as Quick Replies.
+    pub fn added_to_cart(
+        &self,
+        name: &str,
+        quantity: i32,
+        unit: &str,
+        total: Money,
+        more: bool,
+    ) -> Message {
+        let (kha, line) = (self.kha(), cart_line(name, quantity, unit, total));
+        Message::text(if more {
+            format!("ใส่เพิ่มแล้ว{kha} ตอนนี้ในตะกร้ามี {line}")
+        } else {
+            format!("ใส่ตะกร้าแล้ว{kha} {line}")
+        })
+    }
+
+    /// The line of product `name` now holds `quantity` of `unit`, `total` in all (FR-CART-03).
+    /// The cart follows.
+    pub fn quantity_changed(&self, name: &str, quantity: i32, unit: &str, total: Money) -> Message {
+        let line = cart_line(name, quantity, unit, total);
+        Message::text(format!("แก้จำนวนแล้ว{} {line}", self.kha()))
+    }
+
+    /// Product `name` is out of the cart (FR-CART-03). The cart follows.
+    pub fn removed_from_cart(&self, name: &str) -> Message {
+        Message::text(format!("เอา \"{name}\" ออกจากตะกร้าแล้ว{}", self.kha()))
+    }
+
+    /// "ตะกร้า" with nothing in it; `next` are its Quick Replies.
+    pub fn empty_cart(&self, next: Vec<Action>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ตะกร้ายังว่างอยู่{kha} เลือกซื้อของ หรือค้นหาสินค้าที่อยากได้ได้เลย{kha}"
+        ))
+        .with_quick_reply(QuickReply::new(next))
+    }
+
+    /// "ตะกร้า" (FR-CART-03): page `page` of the cart, a card for each of `shops`, and
+    /// "ดูเพิ่มเติม" sending `more(next_page)` when more follow; `next` are its Quick Replies.
+    pub fn cart(
+        &self,
+        shops: &[CartShop<'_>],
+        page: usize,
+        more: impl FnOnce(usize) -> String,
+        next: Vec<Action>,
+    ) -> Message {
+        let page = carousel_page(shops, page, CART_SHOPS_PER_PAGE, cart_shop_card, more);
+        Message::flex(labels::CART.as_str(), page).with_quick_reply(QuickReply::new(next))
     }
 
     /// "ช่วยเหลือ" (FR-HELP-01): a button for each of `topics`, those of the user's roles.
@@ -2508,6 +2662,32 @@ pub struct ProductDetails<'a> {
     pub buttons: Vec<Action>,
 }
 
+/// A shop's lines in a buyer's cart, as its card there shows them (FR-CART-03).
+pub struct CartShop<'a> {
+    pub name: &'a str,
+    pub lines: Vec<CartLine<'a>>,
+    /// That of the lines that can be ordered
+    pub subtotal: Money,
+    /// Whether some lines are left out of it, as they can't be ordered
+    pub excluded: bool,
+    /// "สั่งซื้อร้านนี้", while a line can be ordered
+    pub checkout: Option<Action>,
+}
+
+/// A line of a buyer's cart, as its shop's card there shows it (FR-CART-03).
+pub struct CartLine<'a> {
+    pub name: &'a str,
+    pub unit: &'a str,
+    /// The product's price now
+    pub price: Money,
+    pub quantity: i32,
+    pub total: Money,
+    /// Whether it can be ordered, and why not
+    pub state: cart::State,
+    /// "แก้จำนวน" while its product can be ordered, then "ลบออก"
+    pub buttons: Vec<Action>,
+}
+
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
 pub struct ShopCard<'a> {
     pub name: &'a str,
@@ -2836,6 +3016,133 @@ fn availability_line(of: Availability) -> Component {
         ..Text::new(availability(of))
     };
     text.into()
+}
+
+/// Shops on a page of "ตะกร้า", leaving room for "ดูเพิ่มเติม". A cart holds few enough lines
+/// that a page of them fits LINE's 50 KB (FR-LINE-11).
+pub const CART_SHOPS_PER_PAGE: usize = 10;
+
+/// A line of the cart in a sentence: `ไข่ไก่เบอร์ 2 × 2 แผง = ฿220`, as in Appendix A.2.
+fn cart_line(name: &str, quantity: i32, unit: &str, total: Money) -> String {
+    format!("{name} × {quantity} {unit} = {total}")
+}
+
+/// Why a line of the cart, of a product sold by `unit`, can't be ordered, as its card flags it
+/// (FR-CART-03); `None` if it can.
+pub fn cart_problem(state: cart::State, unit: &str) -> Option<String> {
+    match state {
+        cart::State::Orderable => None,
+        cart::State::SoldOut => Some(availability(Availability::SoldOut)),
+        cart::State::ShopClosed => Some(CLOSED.to_owned()),
+        cart::State::Unavailable => Some("ตอนนี้ไม่มีขาย".to_owned()),
+        cart::State::NotEnough(left) => Some(format!("เหลือแค่ {left} {unit}")),
+    }
+}
+
+/// A shop's card in the cart (FR-CART-03): its name, then each line with its buttons, then the
+/// subtotal of the lines that can be ordered, saying when others are left out, and
+/// "สั่งซื้อร้านนี้" while any can.
+fn cart_shop_card(card: &CartShop<'_>) -> Bubble {
+    let name = Text {
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(shop_called(card.name))
+    };
+    let mut contents: Vec<Component> = vec![name.into()];
+    for line in &card.lines {
+        contents.push(Separator::default().into());
+        contents.push(cart_line_box(line));
+    }
+    contents.push(Separator::default().into());
+    let label = Text {
+        size: Some(Size::Sm),
+        weight: Some(Weight::Bold),
+        flex: Some(2),
+        ..Text::new("รวม")
+    };
+    let subtotal = Text {
+        weight: Some(Weight::Bold),
+        align: Some(Align::End),
+        flex: Some(3),
+        ..Text::new(card.subtotal.to_string())
+    };
+    contents.push(FlexBox::baseline([label.into(), subtotal.into()]).into());
+    if card.excluded {
+        let note = Text {
+            size: Some(Size::Xs),
+            color: Some(MUTED.to_owned()),
+            wrap: Some(true),
+            ..Text::new("ไม่รวมรายการที่สั่งไม่ได้")
+        };
+        contents.push(note.into());
+    }
+    let body = FlexBox {
+        spacing: Some(Spacing::Md),
+        ..FlexBox::vertical(contents)
+    };
+    Bubble {
+        size: Some(BubbleSize::Mega),
+        body: Some(body),
+        footer: footer(card.checkout.as_slice()),
+        ..Bubble::default()
+    }
+}
+
+/// A line on its shop's card in the cart: its name, quantity and unit price, and total, why it
+/// can't be ordered if it can't, and its buttons side by side.
+fn cart_line_box(line: &CartLine<'_>) -> Component {
+    let name = Text {
+        size: Some(Size::Sm),
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        max_lines: Some(2),
+        ..Text::new(line.name)
+    };
+    let each = Text {
+        size: Some(Size::Sm),
+        color: Some(MUTED.to_owned()),
+        wrap: Some(true),
+        flex: Some(3),
+        ..Text::new(format!("{} {} × {}", line.quantity, line.unit, line.price))
+    };
+    let total = Text {
+        size: Some(Size::Sm),
+        align: Some(Align::End),
+        flex: Some(2),
+        ..Text::new(line.total.to_string())
+    };
+    let mut contents: Vec<Component> = vec![
+        name.into(),
+        FlexBox::baseline([each.into(), total.into()]).into(),
+    ];
+    if let Some(problem) = cart_problem(line.state, line.unit) {
+        let problem = Text {
+            size: Some(Size::Sm),
+            weight: Some(Weight::Bold),
+            color: Some(CLOSED_COLOR.to_owned()),
+            wrap: Some(true),
+            ..Text::new(problem)
+        };
+        contents.push(problem.into());
+    }
+    let buttons = line.buttons.iter().map(|action| {
+        let button = Button {
+            style: Some(ButtonStyle::Secondary),
+            height: Some(ButtonHeight::Sm),
+            ..Button::new(action.clone())
+        };
+        button.into()
+    });
+    let buttons = FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::horizontal(buttons.collect::<Vec<_>>())
+    };
+    contents.push(buttons.into());
+    FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::vertical(contents)
+    }
+    .into()
 }
 
 /// A product's card in "สินค้าของฉัน" (FR-PROD-05): its first photo, name and price per unit,
@@ -3473,7 +3780,7 @@ pub mod labels {
         CHOOSE_PHOTO = "เลือกรูป",
         /// Leaves a part as it is while correcting the application
         KEEP = "ใช้ของเดิม",
-        /// Removes an optional part while correcting it
+        /// Removes an optional part while correcting it, or a line from the cart (FR-CART-03)
         REMOVE = "ลบออก",
         USE_HOME_ADDRESS = "ใช้ที่อยู่บ้าน",
         USE_HOME_LOCATION = "ใช้ตำแหน่งบ้าน",
@@ -3515,10 +3822,22 @@ pub mod labels {
         ALL_SHOPS = "ร้านค้าทั้งหมด",
         /// Asks for another keyword (FR-SRCH-08)
         SEARCH_AGAIN = "ค้นหาใหม่",
-        /// Puts a product in the cart (FR-SRCH-07, #29)
+        /// Puts a product in the cart (FR-SRCH-07, FR-CART-01)
         ADD_TO_CART = "ใส่ตะกร้า",
         /// A product's shop, from its card (FR-SRCH-07)
         VIEW_SHOP = "ดูร้าน",
+
+        // The cart (FR-CART), with CART, ADD_TO_CART and REMOVE
+        /// Checks out the shop of the product just put in the cart (FR-CART-01, #32)
+        ORDER_NOW = "สั่งซื้อเลย",
+        VIEW_CART = "ดูตะกร้า",
+        /// Back to "ซื้อของ", once a product is in the cart
+        CONTINUE_SHOPPING = "เลือกซื้อต่อ",
+        /// Checks out a shop's lines in the cart (FR-CART-03, #32)
+        ORDER_FROM_SHOP = "สั่งซื้อร้านนี้",
+        /// Asks to type a quantity other than those offered (FR-CART-01)
+        TYPE_QUANTITY = "ระบุเอง",
+        CHANGE_QUANTITY = "แก้จำนวน",
 
         // Adding a product (FR-PROD-01, FR-PROD-03)
         /// Lists the product previewed; buyers see it from then on
@@ -3774,6 +4093,25 @@ mod tests {
             text(&t.confirm_delete_product("ไข่ไก่เบอร์ 2", confirm_delete())).to_owned(),
             text(&t.product_deleted("ไข่ไก่เบอร์ 2", true)).to_owned(),
             text(&t.product_deleted("ไข่ไก่เบอร์ 2", false)).to_owned(),
+            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 0, false)).to_owned(),
+            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 2, false)).to_owned(),
+            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 2, true)).to_owned(),
+            text(&t.ask_typed_quantity(8, "แผง")).to_owned(),
+            text(&t.ask_typed_quantity(1, "แผง")).to_owned(),
+            text(&t.quantity_too_many("ไข่ไก่เบอร์ 2", "แผง", Some(8), 99, 0)).to_owned(),
+            text(&t.quantity_too_many("ไข่ไก่เบอร์ 2", "แผง", Some(8), 99, 2)).to_owned(),
+            text(&t.quantity_too_many("ไข่ไก่เบอร์ 2", "แผง", Some(8), 99, 8)).to_owned(),
+            text(&t.quantity_too_many("ไข่ไก่เบอร์ 2", "แผง", None, 99, 0)).to_owned(),
+            text(&t.quantity_too_small("แผง")).to_owned(),
+            text(&t.own_product()).to_owned(),
+            text(&t.not_orderable("ไข่ไก่เบอร์ 2", "ร้านป้าแดง", Availability::SoldOut)).to_owned(),
+            text(&t.not_orderable("ไข่ไก่เบอร์ 2", "ร้านป้าแดง", Availability::ShopClosed)).to_owned(),
+            text(&t.cart_full(20)).to_owned(),
+            text(&t.added_to_cart("ไข่ไก่เบอร์ 2", 2, "แผง", Money::from_baht(220), false)).to_owned(),
+            text(&t.added_to_cart("ไข่ไก่เบอร์ 2", 5, "แผง", Money::from_baht(550), true)).to_owned(),
+            text(&t.quantity_changed("ไข่ไก่เบอร์ 2", 3, "แผง", Money::from_baht(330))).to_owned(),
+            text(&t.removed_from_cart("ไข่ไก่เบอร์ 2")).to_owned(),
+            text(&t.empty_cart(Vec::new())).to_owned(),
         ];
         for (visible, changed) in [(true, true), (true, false), (false, true), (false, false)] {
             let visibility = t.product_visibility("ไข่ไก่เบอร์ 2", visible, changed);
@@ -4863,6 +5201,131 @@ mod tests {
                 "เหลือ 99999".to_owned()
             ]
         );
+    }
+
+    /// Appendix A.2, FR-CART-01: how many is asked as in the sample, and the line put in the cart
+    /// is shown as in it, with its total.
+    #[test]
+    fn the_cart_speaks_as_in_appendix_a2() {
+        let t = templates(PoliteParticle::Kha);
+        let ask = t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 0, false);
+        assert_eq!(text(&ask), "\"ไข่ไก่เบอร์ 2\" เอากี่แผงคะ");
+        let added = t.added_to_cart("ไข่ไก่เบอร์ 2", 2, "แผง", Money::from_baht(220), false);
+        assert_eq!(text(&added), "ใส่ตะกร้าแล้วค่ะ ไข่ไก่เบอร์ 2 × 2 แผง = ฿220");
+        let more = t.added_to_cart("ไข่ไก่เบอร์ 2", 5, "แผง", Money::from_baht(550), true);
+        assert_eq!(
+            text(&more),
+            "ใส่เพิ่มแล้วค่ะ ตอนนี้ในตะกร้ามี ไข่ไก่เบอร์ 2 × 5 แผง = ฿550"
+        );
+    }
+
+    /// FR-CART-01: a quantity over what is left says how many are left, and, adding to a line,
+    /// what it holds and how many more fit; over 99, that a line holds at most 99.
+    #[test]
+    fn too_many_for_the_cart_says_what_is_left() {
+        let t = templates(PoliteParticle::Kha);
+        let name = "ไข่ไก่เบอร์ 2";
+        assert_eq!(
+            text(&t.quantity_too_many(name, "แผง", Some(8), 99, 0)),
+            "ขอโทษค่ะ \"ไข่ไก่เบอร์ 2\" เหลือ 8 แผง พิมพ์ใหม่หรือเลือกจากปุ่มด้านล่างได้เลยค่ะ"
+        );
+        assert_eq!(
+            text(&t.quantity_too_many(name, "แผง", Some(8), 99, 2)),
+            "ขอโทษค่ะ \"ไข่ไก่เบอร์ 2\" เหลือ 8 แผง ในตะกร้ามีแล้ว 2 แผง จึงใส่เพิ่มได้อีกไม่เกิน 6 แผง พิมพ์ใหม่หรือเลือกจากปุ่มด้านล่างได้เลยค่ะ"
+        );
+        assert_eq!(
+            text(&t.quantity_too_many(name, "แผง", Some(8), 99, 8)),
+            "ขอโทษค่ะ \"ไข่ไก่เบอร์ 2\" เหลือ 8 แผง ในตะกร้ามีแล้ว 8 แผง จึงใส่เพิ่มไม่ได้แล้วค่ะ"
+        );
+        for left in [None, Some(99), Some(500)] {
+            assert_eq!(
+                text(&t.quantity_too_many(name, "แผง", left, 99, 0)),
+                "ขอโทษค่ะ ใส่ตะกร้าได้รายการละไม่เกิน 99 แผง พิมพ์ใหม่หรือเลือกจากปุ่มด้านล่างได้เลยค่ะ"
+            );
+        }
+    }
+
+    /// FR-CART-03: a line that can't be ordered says why.
+    #[test]
+    fn a_cart_line_says_why_it_cant_be_ordered() {
+        let flags = [
+            cart::State::Orderable,
+            cart::State::SoldOut,
+            cart::State::ShopClosed,
+            cart::State::Unavailable,
+            cart::State::NotEnough(3),
+        ]
+        .map(|state| cart_problem(state, "แผง"));
+        assert_eq!(
+            flags,
+            [
+                None,
+                Some("หมด".to_owned()),
+                Some("ร้านปิด".to_owned()),
+                Some("ตอนนี้ไม่มีขาย".to_owned()),
+                Some("เหลือแค่ 3 แผง".to_owned()),
+            ]
+        );
+    }
+
+    /// FR-CART-03, FR-LINE-11: a full cart fits, with the longest values it takes: its 20 lines
+    /// spread over a page of shops, then a "ดูเพิ่มเติม", or all of one shop.
+    #[test]
+    fn a_full_cart_fits() {
+        let t = templates(PoliteParticle::Kha);
+        let (name, unit, shop) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(50));
+        let max = i64::MAX;
+        let line = |state| CartLine {
+            name: &name,
+            unit: &unit,
+            price: Money::from_baht(100_000),
+            quantity: 99,
+            total: Money::from_baht(100_000).times(99),
+            state,
+            buttons: vec![
+                postback(
+                    &labels::CHANGE_QUANTITY,
+                    format!("cart.quantity?product={max}"),
+                ),
+                postback(&labels::REMOVE, format!("cart.remove?product={max}")),
+            ],
+        };
+        let shop_of = |lines: usize| CartShop {
+            name: &shop,
+            lines: (0..lines)
+                .map(|_| line(cart::State::NotEnough(98)))
+                .collect(),
+            subtotal: Money::from_baht(100_000).times(99 * 20),
+            excluded: true,
+            checkout: Some(postback(
+                &labels::ORDER_FROM_SHOP,
+                format!("checkout?shop={max}"),
+            )),
+        };
+        let more = |next| format!("cart?page={next}");
+        let next = vec![postback(&labels::CONTINUE_SHOPPING, "buy".to_owned())];
+
+        let spread: Vec<_> = (0..=CART_SHOPS_PER_PAGE).map(|_| shop_of(2)).collect();
+        let page = t.cart(&spread, 0, more, next.clone());
+        limits::check(slice::from_ref(&page)).unwrap();
+        let Body::Flex {
+            alt_text,
+            contents: FlexContainer::Carousel(carousel),
+        } = &page.body
+        else {
+            panic!("not a carousel");
+        };
+        assert_eq!(alt_text, "ตะกร้า");
+        assert_eq!(carousel.contents.len(), CART_SHOPS_PER_PAGE + 1);
+        let texts = card_texts(&carousel.contents[0]);
+        assert_eq!(texts[0], format!("ร้าน{shop}"));
+        assert_eq!(texts[1], name);
+        assert_eq!(texts[2], format!("99 {unit} × ฿100,000"));
+        assert_eq!(texts[3], "฿9,900,000");
+        assert_eq!(texts[4], format!("เหลือแค่ 98 {unit}"));
+
+        let one = [shop_of(20)];
+        limits::check(&[t.cart(&one, 0, more, next)]).unwrap();
     }
 
     /// FR-SRCH-07: a product's details show its card and every other photo, as many as a carousel

@@ -26,6 +26,21 @@ impl Money {
     pub const fn satang(self) -> i64 {
         self.0
     }
+
+    /// `quantity` of something at this price: a line's total. Panics if it does not fit, which
+    /// no cart or order comes near.
+    pub fn times(self, quantity: i32) -> Self {
+        let total = self.0.checked_mul(i64::from(quantity));
+        Self(total.expect("amount in range"))
+    }
+}
+
+/// The total of the amounts, as a cart's or an order's subtotal. Panics if it does not fit.
+impl std::iter::Sum for Money {
+    fn sum<I: Iterator<Item = Self>>(mut amounts: I) -> Self {
+        let total = amounts.try_fold(0_i64, |total, amount| total.checked_add(amount.0));
+        Self(total.expect("amount in range"))
+    }
 }
 
 impl fmt::Display for Money {
@@ -73,6 +88,23 @@ mod tests {
         assert_eq!(Money::from_satang(1).to_string(), "฿0.01");
         assert_eq!(Money::from_satang(1_250).to_string(), "฿12.50");
         assert_eq!(Money::from_satang(125_050).to_string(), "฿1,250.50");
+    }
+
+    #[test]
+    fn a_line_is_its_price_times_its_quantity() {
+        assert_eq!(Money::from_baht(110).times(2), Money::from_baht(220));
+        assert_eq!(
+            Money::from_satang(1_250).times(3),
+            Money::from_satang(3_750)
+        );
+        assert_eq!(Money::from_baht(100_000).times(0), Money::ZERO);
+    }
+
+    #[test]
+    fn amounts_add_up() {
+        let lines = [Money::from_baht(220), Money::from_satang(1_250)];
+        assert_eq!(lines.into_iter().sum::<Money>(), Money::from_satang(23_250));
+        assert_eq!(std::iter::empty::<Money>().sum::<Money>(), Money::ZERO);
     }
 
     #[test]

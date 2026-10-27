@@ -42,6 +42,7 @@ use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
 use crate::notifications::Queued;
 use crate::notifications::templates::labels;
+use crate::orders::cart::{self, QuantityFlow};
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
 use crate::users::address::{self, AddressFlow};
@@ -454,8 +455,8 @@ fn step_name(step: &Step) -> &'static str {
 ///
 /// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21),
 /// problem reports (#22), shop applications and the reasons for turning one down (#23), shop
-/// settings (#24), adding products (#25), changing them (#26), searching (#28) and checkout
-/// (#32).
+/// settings (#24), adding products (#25), changing them (#26), searching (#28), the quantity
+/// for the cart (#29) and checkout (#32).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -506,6 +507,10 @@ async fn answer_flow(
             Some(session) => {
                 Some(manage::answer(turn, config, &context.ai, &context.line, session, input).await)
             }
+            None => None,
+        },
+        QuantityFlow::NAME => match stored.read::<QuantityFlow>() {
+            Some(session) => Some(cart::answer(turn, session, input).await),
             None => None,
         },
         _ => None,
@@ -569,9 +574,8 @@ async fn tapped(
         action if action == browse::CATEGORY || action.starts_with(browse::PREFIX) => {
             return browse::tapped(turn, &context.config, postback).await;
         }
-        orders::ADD_TO_CART => {
-            return Ok(not_built("adding to the cart", 29, fallback(turn)));
-        }
+        action if action.starts_with(cart::PREFIX) => return cart::tapped(turn, postback).await,
+        orders::CHECKOUT => return Ok(not_built("checkout", 32, fallback(turn))),
         users::DELETE_ACCOUNT => {
             return Ok(not_built("deleting the account", 36, fallback(turn)));
         }
@@ -604,7 +608,7 @@ async fn menu_item(
         }
         AddProduct => return products::tapped(turn, &context.config, &context.ai, postback).await,
         MyProducts => return manage::tapped(turn, &context.config, postback).await,
-        Cart => 29,
+        Cart => return cart::tapped(turn, postback).await,
         MyOrders | ShopOrders => 34,
         Sales => 39,
         ReviewQueue | Users => 31,
@@ -621,7 +625,7 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
         Keyword::Cancel => return flow::cancel(turn).await,
         // The AI assistant (#37) also clears the user's AI context here (FR-AI-11)
         Keyword::Restart => return flow::cancel(turn).await,
-        Keyword::Cart => not_built("cart", 29, fallback(turn)),
+        Keyword::Cart => return cart::show(turn).await,
         Keyword::Orders => not_built("orders", 34, fallback(turn)),
         Keyword::Help => return help::show(turn).await,
         Keyword::MyId => onboarding::my_id(turn),

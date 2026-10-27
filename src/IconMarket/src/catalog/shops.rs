@@ -1204,8 +1204,8 @@ fn photo_url(config: &Config, id: Option<Uuid>) -> Option<Url> {
 }
 
 /// Whether `shop` takes orders now: `APPROVED`, and open (FR-SHOP-05, FR-SHOP-10). Only then can
-/// its products go in a cart (#29) or be checked out (#32); closed, they stay visible. Held for
-/// review, it takes none, whether open or not (FR-PROD-09).
+/// its products go in a [cart](crate::orders::cart) or be checked out (#32); closed, they stay
+/// visible. Held for review, it takes none, whether open or not (FR-PROD-09).
 pub fn takes_orders(shop: &shop::Model) -> bool {
     shop.status == shop::Status::Approved && shop.is_open
 }

@@ -28,6 +28,7 @@ use crate::line::testing::{Answer, Fake, PUSH, REPLY};
 use crate::line::{Action, QuickReply};
 use crate::notifications::templates::{Browsed, labels};
 use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
+use crate::orders::cart;
 use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{
     audit_log, category, image, join_attempt, product, push_log, report, session, shop, user,
@@ -617,13 +618,20 @@ async fn input_is_routed_by_its_priority() {
 
     let menu = setup.menu();
     let notice = setup.notice(&config(20), false);
+    let empty_cart = t.empty_cart(vec![
+        Item::Buy
+            .postback()
+            .button(labels::CONTINUE_SHOPPING.clone()),
+        Item::Search.postback().button(labels::SEARCH.clone()),
+        Action::message(labels::MENU.clone(), labels::MENU.as_str()),
+    ]);
     let expected = [
         ("a1", vec![t.step_expired(15), menu.clone()]),
         ("a2", vec![t.image_not_expected()]),
         ("a3", vec![t.unsupported(), menu.clone()]),
         ("a4", vec![t.location_not_expected()]),
         ("a5", vec![t.denied(Denied::NotFound)]),
-        ("a6", setup.fallback()),
+        ("a6", vec![empty_cart]),
         ("a7", setup.fallback()),
         ("a8", vec![menu.clone()]),
         // Bob hasn't consented yet, so gets onboarding
@@ -1712,6 +1720,79 @@ async fn a_sold_out_product_is_restocked_end_to_end() {
         (restocked.stock, restocked.status),
         (Some(30), product::Status::Active)
     );
+    let session = session::Entity::find_by_id(alice).one(&s.db).await.unwrap();
+    assert_eq!(session, None);
+}
+
+/// FR-CART-01 – FR-CART-03, Appendix A.2, end to end: "ใส่ตะกร้า" asks how many, the quantity
+/// tapped goes in the cart, and "ดูตะกร้า" or typing "ตะกร้า" shows it, by shop. Checkout is
+/// #32's.
+#[tokio::test]
+async fn a_buyer_puts_a_product_in_the_cart_end_to_end() {
+    let s = setup().await;
+    let alice = onboarded(&s.db, ALICE).await;
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = testing::new_shop(seller.id).insert(&s.db).await.unwrap();
+    let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let product = testing::new_product(shop.id, eggs.id, "ไข่ไก่เบอร์ 2", Some(8));
+    let product = product.insert(&s.db).await.unwrap();
+
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, &format!("cart.add?product={}", product.id)),
+            said("a2", ALICE, "2"),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 2).await;
+    replied(&s, 2).await;
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let added = replies[&token("a2")][0].clone();
+    let data = |i: usize| {
+        added["quickReply"]["items"][i]["action"]["data"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (order_now, view_cart) = (data(0), data(1));
+    store(
+        &s.db,
+        [
+            tapped("a3", ALICE, &view_cart),
+            said("a4", ALICE, "ตะกร้า"),
+            tapped("a5", ALICE, &order_now),
+        ],
+    )
+    .await;
+    running.wakeup.notify();
+    settled(&s.db, 5).await;
+    replied(&s, 5).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let reply = |id: &str| replies[&token(id)].clone();
+    assert_eq!(reply("a1")[0]["text"], "\"ไข่ไก่เบอร์ 2\" เอากี่แผงคะ");
+    assert_eq!(added["text"], "ใส่ตะกร้าแล้วค่ะ ไข่ไก่เบอร์ 2 × 2 แผง = ฿220");
+    assert_eq!(order_now, format!("checkout?shop={}", shop.id));
+    let cart = reply("a3")[0].clone();
+    assert_eq!(cart["altText"], "ตะกร้า");
+    let shown = serde_json::to_string(&cart).unwrap();
+    for part in ["ร้านป้าแดง", "2 แผง × ฿110", "฿220", "สั่งซื้อร้านนี้"]
+    {
+        assert!(shown.contains(part), "{part} in {shown}");
+    }
+    assert_eq!(reply("a4"), reply("a3"));
+    // Checkout is built by #32
+    assert_eq!(reply("a5"), json!(s.fallback()));
+
+    let lines = cart::lines(&s.db, alice).await.unwrap();
+    let lines: Vec<_> = lines
+        .iter()
+        .map(|line| (line.product.id, line.item.quantity))
+        .collect();
+    assert_eq!(lines, [(product.id, 2)]);
     let session = session::Entity::find_by_id(alice).one(&s.db).await.unwrap();
     assert_eq!(session, None);
 }

@@ -7,9 +7,9 @@
 //! (FR-SRCH-03). A card shows the product's first photo, or a placeholder, its name, price per
 //! unit and shop, and whether it can be ordered: how many are left, made to order, sold out or
 //! its shop closed (FR-SRCH-07). Its "ดูร้าน" shows the shop's card; its "ใส่ตะกร้า", only
-//! while it can be ordered (FR-PROD-06), puts it in the cart (#29); a tap anywhere else shows
-//! its details: every photo, its description and its shop. When a list has nothing to show,
-//! the reply says so and suggests where else to look (FR-SRCH-08).
+//! while it can be ordered (FR-PROD-06), puts it in the [cart](orders::cart); a tap anywhere
+//! else shows its details: every photo, its description and its shop. When a list has nothing
+//! to show, the reply says so and suggests where else to look (FR-SRCH-08).
 //!
 //! Every button carries only IDs and page numbers, and each tap finds what it names afresh: a
 //! product or shop that buyers no longer see is not found (FR-UI-13). Anyone may browse,

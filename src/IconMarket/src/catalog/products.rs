@@ -19,12 +19,7 @@
 //!
 //! A product's [`Availability`] is what its card says of it (FR-SRCH-07): how many are left, or
 //! that it is made to order, sold out (FR-PROD-06) or of a closed shop (FR-SHOP-05). Only an
-//! orderable one can go in a cart (#29) or be checked out (#32).
-
-#![allow(
-    dead_code,
-    reason = "the cart (#29) and checkout (#32) are built by later issues"
-)]
+//! orderable one can go in a [cart](crate::orders::cart) or be checked out (#32).
 
 pub mod manage;
 #[cfg(test)]
@@ -1089,7 +1084,7 @@ pub enum Availability {
 impl Availability {
     /// That of `product` of `shop`. Whether the product is for sale at all, `ACTIVE`, is the
     /// caller's check: lists show only those (FR-SRCH-02), and the cart flags the others
-    /// (FR-CART-03). A shop that doesn't take orders makes it [`ShopClosed`](Self::ShopClosed)
+    /// ([`cart::State`](crate::orders::cart::State), FR-CART-03). A shop that doesn't take orders makes it [`ShopClosed`](Self::ShopClosed)
     /// whatever its stock; one not `APPROVED` has its products hidden anyway (FR-SHOP-10).
     pub fn of(product: &product::Model, shop: &shop::Model) -> Self {
         if !shops::takes_orders(shop) {
