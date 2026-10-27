@@ -6,12 +6,12 @@
 //! quantity is never carried by a postback (NFR-SEC-03). A line holds 1–99 of its product, and
 //! no more than is left: a quantity over that is refused, saying how many are left (FR-CART-01).
 //! Adding a product already in the cart adds to its line, so the limit counts what the line
-//! holds. Nothing is reserved: checkout takes the stock (#32). A cart holds at most
+//! holds. Nothing is reserved: [checkout](super::checkout) takes the stock. A cart holds at most
 //! [`MAX_ITEMS`] products, as many as an order may (FR-CART-07), which also keeps the whole cart
 //! within what LINE's carousels hold (FR-LINE-11). A seller can't put their own shop's products
 //! in it (FR-CART-07).
 //!
-//! Once added, the reply offers "สั่งซื้อเลย", which checks out that shop's lines (#32), "ดูตะกร้า"
+//! Once added, the reply offers "สั่งซื้อเลย", which checks out that shop's lines, "ดูตะกร้า"
 //! and "เลือกซื้อต่อ". "ตะกร้า" shows the cart a card per shop, the shop added to last first: each
 //! line's name, quantity, unit price and total, with "แก้จำนวน" and "ลบออก", then the shop's
 //! subtotal and "สั่งซื้อร้านนี้". A line that can't be ordered now ([`State`]) is flagged, and
@@ -565,23 +565,24 @@ fn quantities(most: i32) -> Vec<Action> {
     choices
 }
 
-/// "สั่งซื้อเลย" or "สั่งซื้อร้านนี้", labelled `label`: checks out shop `shop_id`'s lines (#32).
-fn checkout(shop_id: i64, label: &Label) -> Action {
+/// "สั่งซื้อเลย" or "สั่งซื้อร้านนี้", labelled `label`: checks out shop `shop_id`'s lines
+/// (FR-CART-04).
+pub(super) fn checkout(shop_id: i64, label: &Label) -> Action {
     let checkout = Postback::new(orders::CHECKOUT).with_int(orders::SHOP_ID, shop_id);
     checkout.button(label.clone())
 }
 
-fn view_cart() -> Action {
+pub(super) fn view_cart() -> Action {
     Item::Cart.postback().button(labels::VIEW_CART.clone())
 }
 
-fn continue_shopping() -> Action {
+pub(super) fn continue_shopping() -> Action {
     Item::Buy
         .postback()
         .button(labels::CONTINUE_SHOPPING.clone())
 }
 
-fn menu_button() -> Action {
+pub(super) fn menu_button() -> Action {
     Action::message(labels::MENU.clone(), labels::MENU.as_str())
 }
 

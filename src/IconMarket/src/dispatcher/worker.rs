@@ -350,9 +350,10 @@ impl Worker {
         let sorry = self.context.templates.something_went_wrong();
         Ok(Settled::Answer(Handled {
             reply: Some(Reply {
-                token,
+                token: Some(token),
                 to: row.user_key.clone(),
                 messages: vec![Message::text(sorry)],
+                essential: false,
             }),
             pushes: Queued::default(),
             relink: Vec::new(),
@@ -402,23 +403,41 @@ impl Worker {
         }
     }
 
-    /// Sends `reply` with its event's reply token, or not at all if that fails: a reply is never
-    /// pushed instead unless it is essential (FR-LINE-07).
+    /// Sends `reply` with its event's reply token. Should that fail, an essential reply is
+    /// pushed instead, and the push logged (FR-LINE-07, FR-NOT-05); any other is not sent at all.
     async fn reply(&self, reply: Reply, received_at: DateTimeUtc, span: &Span) {
+        let importance = if reply.essential {
+            Importance::Essential
+        } else {
+            Importance::Optional
+        };
         let delivery = self
             .context
             .line
             .respond(
-                Some(&reply.token),
+                reply.token.as_deref(),
                 &reply.to,
                 &reply.messages,
-                Importance::Optional,
+                importance,
             )
             .instrument(span.clone())
             .await;
         let latency_ms = (Utc::now() - received_at).num_milliseconds();
+        if let Ok(Delivery::Pushed { retry_key, result }) = &delivery {
+            let (db, to) = (&self.context.db, &reply.to);
+            let logged =
+                notifications::log_reply_pushed(db, to, &reply.messages, *retry_key, result)
+                    .instrument(span.clone())
+                    .await;
+            if let Err(e) = logged {
+                span.in_scope(|| warn!(error = %e, "cannot log the reply pushed instead"));
+            }
+        }
         span.in_scope(|| match delivery {
             Ok(Delivery::Replied) => debug!(latency_ms, "replied"),
+            Ok(Delivery::Pushed { result: Ok(_), .. }) => {
+                info!(latency_ms, "the reply token failed; pushed instead");
+            }
             Ok(delivery) => debug!(latency_ms, ?delivery, "reply not delivered"),
             Err(e) => error!(error = %e, "the reply breaks LINE's limits, so it was not sent"),
         });

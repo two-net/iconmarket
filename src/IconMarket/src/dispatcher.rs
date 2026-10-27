@@ -40,6 +40,7 @@ mod tests;
 mod worker;
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::TimeDelta;
 use sea_orm::prelude::DateTimeUtc;
@@ -83,6 +84,8 @@ pub struct Turn<'a> {
     notifications: Mutex<Outbox>,
     /// The users whose roles handling the event changed, behind a lock likewise
     roles_changed: Mutex<Vec<i64>>,
+    /// Whether the reply must reach the user even if its reply token can't be used
+    essential: AtomicBool,
 }
 
 /// What a turn leaves to do once its event takes effect.
@@ -93,6 +96,8 @@ pub struct Finished {
     pub outbox: Outbox,
     /// The users whose rich menus to relink, in ID order (FR-UI-10)
     pub relink: Vec<i64>,
+    /// Whether the reply is pushed instead should its reply token fail (FR-LINE-07)
+    pub essential: bool,
 }
 
 impl<'a> Turn<'a> {
@@ -120,6 +125,7 @@ impl<'a> Turn<'a> {
             expired,
             notifications: Mutex::new(Outbox::default()),
             roles_changed: Mutex::new(Vec::new()),
+            essential: AtomicBool::new(false),
         })
     }
 
@@ -177,6 +183,12 @@ impl<'a> Turn<'a> {
             .push(user_id);
     }
 
+    /// Marks the reply essential, such as an order confirmation (FR-LINE-07): should its reply
+    /// token have expired or fail, it is pushed instead of dropped.
+    pub fn essential(&self) {
+        self.essential.store(true, Ordering::Relaxed);
+    }
+
     /// Ends the turn: its [reply](Self::reply) of `messages`, what it notifies, and the rich
     /// menus to relink. The actor's own is relinked too if it doesn't match the roles they had
     /// at the start: they were listed as an admin before their first event, say, or an earlier
@@ -200,6 +212,7 @@ impl<'a> Turn<'a> {
             messages,
             outbox,
             relink,
+            essential: self.essential.into_inner(),
         }
     }
 

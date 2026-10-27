@@ -1,6 +1,7 @@
 //! One checkout at one shop (FR-CART-04, FR-ORD).
 
 use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use super::PersonalData;
 use crate::thai::Money;
@@ -69,7 +70,8 @@ pub enum Status {
     Expired,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+/// Kept in checkout's flow and confirmation too
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
 #[sea_orm(
     rs_type = "String",
     db_type = "String(StringLen::None)",
@@ -80,8 +82,8 @@ pub enum Fulfillment {
     Delivery,
 }
 
-/// FR-PAY-02
-#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+/// FR-PAY-02. Kept in checkout's flow and confirmation too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
 #[sea_orm(
     rs_type = "String",
     db_type = "String(StringLen::None)",

@@ -161,6 +161,7 @@ impl Setup {
             messages,
             outbox,
             relink,
+            ..
         } = turn.finish(messages);
         outbox
             .queue(&txn, &self.config.notification, t0())

@@ -2,13 +2,14 @@
 //! `ai.limits.globalDailyCalls`, kept in daily counters (§5.1) so they reset at midnight in the
 //! business time zone (`app.timeZone`). A request counts once, however many tries it takes.
 
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, TransactionTrait};
 
 use crate::persistence::entity::counter;
+use crate::thai;
 
 /// The day's counter keys for a call at `now`: everyone's, and the user's when it is made for
 /// one. In the style of `order:20261022`.
@@ -17,8 +18,7 @@ pub(super) fn keys(
     time_zone: Tz,
     user_id: Option<i64>,
 ) -> (String, Option<String>) {
-    let day = now.with_timezone(&time_zone);
-    let global = format!("ai:{:04}{:02}{:02}", day.year(), day.month(), day.day());
+    let global = format!("ai:{}", thai::compact_date(now, time_zone));
     let user = user_id.map(|id| format!("{global}:u{id}"));
     (global, user)
 }

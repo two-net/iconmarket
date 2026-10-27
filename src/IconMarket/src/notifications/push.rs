@@ -407,6 +407,42 @@ pub async fn send(db: &DatabaseConnection, line: &line::Client, queued: Queued) 
     }
 }
 
+/// What the push log calls an essential reply pushed instead (FR-LINE-07)
+const REPLY: &str = "reply";
+
+/// Logs the push of an essential reply to `recipient`, made with `retry_key` once its reply
+/// token failed (FR-LINE-07, FR-NOT-05), and how it went. One that failed in a way worth
+/// retrying stays `PENDING` with its `messages`, so the retry job sends it again with the same
+/// retry key. Returns its status.
+pub async fn log_reply_pushed(
+    db: &DatabaseConnection,
+    recipient: &str,
+    messages: &[Message],
+    retry_key: RetryKey,
+    result: &Result<Pushed, line::Error>,
+) -> Result<Status, DbErr> {
+    let now = Utc::now();
+    let row = push_log::ActiveModel {
+        push_type: Set(REPLY.to_owned()),
+        recipient: Set(recipient.to_owned()),
+        retry_key: Set(Some(retry_key.uuid())),
+        status: Set(Status::Pending),
+        error: Set(None),
+        sent_at: Set(now),
+        messages: Set(Some(
+            serde_json::to_value(messages).expect("messages serialize"),
+        )),
+        attempts: Set(0),
+        queued_at: Set(now),
+        ..Default::default()
+    };
+    let row = push_log::Entity::insert(row)
+        .exec_with_returning(db)
+        .await?;
+    let push = Push::from_row(row).expect("its messages and retry key were just stored");
+    record(db, &push, result, now).await
+}
+
 /// What a run of the retry job did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Retried {

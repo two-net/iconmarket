@@ -45,6 +45,7 @@ use crate::line::Message;
 use crate::notifications::Queued;
 use crate::notifications::templates::labels;
 use crate::orders::cart::{self, QuantityFlow};
+use crate::orders::checkout::{self, CheckoutFlow};
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
 use crate::users::address::{self, AddressFlow};
@@ -73,10 +74,14 @@ const APPROVALS: &str = "approvals.";
 /// The answer to an event, sent once its transaction commits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reply {
-    pub token: String,
+    /// The event's reply token; `None` if it came without one, so only an essential reply is
+    /// sent, by push
+    pub token: Option<String>,
     /// The chat it answers, should it have to be pushed instead
     pub to: String,
     pub messages: Vec<Message>,
+    /// Whether it is pushed instead should its reply token fail (FR-LINE-07)
+    pub essential: bool,
 }
 
 /// What handling an event leaves to send once its transaction commits.
@@ -150,6 +155,7 @@ pub async fn handle(
         messages,
         outbox,
         relink,
+        essential,
     } = match source {
         Source::User(line_user_id) => {
             user_event(context, txn, row, &line_user_id, kind, now).await?
@@ -162,14 +168,14 @@ pub async fn handle(
         Source::Room | Source::Unknown => Finished::default(),
     };
     let pushes = outbox.queue(txn, &context.config.notification, now).await?;
-    let reply = match reply_token {
-        Some(token) if !messages.is_empty() => Some(Reply {
-            token,
-            to: row.user_key.clone(),
-            messages,
-        }),
-        _ => None,
-    };
+    // Without a reply token, only an essential reply can be sent (FR-LINE-07)
+    let answerable = reply_token.is_some() || essential;
+    let reply = (answerable && !messages.is_empty()).then(|| Reply {
+        token: reply_token,
+        to: row.user_key.clone(),
+        messages,
+        essential,
+    });
     Ok(Handled {
         reply,
         pushes,
@@ -553,6 +559,10 @@ async fn answer_flow(
             Some(session) => Some(cart::answer(turn, session, input).await),
             None => None,
         },
+        CheckoutFlow::NAME => match stored.read::<CheckoutFlow>() {
+            Some(session) => Some(checkout::answer(turn, config, session, input).await),
+            None => None,
+        },
         _ => None,
     };
     match answered {
@@ -621,7 +631,10 @@ async fn tapped(
             return browse::tapped(turn, &context.config, postback).await;
         }
         action if action.starts_with(cart::PREFIX) => return cart::tapped(turn, postback).await,
-        orders::CHECKOUT => return Ok(not_built("checkout", 32, fallback(turn))),
+        orders::CHECKOUT => return checkout::tapped(turn, &context.config, postback).await,
+        orders::CANCEL_ORDER => {
+            return Ok(not_built("cancelling an order", 33, fallback(turn)));
+        }
         users::DELETE_ACCOUNT => {
             return Ok(not_built("deleting the account", 36, fallback(turn)));
         }

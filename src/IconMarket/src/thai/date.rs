@@ -34,6 +34,13 @@ pub fn format_date_time(at: DateTime<Utc>, time_zone: Tz) -> String {
     format!("{} {:02}:{:02}", date(&local), local.hour(), local.minute())
 }
 
+/// `20261022`: the day it is at `at` in `time_zone`, as daily counters and order numbers name
+/// it (§5.1, FR-ORD-01)
+pub fn compact_date(at: DateTime<Utc>, time_zone: Tz) -> String {
+    let day = at.with_timezone(&time_zone);
+    format!("{:04}{:02}{:02}", day.year(), day.month(), day.day())
+}
+
 /// The first instant at which the clocks in `time_zone` show `time` on `date`: the earlier one
 /// when the clocks go back, and the end of the gap when they skip `time`.
 pub fn local_instant(date: NaiveDate, time: NaiveTime, time_zone: Tz) -> DateTime<Utc> {
@@ -80,6 +87,15 @@ mod tests {
         let at = utc(2026, 12, 31, 17, 0);
         assert_eq!(format_date_time(at, Bangkok), "1 ม.ค. 2570 00:00");
         assert_eq!(format_date(at, chrono_tz::UTC), "31 ธ.ค. 2569");
+    }
+
+    /// §5.1, FR-ORD-01: a day is named in the Gregorian calendar, turning at Bangkok midnight.
+    #[test]
+    fn compact_dates_name_the_local_day() {
+        assert_eq!(compact_date(utc(2026, 10, 22, 7, 30), Bangkok), "20261022");
+        assert_eq!(compact_date(utc(2026, 12, 31, 16, 59), Bangkok), "20261231");
+        assert_eq!(compact_date(utc(2026, 12, 31, 17, 0), Bangkok), "20270101");
+        assert_eq!(compact_date(utc(2027, 3, 5, 2, 0), Bangkok), "20270305");
     }
 
     #[test]

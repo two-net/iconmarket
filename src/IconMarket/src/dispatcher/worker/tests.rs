@@ -1347,9 +1347,10 @@ async fn an_events_notifications_are_pushed_after_its_reply() {
     );
 
     let reply = Reply {
-        token: token("e1"),
+        token: Some(token("e1")),
         to: ALICE.to_owned(),
         messages: vec![Message::text("สั่งซื้อแล้วค่ะ")],
+        essential: false,
     };
     worker
         .send(super::Answer {
@@ -2011,8 +2012,8 @@ async fn a_sold_out_product_is_restocked_end_to_end() {
 }
 
 /// FR-CART-01 – FR-CART-03, Appendix A.2, end to end: "ใส่ตะกร้า" asks how many, the quantity
-/// tapped goes in the cart, and "ดูตะกร้า" or typing "ตะกร้า" shows it, by shop. Checkout is
-/// #32's.
+/// tapped goes in the cart, and "ดูตะกร้า" or typing "ตะกร้า" shows it, by shop; "สั่งซื้อเลย"
+/// checks it out, first asking a new buyer for their address (FR-ONB-04).
 #[tokio::test]
 async fn a_buyer_puts_a_product_in_the_cart_end_to_end() {
     let s = setup().await;
@@ -2070,8 +2071,9 @@ async fn a_buyer_puts_a_product_in_the_cart_end_to_end() {
         assert!(shown.contains(part), "{part} in {shown}");
     }
     assert_eq!(reply("a4"), reply("a3"));
-    // Checkout is built by #32
-    assert_eq!(reply("a5"), json!(s.fallback()));
+    let t = &s.templates;
+    let ask_address = templates::with_cancel(t.ask_zone(true, false, None));
+    assert_eq!(reply("a5"), json!([ask_address]));
 
     let lines = cart::lines(&s.db, alice).await.unwrap();
     let lines: Vec<_> = lines
@@ -2080,7 +2082,210 @@ async fn a_buyer_puts_a_product_in_the_cart_end_to_end() {
         .collect();
     assert_eq!(lines, [(product.id, 2)]);
     let session = session::Entity::find_by_id(alice).one(&s.db).await.unwrap();
-    assert_eq!(session, None);
+    assert_eq!(
+        session.map(|session| session.flow).as_deref(),
+        Some("address")
+    );
+}
+
+/// The action labelled `label` among the buttons and Quick Replies of `messages`, a reply.
+fn offered(messages: &Value, label: &str) -> Value {
+    fn find(value: &Value, label: &str) -> Option<Value> {
+        match value {
+            Value::Object(fields)
+                if fields.contains_key("type")
+                    && fields.get("label").and_then(Value::as_str) == Some(label) =>
+            {
+                Some(value.clone())
+            }
+            Value::Object(fields) => fields.values().find_map(|value| find(value, label)),
+            Value::Array(values) => values.iter().find_map(|value| find(value, label)),
+            _ => None,
+        }
+    }
+    find(messages, label).unwrap_or_else(|| panic!("no \"{label}\" offered in {messages}"))
+}
+
+/// The event `id` of user `from` tapping `action`: its postback, or the text it sends as typed.
+fn pressed(id: &str, from: &str, action: &Value) -> Value {
+    match action["type"].as_str() {
+        Some("postback") => tapped(id, from, action["data"].as_str().unwrap()),
+        Some("message") => said(id, from, action["text"].as_str().unwrap()),
+        _ => panic!("neither a postback nor text: {action}"),
+    }
+}
+
+/// Stores `event` for `running` to handle, as the `n`th, and returns its reply, the `n`th.
+async fn reply_to(s: &Setup, running: &Running, event: Value, n: usize) -> Value {
+    store(&s.db, [event]).await;
+    running.wakeup.notify();
+    settled(&s.db, n).await;
+    replied(s, n).await;
+    s.replies()[n - 1].1.clone()
+}
+
+/// A returning buyer, at ซอย 3 บ้านเลขที่ 45/2, and a product of a shop that delivers and takes
+/// PromptPay: ไข่ไก่เบอร์ 2 at ฿110, 8 left.
+async fn returning_buyer(s: &Setup) -> (i64, product::Model) {
+    let alice = onboarded(&s.db, ALICE).await;
+    let address = user::ActiveModel {
+        id: Set(alice),
+        zone: Set(Some("ซอย 3".to_owned())),
+        house_number: Set(Some("45/2".to_owned())),
+        ..Default::default()
+    };
+    address.update(&s.db).await.unwrap();
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = shop::ActiveModel {
+        promptpay_id: Set(Some("0812345678".to_owned())),
+        ..testing::new_shop(seller.id)
+    };
+    let shop = shop.insert(&s.db).await.unwrap();
+    let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let product = testing::new_product(shop.id, eggs.id, "ไข่ไก่เบอร์ 2", Some(8));
+    (alice, product.insert(&s.db).await.unwrap())
+}
+
+/// Appendix A.2's first 7 taps, from "ใส่ตะกร้า" on `product`'s card to checkout's summary,
+/// each on a button or Quick Reply of the reply before: the summary.
+async fn tapped_to_summary(s: &Setup, running: &Running, product: &product::Model) -> Value {
+    let add = tapped("a1", ALICE, &format!("cart.add?product={}", product.id));
+    let mut reply = reply_to(s, running, add, 1).await;
+    let labels = ["2", "สั่งซื้อเลย", "ให้ไปส่ง +฿10", "ใช่", "เงินสดตอนรับของ", "ไม่มี"];
+    for (n, label) in (2..).zip(labels) {
+        let tap = pressed(&format!("a{n}"), ALICE, &offered(&reply, label));
+        reply = reply_to(s, running, tap, n).await;
+    }
+    reply
+}
+
+/// Appendix A.2, NFR-USE-01, FR-CART-04 – FR-CART-08, end to end: a returning buyer goes from a
+/// product's card to a placed order in 8 taps, each on what the reply before offered, without
+/// typing.
+#[tokio::test]
+async fn a_returning_buyer_orders_in_eight_taps_end_to_end() {
+    let s = setup().await;
+    let (alice, product) = returning_buyer(&s).await;
+    let running = s.run();
+
+    let summary = tapped_to_summary(&s, &running, &product).await;
+    assert_eq!(summary[0]["altText"], "สรุปคำสั่งซื้อ รวม ฿230");
+    let confirm = pressed("a8", ALICE, &offered(&summary, "ยืนยันสั่งซื้อ"));
+    let placed = reply_to(&s, &running, confirm, 8).await;
+    running.stop().await;
+
+    let orders = crate::persistence::entity::order::Entity::find()
+        .all(&s.db)
+        .await
+        .unwrap();
+    assert_eq!(orders.len(), 1);
+    let order = &orders[0];
+    assert_eq!(
+        (order.buyer_id, order.total),
+        (alice, Money::from_baht(230))
+    );
+    assert!(
+        order.order_number.ends_with("-0001"),
+        "{}",
+        order.order_number
+    );
+    assert_eq!(
+        placed[0]["altText"],
+        format!("สั่งซื้อเรียบร้อยค่ะ เลขที่ {} · รอร้านยืนยัน", order.order_number)
+    );
+    offered(&placed, "ยกเลิกออเดอร์");
+    assert_eq!(s.replies().len(), 8);
+    assert_eq!(pushes(&s), []);
+}
+
+/// FR-LINE-07, FR-NOT-05, end to end: the order's card is essential, so when its reply token
+/// fails it is pushed instead, and the push logged.
+#[tokio::test]
+async fn an_order_placed_is_pushed_when_its_reply_fails() {
+    let s = setup().await;
+    let (_, product) = returning_buyer(&s).await;
+    let running = s.run();
+
+    let summary = tapped_to_summary(&s, &running, &product).await;
+    s.line
+        .script(REPLY, [Answer::error(400, "Invalid reply token")]);
+    let confirm = pressed("a8", ALICE, &offered(&summary, "ยืนยันสั่งซื้อ"));
+    store(&s.db, [confirm]).await;
+    running.wakeup.notify();
+    requested(&s, |path, _| path == PUSH).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let logs = loop {
+        let logs = push_log::Entity::find().all(&s.db).await.unwrap();
+        if !logs.is_empty() {
+            break logs;
+        }
+        assert!(Instant::now() < deadline, "never logged");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    running.stop().await;
+
+    let pushed = pushes(&s);
+    assert_eq!(pushed.len(), 1);
+    let (to, messages) = &pushed[0];
+    assert_eq!(to, ALICE);
+    let alt_text = messages[0]["altText"].as_str().unwrap();
+    assert!(alt_text.starts_with("สั่งซื้อเรียบร้อยค่ะ เลขที่ IM-"), "{alt_text}");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        (
+            logs[0].push_type.as_str(),
+            logs[0].status,
+            logs[0].recipient.as_str()
+        ),
+        ("reply", push_log::Status::Sent, ALICE)
+    );
+}
+
+/// FR-LINE-07: a reply that isn't essential is dropped when its reply token fails, as a push
+/// counts against the monthly quota; an essential one is pushed, and the push logged.
+#[tokio::test]
+async fn only_an_essential_reply_is_pushed_when_its_token_fails() {
+    let s = setup().await;
+    let worker = Worker::new(
+        &TaskTracker::new(),
+        CancellationToken::new(),
+        s.context(&s.pool, 20),
+        Wakeup::default(),
+        1,
+        FAST,
+    );
+    let answer = |token: &str, essential: bool| super::Answer {
+        handled: Handled {
+            reply: Some(Reply {
+                token: Some(token.to_owned()),
+                to: ALICE.to_owned(),
+                messages: vec![Message::text("สั่งซื้อเรียบร้อยค่ะ")],
+                essential,
+            }),
+            ..Handled::default()
+        },
+        received_at: Utc::now(),
+        span: Span::none(),
+    };
+    let expired = || Answer::error(400, "Invalid reply token");
+    s.line.script(REPLY, [expired(), expired()]);
+
+    worker.send(answer("optional", false)).await;
+    assert_eq!(pushes(&s), []);
+    worker.send(answer("essential", true)).await;
+    assert_eq!(
+        pushes(&s),
+        [(
+            ALICE.to_owned(),
+            json!([{ "type": "text", "text": "สั่งซื้อเรียบร้อยค่ะ" }])
+        )]
+    );
+    let logs = push_log::Entity::find().all(&s.db).await.unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        (logs[0].push_type.as_str(), logs[0].status),
+        ("reply", push_log::Status::Sent)
+    );
 }
 
 /// FR-PROD-09, end to end: a product listed with a prohibited keyword is held for review. The

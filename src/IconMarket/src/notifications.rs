@@ -17,5 +17,7 @@ mod tests;
     unused_imports,
     reason = "the features that notify are built by later issues"
 )]
-pub use push::{Kind, Outbox, PushStats, Queued, Retried, To, retry, send, stats};
+pub use push::{
+    Kind, Outbox, PushStats, Queued, Retried, To, log_reply_pushed, retry, send, stats,
+};
 pub use rich_menus::{RichMenus, provision_rich_menus, relink_rich_menus};

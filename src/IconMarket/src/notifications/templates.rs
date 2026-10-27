@@ -25,7 +25,7 @@ use crate::line::flex::{
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
 use crate::orders::cart;
 use crate::payments;
-use crate::persistence::entity::{product, shop};
+use crate::persistence::entity::{order, product, shop};
 use crate::thai::{self, Label, Money, NumberError};
 use crate::users::access::Denied;
 use crate::users::help::Topic;
@@ -71,6 +71,11 @@ impl Templates {
     /// `22 ต.ค. 2569`, in the business time zone
     pub fn date(&self, at: DateTime<Utc>) -> String {
         thai::format_date(at, self.time_zone)
+    }
+
+    /// The business time zone (`app.timeZone`), whose days number orders too (FR-ORD-01)
+    pub fn time_zone(&self) -> Tz {
+        self.time_zone
     }
 
     /// Something failed on our side; the user can retry or start over.
@@ -954,6 +959,179 @@ impl Templates {
     ) -> Message {
         let page = carousel_page(shops, page, CART_SHOPS_PER_PAGE, cart_shop_card, more);
         Message::flex(labels::CART.as_str(), page).with_quick_reply(QuickReply::new(next))
+    }
+
+    /// Checkout's first step (FR-CART-04), as in Appendix A.2: picked up at the shop, or
+    /// delivered. The choices follow as Quick Replies, the delivery fee on its button.
+    pub fn ask_pickup_or_delivery(&self) -> Message {
+        Message::text(format!("รับเองที่ร้าน หรือให้ร้านไปส่ง{}", self.kha_question()))
+    }
+
+    /// Where to deliver (FR-CART-04), as in Appendix A.2: `address` as [`address_line`] shows
+    /// it, at the location the buyer shared if `located`. "ใช่", "เปลี่ยนที่อยู่" and
+    /// "แชร์ตำแหน่ง" follow as Quick Replies.
+    pub fn confirm_delivery_address(&self, address: &str, located: bool) -> Message {
+        let located = if located {
+            " ตามตำแหน่งที่แชร์ไว้"
+        } else {
+            ""
+        };
+        Message::text(format!(
+            "ส่งที่ {address}{located} ใช่ไหม{}",
+            self.kha_question()
+        ))
+    }
+
+    /// How the buyer pays (FR-CART-04), as in Appendix A.2. The methods the shop takes follow
+    /// as Quick Replies.
+    pub fn ask_payment_method(&self) -> Message {
+        Message::text(format!("ชำระเงินแบบไหน{}", self.kha_question()))
+    }
+
+    /// An optional note for the shop (FR-CART-04), as in Appendix A.2: typed, or "ไม่มี".
+    pub fn ask_order_note(&self) -> Message {
+        Message::text(format!("มีอะไรฝากถึงร้านไหม{} พิมพ์ได้เลย", self.kha_question()))
+    }
+
+    /// The shop checked out is the buyer's own (FR-CART-07).
+    pub fn own_shop_order(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ร้านนี้เป็นร้านของคุณเอง จึงสั่งซื้อไม่ได้ ลองดูสินค้าร้านอื่นได้เลย{kha}"
+        ))
+    }
+
+    /// No line of shop `shop` in the cart can be ordered now (FR-CART-03).
+    pub fn nothing_to_order(&self, shop: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ตอนนี้ในตะกร้าไม่มีสินค้าของ{}ที่สั่งได้{kha} ดูตะกร้าหรือเลือกซื้อต่อได้เลย{kha}",
+            shop_called(shop)
+        ))
+    }
+
+    /// The lines of shop `shop` come to `subtotal`, less than its minimum order, `minimum`
+    /// (FR-CART-05).
+    pub fn below_minimum_order(&self, shop: &str, minimum: Money, subtotal: Money) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขอโทษ{kha} {}รับออเดอร์ขั้นต่ำ {minimum} ตอนนี้ในตะกร้ามี {subtotal} เลือกซื้อเพิ่มอีกนิดนะ{kha_question}",
+            shop_called(shop)
+        ))
+    }
+
+    /// More lines than an order holds, `max` (FR-CART-07).
+    pub fn too_many_to_order(&self, max: usize) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขอโทษ{kha} สั่งซื้อได้ครั้งละไม่เกิน {max} รายการ ลบบางรายการออกจากตะกร้าก่อนนะ{kha_question}"
+        ))
+    }
+
+    /// Shop `shop` takes none of the payment methods allowed: PromptPay is the only one, and it
+    /// has no PromptPay ID (FR-CART-04).
+    pub fn no_payment_method(&self, shop: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} {}ยังไม่ได้ตั้งพร้อมเพย์ไว้ จึงยังสั่งซื้อไม่ได้ ลองสั่งร้านอื่นก่อนได้เลย{kha}",
+            shop_called(shop)
+        ))
+    }
+
+    /// The shop no longer offers how the buyer chose to get the order or pay for it
+    /// (FR-CART-04), so they choose again.
+    pub fn checkout_options_changed(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขอโทษ{kha} ร้านเปลี่ยนวิธีรับของหรือการชำระเงินแล้ว เลือกใหม่อีกครั้งนะ{kha_question}"
+        ))
+    }
+
+    /// Checkout's summary (FR-CART-04), as in Appendix A.2: `order` as it would be placed, with
+    /// `buttons`, "ยืนยันสั่งซื้อ", "แก้ไข" and "ยกเลิก".
+    pub fn checkout_summary(&self, order: &OrderDetails<'_>, buttons: &[Action]) -> Message {
+        let card = order_card("สรุปคำสั่งซื้อ", None, order, buttons);
+        Message::flex(format!("สรุปคำสั่งซื้อ รวม {}", order.total), card)
+    }
+
+    /// The order `number`, `status` and `order`, just placed (FR-CART-08), as in Appendix A.2,
+    /// or placed by an earlier tap of the same confirmation if `again` (FR-UI-13); `buttons` are
+    /// what the buyer can do about it, "ยกเลิกออเดอร์" while it waits for the shop.
+    pub fn order_placed(
+        &self,
+        number: &str,
+        status: order::Status,
+        order: &OrderDetails<'_>,
+        again: bool,
+        buttons: &[Action],
+    ) -> Message {
+        let kha = self.kha();
+        let headline = if again {
+            format!("สั่งซื้อนี้ไว้แล้ว{kha}")
+        } else {
+            format!("สั่งซื้อเรียบร้อย{kha}")
+        };
+        let status = order_status_name(status);
+        let card = order_card(&headline, Some((number, status)), order, buttons);
+        Message::flex(format!("{headline} เลขที่ {number} · {status}"), card)
+    }
+
+    /// A confirmed checkout placed no order, as `changes` happened since its summary
+    /// (FR-CART-05, FR-CART-06): "สินค้าหมดแล้ว" if a product sold out (AC-03), then each
+    /// change. `again` when an updated summary follows (AC-12).
+    pub fn checkout_changed(&self, changes: &[CheckoutChange<'_>], again: bool) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let sold_out = changes
+            .iter()
+            .any(|change| matches!(change, CheckoutChange::SoldOut { .. }));
+        let what = if sold_out {
+            "สินค้าหมดแล้ว"
+        } else {
+            "ข้อมูลเปลี่ยนไประหว่างสั่งซื้อ"
+        };
+        let mut lines = vec![format!("ขอโทษ{kha} {what} จึงยังไม่ได้สั่งซื้อ")];
+        lines.extend(changes.iter().map(|change| match *change {
+            CheckoutChange::SoldOut { name } => format!("• \"{name}\" หมดแล้ว"),
+            CheckoutChange::NotEnough { name, left, unit } => {
+                format!("• \"{name}\" เหลือแค่ {left} {unit}")
+            }
+            CheckoutChange::Unavailable { name } => format!("• \"{name}\" ตอนนี้ไม่มีขาย"),
+            CheckoutChange::ShopClosed { shop } => {
+                format!("• {}ไม่รับออเดอร์ตอนนี้", shop_called(shop))
+            }
+            CheckoutChange::Price {
+                name,
+                unit,
+                from,
+                to,
+            } => format!(
+                "• \"{name}\" ราคาเปลี่ยนจาก {} เป็น {}",
+                price_per_unit(from, unit),
+                price_per_unit(to, unit)
+            ),
+            CheckoutChange::DeliveryFee { from, to } => {
+                format!("• ค่าส่งเปลี่ยนจาก {from} เป็น {to}")
+            }
+        }));
+        lines.push(if again {
+            format!(
+                "ตรวจสรุปใหม่ด้านล่าง แล้วกด \"{}\" อีกครั้งนะ{kha_question}",
+                labels::CONFIRM_ORDER.as_str()
+            )
+        } else {
+            format!("ดูตะกร้าหรือเลือกซื้อต่อได้เลย{kha}")
+        });
+        Message::text(lines.join("\n"))
+    }
+
+    /// A checkout's confirmation came too late, or after it was cancelled (FR-UI-13), so
+    /// nothing was ordered. Where to carry on follows.
+    pub fn checkout_gone(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "สรุปคำสั่งซื้อนี้หมดเวลาหรือถูกยกเลิกแล้ว จึงยังไม่ได้สั่งซื้อ{kha} ถ้ายังจะสั่ง กด \"{}\" อีกครั้งได้เลย{kha}",
+            labels::ORDER_FROM_SHOP.as_str()
+        ))
     }
 
     /// "ช่วยเหลือ" (FR-HELP-01): a button for each of `topics`, those of the user's roles.
@@ -3359,6 +3537,65 @@ pub struct CartLine<'a> {
     pub buttons: Vec<Action>,
 }
 
+/// An order as checkout's summary and the order's card show it (FR-CART-04, FR-CART-08).
+pub struct OrderDetails<'a> {
+    /// Its shop's name
+    pub shop: &'a str,
+    pub lines: Vec<OrderLine<'a>>,
+    pub subtotal: Money,
+    /// ฿0 for pickup
+    pub delivery_fee: Money,
+    pub total: Money,
+    pub fulfillment: order::Fulfillment,
+    /// Where it is delivered, as [`address_line`] shows it; `None` for pickup
+    pub address: Option<String>,
+    pub payment: order::PaymentMethod,
+    /// For the shop (FR-CART-04)
+    pub note: Option<&'a str>,
+}
+
+/// A line of an order: its product as it was when ordered (DR-03).
+pub struct OrderLine<'a> {
+    pub name: &'a str,
+    pub unit: &'a str,
+    pub price: Money,
+    pub quantity: i32,
+    pub total: Money,
+}
+
+/// What changed since checkout's summary, so its confirmation placed no order (FR-CART-05).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckoutChange<'a> {
+    /// None left (FR-CART-06)
+    SoldOut {
+        name: &'a str,
+    },
+    /// Fewer left than the line holds
+    NotEnough {
+        name: &'a str,
+        left: i32,
+        unit: &'a str,
+    },
+    /// Hidden, held, removed or deleted
+    Unavailable {
+        name: &'a str,
+    },
+    /// The shop takes no orders now
+    ShopClosed {
+        shop: &'a str,
+    },
+    Price {
+        name: &'a str,
+        unit: &'a str,
+        from: Money,
+        to: Money,
+    },
+    DeliveryFee {
+        from: Money,
+        to: Money,
+    },
+}
+
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
 pub struct ShopCard<'a> {
     pub name: &'a str,
@@ -3868,30 +4105,13 @@ fn cart_shop_card(card: &CartShop<'_>) -> Bubble {
 /// A line on its shop's card in the cart: its name, quantity and unit price, and total, why it
 /// can't be ordered if it can't, and its buttons side by side.
 fn cart_line_box(line: &CartLine<'_>) -> Component {
-    let name = Text {
-        size: Some(Size::Sm),
-        weight: Some(Weight::Bold),
-        wrap: Some(true),
-        max_lines: Some(2),
-        ..Text::new(line.name)
-    };
-    let each = Text {
-        size: Some(Size::Sm),
-        color: Some(MUTED.to_owned()),
-        wrap: Some(true),
-        flex: Some(3),
-        ..Text::new(format!("{} {} × {}", line.quantity, line.unit, line.price))
-    };
-    let total = Text {
-        size: Some(Size::Sm),
-        align: Some(Align::End),
-        flex: Some(2),
-        ..Text::new(line.total.to_string())
-    };
-    let mut contents: Vec<Component> = vec![
-        name.into(),
-        FlexBox::baseline([each.into(), total.into()]).into(),
-    ];
+    let mut contents = Vec::from(line_amounts(
+        line.name,
+        line.quantity,
+        line.unit,
+        line.price,
+        line.total,
+    ));
     if let Some(problem) = cart_problem(line.state, line.unit) {
         let problem = Text {
             size: Some(Size::Sm),
@@ -3920,6 +4140,159 @@ fn cart_line_box(line: &CartLine<'_>) -> Component {
         ..FlexBox::vertical(contents)
     }
     .into()
+}
+
+/// A line of the cart or of an order: the product's name, then its quantity and unit price,
+/// and its total.
+fn line_amounts(
+    name: &str,
+    quantity: i32,
+    unit: &str,
+    price: Money,
+    total: Money,
+) -> [Component; 2] {
+    let name = Text {
+        size: Some(Size::Sm),
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        max_lines: Some(2),
+        ..Text::new(name)
+    };
+    let each = Text {
+        size: Some(Size::Sm),
+        color: Some(MUTED.to_owned()),
+        wrap: Some(true),
+        flex: Some(3),
+        ..Text::new(format!("{quantity} {unit} × {price}"))
+    };
+    let total = Text {
+        size: Some(Size::Sm),
+        align: Some(Align::End),
+        flex: Some(2),
+        ..Text::new(total.to_string())
+    };
+    [
+        name.into(),
+        FlexBox::baseline([each.into(), total.into()]).into(),
+    ]
+}
+
+/// Checkout's summary or an order's card (FR-CART-04, FR-CART-08): the `headline`, the order's
+/// number and status once placed, then its shop and lines, its subtotal, delivery fee and
+/// total, how it is received and paid, the note, and `buttons`, the first one primary.
+fn order_card(
+    headline: &str,
+    placed: Option<(&str, &str)>,
+    order: &OrderDetails<'_>,
+    buttons: &[Action],
+) -> Bubble {
+    let headline = Text {
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(headline)
+    };
+    let mut contents: Vec<Component> = vec![headline.into()];
+    if let Some((number, status)) = placed {
+        contents.push(row("เลขที่", number));
+        contents.push(row("สถานะ", status));
+    }
+    contents.push(Separator::default().into());
+    let shop = Text {
+        size: Some(Size::Sm),
+        weight: Some(Weight::Bold),
+        wrap: Some(true),
+        ..Text::new(shop_called(order.shop))
+    };
+    contents.push(shop.into());
+    for line in &order.lines {
+        let amounts = line_amounts(line.name, line.quantity, line.unit, line.price, line.total);
+        let line = FlexBox {
+            spacing: Some(Spacing::Sm),
+            ..FlexBox::vertical(amounts)
+        };
+        contents.push(line.into());
+    }
+    contents.push(Separator::default().into());
+    contents.push(amount("ค่าสินค้า", order.subtotal, false));
+    if order.fulfillment == order::Fulfillment::Delivery {
+        contents.push(amount(
+            labels::DELIVERY_FEE.as_str(),
+            order.delivery_fee,
+            false,
+        ));
+    }
+    contents.push(amount("รวม", order.total, true));
+    contents.push(Separator::default().into());
+    let received = match &order.address {
+        Some(address) => format!("ส่งที่ {address}"),
+        None => fulfillment_name(order.fulfillment).to_owned(),
+    };
+    contents.push(row("รับของ", &received));
+    contents.push(row("ชำระเงิน", payment_name(order.payment)));
+    if let Some(note) = order.note {
+        contents.push(row("ฝากถึงร้าน", note));
+    }
+    let body = FlexBox {
+        spacing: Some(Spacing::Md),
+        ..FlexBox::vertical(contents)
+    };
+    Bubble {
+        size: Some(BubbleSize::Mega),
+        body: Some(body),
+        footer: footer(buttons),
+        ..Bubble::default()
+    }
+}
+
+/// An amount of an order, its `label` beside it, in bold if it is the `total`.
+fn amount(label: &str, value: Money, total: bool) -> Component {
+    let weight = total.then_some(Weight::Bold);
+    let label = Text {
+        size: Some(Size::Sm),
+        weight,
+        color: (!total).then(|| MUTED.to_owned()),
+        flex: Some(2),
+        ..Text::new(label)
+    };
+    let value = Text {
+        size: Some(Size::Sm),
+        weight,
+        align: Some(Align::End),
+        flex: Some(3),
+        ..Text::new(value.to_string())
+    };
+    FlexBox::baseline([label.into(), value.into()]).into()
+}
+
+/// How an order is received, as its card says when it isn't delivered to an address shown
+/// (Appendix A.2).
+pub fn fulfillment_name(fulfillment: order::Fulfillment) -> &'static str {
+    match fulfillment {
+        order::Fulfillment::Pickup => labels::PICKUP_ONLY.as_str(),
+        order::Fulfillment::Delivery => "ส่งถึงบ้าน",
+    }
+}
+
+/// How an order is paid, as the buyer chose it (FR-PAY-02).
+pub fn payment_name(payment: order::PaymentMethod) -> &'static str {
+    match payment {
+        order::PaymentMethod::Cash => labels::CASH_ON_RECEIPT.as_str(),
+        order::PaymentMethod::PromptPay => labels::PROMPTPAY_TRANSFER.as_str(),
+    }
+}
+
+/// An order's status as the buyer sees it (Table 4.6-A).
+pub fn order_status_name(status: order::Status) -> &'static str {
+    match status {
+        order::Status::Pending => "รอร้านยืนยัน",
+        order::Status::Accepted => "ร้านรับออเดอร์แล้ว",
+        order::Status::Ready => "พร้อมให้รับ",
+        order::Status::Delivering => "กำลังไปส่ง",
+        order::Status::Completed => "สำเร็จ",
+        order::Status::Rejected => "ร้านไม่รับออเดอร์",
+        order::Status::Cancelled => "ยกเลิกแล้ว",
+        order::Status::Expired => "หมดเวลา",
+    }
 }
 
 /// A product's card in "สินค้าของฉัน" (FR-PROD-05): its first photo, name and price per unit,
@@ -4605,16 +4978,33 @@ pub mod labels {
         VIEW_SHOP = "ดูร้าน",
 
         // The cart (FR-CART), with CART, ADD_TO_CART and REMOVE
-        /// Checks out the shop of the product just put in the cart (FR-CART-01, #32)
+        /// Checks out the shop of the product just put in the cart (FR-CART-01)
         ORDER_NOW = "สั่งซื้อเลย",
         VIEW_CART = "ดูตะกร้า",
         /// Back to "ซื้อของ", once a product is in the cart
         CONTINUE_SHOPPING = "เลือกซื้อต่อ",
-        /// Checks out a shop's lines in the cart (FR-CART-03, #32)
+        /// Checks out a shop's lines in the cart (FR-CART-03)
         ORDER_FROM_SHOP = "สั่งซื้อร้านนี้",
         /// Asks to type a quantity other than those offered (FR-CART-01)
         TYPE_QUANTITY = "ระบุเอง",
         CHANGE_QUANTITY = "แก้จำนวน",
+
+        // Checkout (FR-CART-04 – FR-CART-08), with EDIT and CANCEL, as in Appendix A.2
+        /// Picks the order up at the shop
+        PICK_UP = "รับเอง",
+        /// Has the shop deliver it; its button also shows the fee
+        DELIVER = "ให้ไปส่ง",
+        /// Delivers to the address shown
+        YES = "ใช่",
+        CHANGE_ADDRESS = "เปลี่ยนที่อยู่",
+        CASH_ON_RECEIPT = "เงินสดตอนรับของ",
+        PROMPTPAY_TRANSFER = "โอนพร้อมเพย์",
+        /// Leaves the shop no note
+        NO_NOTE = "ไม่มี",
+        /// Places the order summarized (FR-CART-05)
+        CONFIRM_ORDER = "ยืนยันสั่งซื้อ",
+        /// Cancels an order the shop is yet to accept (FR-CART-08, FR-ORD-06)
+        CANCEL_ORDER = "ยกเลิกออเดอร์",
 
         // Adding a product (FR-PROD-01, FR-PROD-03)
         /// Lists the product previewed; buyers see it from then on
@@ -4712,6 +5102,34 @@ mod tests {
         Denied::ShopSuspended,
         Denied::NotAllowed,
         Denied::NotFound,
+    ];
+
+    /// Every change a checkout's confirmation can find (FR-CART-05)
+    const CHANGES: [CheckoutChange<'static>; 6] = [
+        CheckoutChange::SoldOut {
+            name: "ไข่ไก่เบอร์ 2"
+        },
+        CheckoutChange::NotEnough {
+            name: "นมสด",
+            left: 1,
+            unit: "ขวด",
+        },
+        CheckoutChange::Unavailable {
+            name: "ผักบุ้ง"
+        },
+        CheckoutChange::ShopClosed {
+            shop: "ร้านป้าแดง"
+        },
+        CheckoutChange::Price {
+            name: "ไข่ไก่เบอร์ 0",
+            unit: "แผง",
+            from: Money::from_baht(110),
+            to: Money::from_baht(120),
+        },
+        CheckoutChange::DeliveryFee {
+            from: Money::from_baht(10),
+            to: Money::from_baht(20),
+        },
     ];
 
     const REJECTIONS: [Rejected; 5] = [
@@ -4960,6 +5378,22 @@ mod tests {
             text(&t.quantity_changed("ไข่ไก่เบอร์ 2", 3, "แผง", Money::from_baht(330))).to_owned(),
             text(&t.removed_from_cart("ไข่ไก่เบอร์ 2")).to_owned(),
             text(&t.empty_cart(Vec::new())).to_owned(),
+            text(&t.ask_pickup_or_delivery()).to_owned(),
+            text(&t.confirm_delivery_address("ซอย 3 บ้านเลขที่ 45/2", false)).to_owned(),
+            text(&t.confirm_delivery_address("ซอย 3 บ้านเลขที่ 45/2", true)).to_owned(),
+            text(&t.ask_payment_method()).to_owned(),
+            text(&t.ask_order_note()).to_owned(),
+            text(&t.own_shop_order()).to_owned(),
+            text(&t.nothing_to_order("ร้านป้าแดง")).to_owned(),
+            text(&t.below_minimum_order("ร้านป้าแดง", Money::from_baht(100), Money::from_baht(55)))
+                .to_owned(),
+            text(&t.too_many_to_order(20)).to_owned(),
+            text(&t.no_payment_method("ร้านป้าแดง")).to_owned(),
+            text(&t.checkout_options_changed()).to_owned(),
+            text(&t.checkout_changed(&CHANGES, true)).to_owned(),
+            text(&t.checkout_changed(&CHANGES, false)).to_owned(),
+            text(&t.checkout_changed(&[], true)).to_owned(),
+            text(&t.checkout_gone()).to_owned(),
         ];
         for (visible, changed) in [(true, true), (true, false), (false, true), (false, false)] {
             let visibility = t.product_visibility("ไข่ไก่เบอร์ 2", visible, changed);
@@ -6240,6 +6674,199 @@ mod tests {
 
         let one = [shop_of(20)];
         limits::check(&[t.cart(&one, 0, more, next)]).unwrap();
+    }
+
+    /// The order of Appendix A.2: 2 แผง of eggs, delivered for ฿10 to ซอย 3 and paid in cash.
+    fn egg_order() -> OrderDetails<'static> {
+        OrderDetails {
+            shop: "ร้านป้าแดง",
+            lines: vec![OrderLine {
+                name: "ไข่ไก่เบอร์ 2",
+                unit: "แผง",
+                price: Money::from_baht(110),
+                quantity: 2,
+                total: Money::from_baht(220),
+            }],
+            subtotal: Money::from_baht(220),
+            delivery_fee: Money::from_baht(10),
+            total: Money::from_baht(230),
+            fulfillment: order::Fulfillment::Delivery,
+            address: Some(address_line("ซอย 3", "45/2", None)),
+            payment: order::PaymentMethod::Cash,
+            note: None,
+        }
+    }
+
+    /// Appendix A.2, FR-CART-04, FR-CART-08: checkout asks as in the sample, its summary shows
+    /// the items, subtotal, delivery fee and total, how the order is received and paid, and the
+    /// order placed says its number and status.
+    #[test]
+    fn checkout_speaks_as_in_appendix_a2() {
+        let t = templates(PoliteParticle::Kha);
+        assert_eq!(
+            text(&t.ask_pickup_or_delivery()),
+            "รับเองที่ร้าน หรือให้ร้านไปส่งคะ"
+        );
+        assert_eq!(
+            text(&t.confirm_delivery_address("ซอย 3 บ้านเลขที่ 45/2", false)),
+            "ส่งที่ ซอย 3 บ้านเลขที่ 45/2 ใช่ไหมคะ"
+        );
+        assert_eq!(text(&t.ask_payment_method()), "ชำระเงินแบบไหนคะ");
+        assert_eq!(text(&t.ask_order_note()), "มีอะไรฝากถึงร้านไหมคะ พิมพ์ได้เลย");
+
+        let order = egg_order();
+        let summary = t.checkout_summary(&order, &[]);
+        let Body::Flex {
+            alt_text,
+            contents: FlexContainer::Bubble(card),
+        } = &summary.body
+        else {
+            panic!("not a card");
+        };
+        assert_eq!(alt_text, "สรุปคำสั่งซื้อ รวม ฿230");
+        assert_eq!(
+            card_texts(card),
+            [
+                "สรุปคำสั่งซื้อ",
+                "ร้านป้าแดง",
+                "ไข่ไก่เบอร์ 2",
+                "2 แผง × ฿110",
+                "฿220",
+                "ค่าสินค้า",
+                "฿220",
+                "ค่าส่ง",
+                "฿10",
+                "รวม",
+                "฿230",
+                "รับของ",
+                "ส่งที่ ซอย 3 บ้านเลขที่ 45/2",
+                "ชำระเงิน",
+                "เงินสดตอนรับของ",
+            ]
+        );
+
+        let placed = t.order_placed(
+            "IM-20261022-0007",
+            order::Status::Pending,
+            &order,
+            false,
+            &[],
+        );
+        let Body::Flex { alt_text, .. } = &placed.body else {
+            panic!("not a card");
+        };
+        assert_eq!(alt_text, "สั่งซื้อเรียบร้อยค่ะ เลขที่ IM-20261022-0007 · รอร้านยืนยัน");
+    }
+
+    /// FR-CART-05, FR-CART-06, AC-03: what changed since a summary is said line by line, and
+    /// "สินค้าหมดแล้ว" first when a product sold out.
+    #[test]
+    fn what_changed_at_checkout_is_said() {
+        let t = templates(PoliteParticle::Kha);
+        assert_eq!(
+            text(&t.checkout_changed(&CHANGES, false)),
+            "ขอโทษค่ะ สินค้าหมดแล้ว จึงยังไม่ได้สั่งซื้อ\n\
+             • \"ไข่ไก่เบอร์ 2\" หมดแล้ว\n\
+             • \"นมสด\" เหลือแค่ 1 ขวด\n\
+             • \"ผักบุ้ง\" ตอนนี้ไม่มีขาย\n\
+             • ร้านป้าแดงไม่รับออเดอร์ตอนนี้\n\
+             • \"ไข่ไก่เบอร์ 0\" ราคาเปลี่ยนจาก ฿110 / แผง เป็น ฿120 / แผง\n\
+             • ค่าส่งเปลี่ยนจาก ฿10 เป็น ฿20\n\
+             ดูตะกร้าหรือเลือกซื้อต่อได้เลยค่ะ"
+        );
+        assert_eq!(
+            text(&t.checkout_changed(&CHANGES[4..], true)),
+            "ขอโทษค่ะ ข้อมูลเปลี่ยนไประหว่างสั่งซื้อ จึงยังไม่ได้สั่งซื้อ\n\
+             • \"ไข่ไก่เบอร์ 0\" ราคาเปลี่ยนจาก ฿110 / แผง เป็น ฿120 / แผง\n\
+             • ค่าส่งเปลี่ยนจาก ฿10 เป็น ฿20\n\
+             ตรวจสรุปใหม่ด้านล่าง แล้วกด \"ยืนยันสั่งซื้อ\" อีกครั้งนะคะ"
+        );
+    }
+
+    /// Table 4.6-A, FR-PAY-02: an order's status, payment method and fulfillment as the buyer
+    /// reads them.
+    #[test]
+    fn orders_read_as_table_4_6_a() {
+        let statuses = [
+            order::Status::Pending,
+            order::Status::Accepted,
+            order::Status::Ready,
+            order::Status::Delivering,
+            order::Status::Completed,
+            order::Status::Rejected,
+            order::Status::Cancelled,
+            order::Status::Expired,
+        ]
+        .map(order_status_name);
+        assert_eq!(
+            statuses,
+            [
+                "รอร้านยืนยัน",
+                "ร้านรับออเดอร์แล้ว",
+                "พร้อมให้รับ",
+                "กำลังไปส่ง",
+                "สำเร็จ",
+                "ร้านไม่รับออเดอร์",
+                "ยกเลิกแล้ว",
+                "หมดเวลา",
+            ]
+        );
+        let payments = [order::PaymentMethod::Cash, order::PaymentMethod::PromptPay];
+        assert_eq!(payments.map(payment_name), ["เงินสดตอนรับของ", "โอนพร้อมเพย์"]);
+        let fulfillments = [order::Fulfillment::Pickup, order::Fulfillment::Delivery];
+        assert_eq!(fulfillments.map(fulfillment_name), ["รับเองที่ร้าน", "ส่งถึงบ้าน"]);
+    }
+
+    /// FR-CART-07, FR-LINE-11: the largest order fits, as checkout's summary and as its card:
+    /// 20 lines with the longest values they take, the longest address and note, and the
+    /// longest buttons.
+    #[test]
+    fn a_full_order_fits() {
+        let t = templates(PoliteParticle::Kha);
+        let (name, unit, shop) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(50));
+        let (zone, house_number, landmark) = ("ข".repeat(50), "ข".repeat(30), "ข".repeat(100));
+        let note = "ข".repeat(200);
+        let max = i64::MAX;
+        let order = OrderDetails {
+            shop: &shop,
+            lines: (0..20)
+                .map(|_| OrderLine {
+                    name: &name,
+                    unit: &unit,
+                    price: Money::from_baht(100_000),
+                    quantity: 99,
+                    total: Money::from_baht(100_000).times(99),
+                })
+                .collect(),
+            subtotal: Money::from_baht(100_000).times(99 * 20),
+            delivery_fee: Money::from_baht(10_000),
+            total: Money::from_baht(100_000).times(99 * 20),
+            fulfillment: order::Fulfillment::Delivery,
+            address: Some(address_line(&zone, &house_number, Some(&landmark))),
+            payment: order::PaymentMethod::PromptPay,
+            note: Some(&note),
+        };
+        let summary = [
+            postback(
+                &labels::CONFIRM_ORDER,
+                "confirm?k=checkout&pa=6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b".to_owned(),
+            ),
+            postback(&labels::EDIT, format!("checkout?shop={max}")),
+            Action::message(labels::CANCEL.clone(), labels::CANCEL.as_str()),
+        ];
+        limits::check(&[t.checkout_summary(&order, &summary)]).unwrap();
+        let cancel = [postback(
+            &labels::CANCEL_ORDER,
+            format!("order.cancel?order={max}"),
+        )];
+        let placed = t.order_placed(
+            "IM-20261022-9999",
+            order::Status::Pending,
+            &order,
+            true,
+            &cancel,
+        );
+        limits::check(&[placed]).unwrap();
     }
 
     /// FR-SRCH-07: a product's details show its card and every other photo, as many as a carousel

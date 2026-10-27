@@ -15,7 +15,7 @@ mod money;
 mod number;
 mod phone;
 
-pub use date::{format_date, format_date_time, local_instant};
+pub use date::{compact_date, format_date, format_date_time, local_instant};
 pub use label::{Label, shorten};
 pub use money::{Money, group_thousands};
 pub use number::{NumberError, arabic_digits, parse_money, parse_whole};

@@ -25,6 +25,7 @@ use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Location, Turn};
 use crate::line::{Action, Message, QuickReply, limits};
 use crate::notifications::templates::{self, labels};
+use crate::orders::checkout;
 use crate::persistence::entity::user;
 use crate::thai::{self, Label};
 
@@ -61,6 +62,9 @@ pub enum Then {
     MyData,
     /// On to "เปิดร้าน" (FR-SHOP-01)
     OpenShop,
+    /// Back to checking out shop `shop_id` (FR-CART-04): from the first step, or, if the
+    /// address was changed to `deliver` to, from the payment method
+    Checkout { shop_id: i64, deliver: bool },
 }
 
 /// The flow's draft: what it asks for, where it goes next, and the answers so far. An answer
@@ -129,6 +133,9 @@ impl Then {
         match self {
             Self::MyData => profile::show(turn, config, user).await,
             Self::OpenShop => shops::open(turn, config, user).await,
+            Self::Checkout { shop_id, deliver } => {
+                checkout::resume(turn, config, user, shop_id, deliver).await
+            }
         }
     }
 }
