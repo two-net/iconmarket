@@ -25,6 +25,7 @@ use crate::line::flex::{
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
 use crate::orders::cart;
 use crate::payments;
+use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{order, product, shop};
 use crate::thai::{self, Label, Money, NumberError};
 use crate::users::access::Denied;
@@ -1132,6 +1133,358 @@ impl Templates {
             "สรุปคำสั่งซื้อนี้หมดเวลาหรือถูกยกเลิกแล้ว จึงยังไม่ได้สั่งซื้อ{kha} ถ้ายังจะสั่ง กด \"{}\" อีกครั้งได้เลย{kha}",
             labels::ORDER_FROM_SHOP.as_str()
         ))
+    }
+
+    /// Tells the seller of new order `number` (FR-ORD-03), as in Appendix A.4: its lines, delivery
+    /// fee and total, how it is received and paid, and who ordered it, as much as FR-ORD-11 shows
+    /// of an order yet to be accepted. `buttons` are "รับออเดอร์" and "ปฏิเสธ".
+    pub fn new_order_notice(
+        &self,
+        number: &str,
+        order: &NewOrder<'_>,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("ออเดอร์ใหม่{kha} {number}");
+        let mut details: Vec<String> = order
+            .lines
+            .iter()
+            .map(|line| {
+                format!(
+                    "{} × {} {} = {}",
+                    line.name, line.quantity, line.unit, line.total
+                )
+            })
+            .collect();
+        let delivered = order.fulfillment == order::Fulfillment::Delivery;
+        details.push(if delivered {
+            format!(
+                "{} {} · รวม {}",
+                labels::DELIVERY_FEE.as_str(),
+                order.delivery_fee,
+                order.total
+            )
+        } else {
+            format!("รวม {}", order.total)
+        });
+        let received = match order.zone {
+            Some(zone) if delivered => format!("ส่งที่ {zone}"),
+            _ => fulfillment_name(order.fulfillment).to_owned(),
+        };
+        details.push(format!("{received} · {}", payment_name(order.payment)));
+        let buyer = match (order.buyer, order.zone) {
+            (Some(buyer), Some(zone)) if !delivered => Some(format!("{buyer} · {zone}")),
+            (Some(buyer), _) => Some(buyer.to_owned()),
+            (None, _) => None,
+        };
+        if let Some(buyer) = buyer {
+            details.push(format!("ลูกค้า: {buyer}"));
+        }
+        notice(&headline, &details, buttons)
+    }
+
+    /// The seller accepted order `number` (Table 4.6-B), as in Appendix A.4: how to reach its
+    /// buyer, now that it is theirs to hand over (FR-ORD-11). `buttons` are the next step and
+    /// "ยกเลิกออเดอร์".
+    pub fn order_accepted(
+        &self,
+        number: &str,
+        contact: &Contact<'_>,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("รับออเดอร์ {number} แล้ว{kha}");
+        let mut details = vec![match &contact.address {
+            Some(address) => format!("ส่งที่ {address}"),
+            None => fulfillment_name(order::Fulfillment::Pickup).to_owned(),
+        }];
+        if let Some(buyer) = contact.buyer {
+            details.push(format!("ลูกค้า: {buyer}"));
+        }
+        if let Some(phone) = contact.phone {
+            details.push(format!("โทร {}", thai::format_phone(phone)));
+        }
+        if let Some(note) = contact.note {
+            details.push(format!("ฝากถึงร้าน: {note}"));
+        }
+        notice(&headline, &details, buttons)
+    }
+
+    /// Tells the buyer shop `shop` accepted their order `number` (FR-ORD-08), as in Appendix
+    /// A.4. `buttons` are what they can do now, "ขอยกเลิก".
+    pub fn order_accepted_notice(&self, shop: &str, number: &str, buttons: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let headline = format!(
+            "{}รับออเดอร์ {number} แล้ว{kha} กำลังเตรียมของ",
+            shop_called(shop)
+        );
+        notice(&headline, &[], buttons)
+    }
+
+    /// Tells the buyer their order `number` from shop `shop` is now `status` (FR-ORD-08): ready
+    /// to pick up, on its way, or handed over. `buttons` are what they can do now, such as
+    /// "ได้รับของแล้ว".
+    pub fn order_progress_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        status: order::Status,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let shop = shop_called(shop);
+        let headline = match status {
+            order::Status::Ready => format!("ออเดอร์ {number} พร้อมให้รับที่{shop}แล้ว{kha}"),
+            order::Status::Delivering => format!("{shop}กำลังไปส่งออเดอร์ {number}{kha}"),
+            _ => format!("ออเดอร์ {number} สำเร็จแล้ว ขอบคุณที่อุดหนุน{shop}{kha}"),
+        };
+        notice(&headline, &[], buttons)
+    }
+
+    /// Tells the buyer shop `shop` turned down their order `number`, for `reason` (FR-ORD-04,
+    /// FR-ORD-08). `buttons` carry on shopping.
+    pub fn order_rejected_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        reason: &str,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("{}ไม่รับออเดอร์ {number}{kha}", shop_called(shop));
+        let details = [
+            format!("เหตุผล: {reason}"),
+            format!("เลือกซื้อสินค้าอื่นได้เลย{kha}"),
+        ];
+        notice(&headline, &details, buttons)
+    }
+
+    /// Tells the buyer their order `number` from shop `shop` was cancelled by the shop, or by an
+    /// admin if `by_admin`, for `reason` (FR-ORD-04, FR-ORD-08, FR-ORD-12); `refund` if they had
+    /// paid, so the shop owes it back (FR-PAY-09). `buttons` carry on shopping.
+    pub fn order_cancelled_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        by_admin: bool,
+        reason: &str,
+        refund: bool,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = if by_admin {
+            format!("ผู้ดูแลยกเลิกออเดอร์ {number}{kha}")
+        } else {
+            format!("{}ยกเลิกออเดอร์ {number}{kha}", shop_called(shop))
+        };
+        let mut details = vec![format!("เหตุผล: {reason}")];
+        if refund {
+            details.push(format!(
+                "คุณชำระเงินไปแล้ว {}จะคืนเงินให้ ตกลงกับร้านได้โดยตรง{kha}",
+                shop_called(shop)
+            ));
+        }
+        details.push(format!("เลือกซื้อสินค้าอื่นได้เลย{kha}"));
+        notice(&headline, &details, buttons)
+    }
+
+    /// Tells the buyer shop `shop` did not answer their order `number` within `minutes`, so it
+    /// expired (FR-ORD-05, AC-11). `buttons` carry on shopping.
+    pub fn order_expired_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        minutes: u32,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("ออเดอร์ {number} หมดเวลา{kha}");
+        let details = [
+            format!(
+                "{}ไม่ได้ตอบรับภายใน {minutes} นาที ระบบจึงยกเลิกให้อัตโนมัติ{kha}",
+                shop_called(shop)
+            ),
+            format!("เลือกซื้อสินค้าอื่นได้เลย{kha}"),
+        ];
+        notice(&headline, &details, buttons)
+    }
+
+    /// Tells the seller the buyer cancelled order `number` before it was accepted (FR-ORD-06,
+    /// Table 4.8-A).
+    pub fn order_cancelled_by_buyer_notice(&self, number: &str) -> Message {
+        let kha = self.kha();
+        let headline = format!("ลูกค้ายกเลิกออเดอร์ {number}{kha}");
+        let details = [format!("ไม่ต้องเตรียมของ คืนจำนวนสินค้าเข้าสต็อกแล้ว{kha}")];
+        notice(&headline, &details, Vec::new())
+    }
+
+    /// Tells the seller an admin cancelled order `number`, for `reason` (FR-ORD-12); `refund` if
+    /// the buyer had paid, so the shop owes it back (FR-PAY-09).
+    pub fn order_cancelled_by_admin_notice(
+        &self,
+        number: &str,
+        reason: &str,
+        refund: bool,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("ผู้ดูแลยกเลิกออเดอร์ {number}{kha}");
+        let mut details = vec![
+            format!("เหตุผล: {reason}"),
+            format!("คืนจำนวนสินค้าเข้าสต็อกแล้ว{kha}"),
+        ];
+        if refund {
+            details.push(format!("ลูกค้าชำระเงินแล้ว กรุณาคืนเงินให้ลูกค้า{kha}"));
+        }
+        notice(&headline, &details, Vec::new())
+    }
+
+    /// Tells the seller order `number` expired, unanswered within `minutes` (FR-ORD-05, AC-11).
+    pub fn order_expired_seller_notice(&self, number: &str, minutes: u32) -> Message {
+        let kha = self.kha();
+        let headline = format!("ออเดอร์ {number} หมดเวลา{kha}");
+        let details = [format!(
+            "ไม่ได้ตอบรับภายใน {minutes} นาที ระบบจึงยกเลิกให้และคืนจำนวนสินค้าเข้าสต็อกแล้ว{kha}"
+        )];
+        notice(&headline, &details, Vec::new())
+    }
+
+    /// Tells the seller the buyer asks to cancel order `number`, which they accepted (FR-ORD-07):
+    /// `buttons`, "ยกเลิกออเดอร์" and "ไม่ยกเลิก", decide.
+    pub fn cancellation_requested_notice(&self, number: &str, buttons: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let headline = format!("ลูกค้าขอยกเลิกออเดอร์ {number}{kha}");
+        let details = [format!(
+            "กด \"{}\" เพื่อยกเลิกและคืนจำนวนสินค้าเข้าสต็อก หรือ \"{}\" เพื่อทำออเดอร์ต่อ{kha}",
+            labels::CANCEL_ORDER.as_str(),
+            labels::KEEP_ORDER.as_str()
+        )];
+        notice(&headline, &details, buttons)
+    }
+
+    /// The buyer asked to cancel order `number` (FR-ORD-07), or had already if `again`: the
+    /// seller decides.
+    pub fn cancellation_requested(&self, number: &str, again: bool) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let asked = if again {
+            format!("ขอยกเลิกออเดอร์ {number} ไปแล้ว{kha}")
+        } else {
+            format!("ส่งคำขอยกเลิกออเดอร์ {number} ถึงร้านแล้ว{kha}")
+        };
+        Message::text(format!("{asked} รอร้านตอบนะ{kha_question}"))
+    }
+
+    /// Tells the buyer shop `shop` goes on with their order `number` rather than cancel it, as
+    /// they asked (FR-ORD-07). `buttons` are what they can do now.
+    pub fn cancellation_kept_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!(
+            "{}ขอทำออเดอร์ {number} ต่อ ยังไม่ยกเลิกให้{kha}",
+            shop_called(shop)
+        );
+        notice(&headline, &[], buttons)
+    }
+
+    /// The seller goes on with order `number` rather than cancel it as the buyer asked
+    /// (FR-ORD-07). `buttons` are its next step.
+    pub fn cancellation_kept(&self, number: &str, buttons: Vec<Action>) -> Message {
+        let kha = self.kha();
+        notice(&format!("ทำออเดอร์ {number} ต่อ{kha}"), &[], buttons)
+    }
+
+    /// `by` moved order `number` to `status` (Table 4.6-B), other than accepting it, which says
+    /// more ([`order_accepted`](Self::order_accepted)). `buttons` are what they can do now.
+    pub fn order_moved(
+        &self,
+        number: &str,
+        status: order::Status,
+        by: ActorType,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let restocked = format!("คืนจำนวนสินค้าเข้าสต็อกแล้ว{kha}");
+        let (headline, details) = match status {
+            order::Status::Ready => (format!("ออเดอร์ {number} พร้อมให้รับแล้ว{kha}"), vec![]),
+            order::Status::Delivering => (format!("ออเดอร์ {number} กำลังไปส่ง{kha}"), vec![]),
+            order::Status::Completed if by == ActorType::Buyer => {
+                (format!("ออเดอร์ {number} สำเร็จแล้ว ขอบคุณที่แจ้ง{kha}"), vec![])
+            }
+            order::Status::Rejected => (format!("ปฏิเสธออเดอร์ {number} แล้ว{kha}"), vec![restocked]),
+            order::Status::Cancelled if by == ActorType::Buyer => {
+                (format!("ยกเลิกออเดอร์ {number} แล้ว{kha}"), vec![])
+            }
+            order::Status::Cancelled => (format!("ยกเลิกออเดอร์ {number} แล้ว{kha}"), vec![restocked]),
+            _ => (format!("ออเดอร์ {number} สำเร็จแล้ว{kha}"), vec![]),
+        };
+        notice(&headline, &details, buttons)
+    }
+
+    /// Order `number` is `status` now, so what was asked of it can't be done (FR-UI-13,
+    /// FR-ORD-02): it moved meanwhile, or the same button was tapped again. `buttons` are what
+    /// can be done now.
+    pub fn order_now(&self, number: &str, status: order::Status, buttons: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let headline = format!(
+            "ออเดอร์ {number} ตอนนี้สถานะ \"{}\"{kha}",
+            order_status_name(status)
+        );
+        notice(&headline, &[], buttons)
+    }
+
+    /// Asks why order `number` is moved to `status`, rejected or cancelled, by an admin if
+    /// `by_admin` (FR-ORD-04): `reasons`, sent as if typed, are those of FR-ORD-04.
+    pub fn ask_order_reason(
+        &self,
+        number: &str,
+        status: order::Status,
+        by_admin: bool,
+        reasons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let act = if status == order::Status::Rejected {
+            "ปฏิเสธ"
+        } else {
+            "ยกเลิก"
+        };
+        let seen = if by_admin {
+            "ทั้งลูกค้าและร้าน"
+        } else {
+            "ลูกค้า"
+        };
+        Message::text(format!(
+            "{act}ออเดอร์ {number} เพราะอะไร{kha_question} เลือกด้านล่างได้เลย {seen}จะเห็นเหตุผลนี้{kha}"
+        ))
+        .with_quick_reply(QuickReply::new(reasons))
+    }
+
+    /// Asks for the reason, "อื่นๆ" having been picked (FR-ORD-04), in at most `max_chars`.
+    pub fn ask_other_order_reason(&self, max_chars: usize) -> Message {
+        let kha = self.kha();
+        Message::text(format!("พิมพ์เหตุผลมาได้เลย{kha} ไม่เกิน {max_chars} ตัวอักษร"))
+    }
+
+    /// The order an admin found by its number in "ผู้ใช้" (FR-ADM-04), with `buttons`,
+    /// "ยกเลิกออเดอร์" while it is open (FR-ORD-12).
+    pub fn order_found(&self, order: &FoundOrder<'_>, buttons: Vec<Action>) -> Message {
+        let headline = format!("ออเดอร์ {}", order.number);
+        let mut details = vec![
+            format!("สถานะ: {}", order_status_name(order.status)),
+            shop_called(order.shop),
+        ];
+        if let Some(buyer) = order.buyer {
+            details.push(format!("ลูกค้า: {buyer}"));
+        }
+        details.push(format!(
+            "รวม {} · {}",
+            order.total,
+            payment_name(order.payment)
+        ));
+        details.push(format!("สั่งเมื่อ {}", self.date_time(order.placed_at)));
+        notice(&headline, &details, buttons)
     }
 
     /// "ช่วยเหลือ" (FR-HELP-01): a button for each of `topics`, those of the user's roles.
@@ -3596,6 +3949,49 @@ pub enum CheckoutChange<'a> {
     },
 }
 
+/// A new order as its seller is told of it (FR-ORD-03): what FR-ORD-11 shows of an order yet
+/// to be accepted, without the house number, phone or note.
+pub struct NewOrder<'a> {
+    pub lines: Vec<OrderLine<'a>>,
+    /// ฿0 for pickup
+    pub delivery_fee: Money,
+    pub total: Money,
+    pub fulfillment: order::Fulfillment,
+    pub payment: order::PaymentMethod,
+    /// The buyer's display name
+    pub buyer: Option<&'a str>,
+    /// The buyer's zone
+    pub zone: Option<&'a str>,
+}
+
+/// How the seller reaches the buyer of an order they accepted (FR-ORD-11), as in Appendix A.4.
+pub struct Contact<'a> {
+    /// The buyer's display name
+    pub buyer: Option<&'a str>,
+    /// Where it is delivered, as [`address_line`] shows it; `None` for pickup
+    pub address: Option<String>,
+    /// The buyer's phone, its digits, if they gave one
+    pub phone: Option<&'a str>,
+    /// For the shop (FR-CART-04)
+    pub note: Option<&'a str>,
+}
+
+/// An order as an admin finds it by its number (FR-ADM-04, FR-ORD-12).
+pub struct FoundOrder<'a> {
+    pub number: &'a str,
+    pub status: order::Status,
+    /// Its shop's name
+    pub shop: &'a str,
+    /// The buyer's display name
+    pub buyer: Option<&'a str>,
+    pub total: Money,
+    pub payment: order::PaymentMethod,
+    pub placed_at: DateTime<Utc>,
+}
+
+/// The reason an order is cancelled for when its seller grants the buyer's request (FR-ORD-07).
+pub const BUYER_ASKED_TO_CANCEL: &str = "ลูกค้าขอยกเลิก";
+
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
 pub struct ShopCard<'a> {
     pub name: &'a str,
@@ -5003,8 +5399,31 @@ pub mod labels {
         NO_NOTE = "ไม่มี",
         /// Places the order summarized (FR-CART-05)
         CONFIRM_ORDER = "ยืนยันสั่งซื้อ",
-        /// Cancels an order the shop is yet to accept (FR-CART-08, FR-ORD-06)
+        /// Cancels an order the shop is yet to accept (FR-CART-08, FR-ORD-06), or, by its seller
+        /// or an admin, one accepted (Table 4.6-B)
         CANCEL_ORDER = "ยกเลิกออเดอร์",
+
+        // Acting on an order (Table 4.6-B), with CANCEL_ORDER, as in Appendix A.4
+        ACCEPT_ORDER = "รับออเดอร์",
+        REJECT_ORDER = "ปฏิเสธ",
+        /// A pickup order is ready at the shop
+        MARK_READY = "พร้อมให้รับ",
+        /// A delivery order is on its way
+        MARK_DELIVERING = "กำลังไปส่ง",
+        /// The seller handed the order over
+        MARK_COMPLETED = "ส่งมอบแล้ว",
+        /// The buyer asks to cancel an accepted order; the seller decides (FR-ORD-07)
+        REQUEST_CANCEL = "ขอยกเลิก",
+        /// The buyer confirms receipt (FR-ORD-09)
+        CONFIRM_RECEIPT = "ได้รับของแล้ว",
+        /// The seller goes on with an order the buyer asked to cancel (FR-ORD-07)
+        KEEP_ORDER = "ไม่ยกเลิก",
+        // The reasons for rejecting or cancelling an order, sent as typed (FR-ORD-04)
+        REASON_SOLD_OUT = "สินค้าหมด",
+        REASON_CANT_DELIVER = "ไม่สะดวกส่ง",
+        REASON_SHOP_CLOSED = "ร้านปิดแล้ว",
+        /// Asks for the reason to be typed
+        REASON_OTHER = "อื่นๆ",
 
         // Adding a product (FR-PROD-01, FR-PROD-03)
         /// Lists the product previewed; buyers see it from then on
@@ -5405,7 +5824,130 @@ mod tests {
         texts.extend(ERRORS.map(|error| t.number_problem(error)));
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
         texts.extend(DENIALS.map(|denied| text(&t.denied(denied)).to_owned()));
+        texts.extend(order_texts(t));
         texts
+    }
+
+    /// Every text of acting on an order (Table 4.6-B), a notice's lines joined. The order
+    /// number has no Latin letters, for [`errors_have_no_technical_text`].
+    fn order_texts(t: &Templates) -> Vec<String> {
+        use order::Status::{
+            Accepted, Cancelled, Completed, Delivering, Expired, Pending, Ready, Rejected,
+        };
+        let (number, shop) = ("20261022-0007", "ร้านป้าแดง");
+        let mut notices = vec![
+            t.new_order_notice(number, &new_order(order::Fulfillment::Delivery), Vec::new()),
+            t.new_order_notice(number, &new_order(order::Fulfillment::Pickup), Vec::new()),
+            t.order_accepted(number, &contact(true), Vec::new()),
+            t.order_accepted(number, &contact(false), Vec::new()),
+            t.order_accepted_notice(shop, number, Vec::new()),
+            t.order_rejected_notice(shop, number, "สินค้าหมด", Vec::new()),
+            t.order_expired_notice(shop, number, 60, Vec::new()),
+            t.order_cancelled_by_buyer_notice(number),
+            t.order_cancelled_by_admin_notice(number, "สินค้าหมด", false),
+            t.order_cancelled_by_admin_notice(number, "สินค้าหมด", true),
+            t.order_expired_seller_notice(number, 60),
+            t.cancellation_requested_notice(number, Vec::new()),
+            t.cancellation_kept_notice(shop, number, Vec::new()),
+            t.cancellation_kept(number, Vec::new()),
+        ];
+        for status in [Ready, Delivering, Completed] {
+            notices.push(t.order_progress_notice(shop, number, status, Vec::new()));
+        }
+        for (by_admin, refund) in [(false, false), (false, true), (true, false), (true, true)] {
+            let reason = "ไม่สะดวกส่ง";
+            let cancelled =
+                t.order_cancelled_notice(shop, number, by_admin, reason, refund, vec![]);
+            notices.push(cancelled);
+        }
+        for (status, by) in [
+            (Ready, ActorType::Seller),
+            (Delivering, ActorType::Seller),
+            (Completed, ActorType::Seller),
+            (Completed, ActorType::Buyer),
+            (Rejected, ActorType::Seller),
+            (Cancelled, ActorType::Buyer),
+            (Cancelled, ActorType::Seller),
+            (Cancelled, ActorType::Admin),
+        ] {
+            notices.push(t.order_moved(number, status, by, Vec::new()));
+        }
+        for status in [
+            Pending, Accepted, Ready, Delivering, Completed, Rejected, Cancelled, Expired,
+        ] {
+            notices.push(t.order_now(number, status, Vec::new()));
+        }
+        let mut texts: Vec<String> = notices
+            .iter()
+            .map(|notice| notice_lines(notice).join("\n"))
+            .collect();
+        for message in [
+            t.cancellation_requested(number, false),
+            t.cancellation_requested(number, true),
+            t.ask_order_reason(number, Rejected, false, Vec::new()),
+            t.ask_order_reason(number, Cancelled, false, Vec::new()),
+            t.ask_order_reason(number, Cancelled, true, Vec::new()),
+            t.ask_other_order_reason(300),
+        ] {
+            texts.push(text(&message).to_owned());
+        }
+        texts
+    }
+
+    /// A new order of two lines, received by `fulfillment`.
+    fn new_order(fulfillment: order::Fulfillment) -> NewOrder<'static> {
+        NewOrder {
+            lines: vec![
+                OrderLine {
+                    name: "ไข่ไก่เบอร์ 2",
+                    unit: "แผง",
+                    price: Money::from_baht(110),
+                    quantity: 2,
+                    total: Money::from_baht(220),
+                },
+                OrderLine {
+                    name: "ขนมครก",
+                    unit: "กล่อง",
+                    price: Money::from_baht(20),
+                    quantity: 1,
+                    total: Money::from_baht(20),
+                },
+            ],
+            delivery_fee: Money::from_baht(10),
+            total: Money::from_baht(250),
+            fulfillment,
+            payment: order::PaymentMethod::Cash,
+            buyer: Some("สมชาย"),
+            zone: Some("ซอย 3"),
+        }
+    }
+
+    /// How to reach สมชาย, at their address if `delivered`.
+    fn contact(delivered: bool) -> Contact<'static> {
+        Contact {
+            buyer: Some("สมชาย"),
+            address: delivered.then(|| address_line("ซอย 3", "45/2", Some("รั้วสีเขียว"))),
+            phone: Some("0812345678"),
+            note: Some("ไม่ใส่ถุง"),
+        }
+    }
+
+    /// The lines of a notice, headline first, whether it has buttons or not.
+    fn notice_lines(message: &Message) -> Vec<&str> {
+        let Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } = &message.body
+        else {
+            panic!("not a bubble");
+        };
+        let lines = card.body.as_ref().unwrap().contents.iter();
+        lines
+            .map(|component| match component {
+                Component::Text(text) => text.text.as_str(),
+                other => panic!("not text: {other:?}"),
+            })
+            .collect()
     }
 
     const BROWSED: [Browsed<'static>; 5] = [
@@ -6867,6 +7409,124 @@ mod tests {
             &cancel,
         );
         limits::check(&[placed]).unwrap();
+    }
+
+    /// Appendix A.4: the seller is told of a new order, and accepts it, as in the sample; the
+    /// buyer is told the shop is preparing it.
+    #[test]
+    fn orders_are_handled_as_in_appendix_a4() {
+        let t = templates(PoliteParticle::Kha);
+        let number = "IM-20261022-0007";
+        let mut eggs = new_order(order::Fulfillment::Delivery);
+        eggs.lines.truncate(1);
+        eggs.total = Money::from_baht(230);
+        let notice = t.new_order_notice(number, &eggs, Vec::new());
+        assert_eq!(
+            notice_lines(&notice),
+            [
+                "ออเดอร์ใหม่ค่ะ IM-20261022-0007",
+                "ไข่ไก่เบอร์ 2 × 2 แผง = ฿220",
+                "ค่าส่ง ฿10 · รวม ฿230",
+                "ส่งที่ ซอย 3 · เงินสดตอนรับของ",
+                "ลูกค้า: สมชาย",
+            ]
+        );
+        let accepted = t.order_accepted(number, &contact(true), Vec::new());
+        assert_eq!(
+            notice_lines(&accepted),
+            [
+                "รับออเดอร์ IM-20261022-0007 แล้วค่ะ",
+                "ส่งที่ ซอย 3 บ้านเลขที่ 45/2 (รั้วสีเขียว)",
+                "ลูกค้า: สมชาย",
+                "โทร 081-234-5678",
+                "ฝากถึงร้าน: ไม่ใส่ถุง",
+            ]
+        );
+        let picked_up = t.order_accepted(number, &contact(false), Vec::new());
+        assert_eq!(notice_lines(&picked_up)[1], "รับเองที่ร้าน");
+        let told = t.order_accepted_notice("ร้านป้าแดง", number, Vec::new());
+        assert_eq!(
+            notice_lines(&told),
+            ["ร้านป้าแดงรับออเดอร์ IM-20261022-0007 แล้วค่ะ กำลังเตรียมของ"]
+        );
+    }
+
+    /// FR-LINE-11: the notices and cards of acting on an order fit with the longest values they
+    /// take: an order of 20 lines, the longest names, address, note and reason, and the largest
+    /// IDs in their buttons.
+    #[test]
+    fn order_notices_with_everything_fit() {
+        let t = templates(PoliteParticle::Kha);
+        let (name, unit, shop) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(50));
+        let (zone, house_number, landmark) = ("ข".repeat(50), "ข".repeat(30), "ข".repeat(100));
+        let (buyer, note, reason) = ("ข".repeat(100), "ข".repeat(200), "ข".repeat(300));
+        let number = "IM-20261022-9999";
+        let max = i64::MAX;
+        let button = |label: &Label, action: &str| postback(label, format!("{action}?order={max}"));
+        let new = NewOrder {
+            lines: (0..20)
+                .map(|_| OrderLine {
+                    name: &name,
+                    unit: &unit,
+                    price: Money::from_baht(100_000),
+                    quantity: 99,
+                    total: Money::from_baht(100_000).times(99),
+                })
+                .collect(),
+            delivery_fee: Money::from_baht(10_000),
+            total: Money::from_baht(100_000).times(99 * 20),
+            fulfillment: order::Fulfillment::Delivery,
+            payment: order::PaymentMethod::PromptPay,
+            buyer: Some(&buyer),
+            zone: Some(&zone),
+        };
+        let decide = vec![
+            button(&labels::ACCEPT_ORDER, "order.accept"),
+            button(&labels::REJECT_ORDER, "order.reject"),
+        ];
+        let contact = Contact {
+            buyer: Some(&buyer),
+            address: Some(address_line(&zone, &house_number, Some(&landmark))),
+            phone: Some("0812345678"),
+            note: Some(&note),
+        };
+        let request = vec![
+            button(&labels::MARK_DELIVERING, "order.delivering"),
+            button(&labels::CANCEL_ORDER, "order.grant_cancel"),
+            button(&labels::KEEP_ORDER, "order.keep"),
+        ];
+        let carry_on = || vec![postback(&labels::CONTINUE_SHOPPING, "buy".to_owned())];
+        let found = FoundOrder {
+            number,
+            status: order::Status::Delivering,
+            shop: &shop,
+            buyer: Some(&buyer),
+            total: Money::from_baht(100_000).times(99 * 20),
+            payment: order::PaymentMethod::PromptPay,
+            placed_at: Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap(),
+        };
+        let reasons = [
+            &labels::REASON_SOLD_OUT,
+            &labels::REASON_CANT_DELIVER,
+            &labels::REASON_SHOP_CLOSED,
+            &labels::REASON_OTHER,
+        ]
+        .map(|label| Action::message(label.clone(), label.as_str()));
+        for message in [
+            t.new_order_notice(number, &new, decide),
+            t.order_accepted(number, &contact, request.clone()),
+            t.cancellation_requested_notice(number, request),
+            t.order_cancelled_notice(&shop, number, true, &reason, true, carry_on()),
+            t.order_rejected_notice(&shop, number, &reason, carry_on()),
+            t.order_cancelled_by_admin_notice(number, &reason, true),
+            t.order_found(
+                &found,
+                vec![button(&labels::CANCEL_ORDER, "order.admin_cancel")],
+            ),
+            t.ask_order_reason(number, order::Status::Cancelled, true, reasons.to_vec()),
+        ] {
+            limits::check(slice::from_ref(&message)).unwrap();
+        }
     }
 
     /// FR-SRCH-07: a product's details show its card and every other photo, as many as a carousel

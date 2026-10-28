@@ -571,6 +571,7 @@ async fn a_returning_buyer_checks_out_as_in_appendix_a2() {
             cancelled_at: None,
             expired_at: None,
             cancel_reason: None,
+            cancel_requested_at: None,
         }
     );
     let items: Vec<_> = s

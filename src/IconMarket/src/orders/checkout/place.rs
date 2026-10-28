@@ -12,8 +12,8 @@
 //! "สินค้าหมดแล้ว" (FR-CART-06), and stock never goes below 0 (DR-07). The pending action's ID is
 //! the order's checkout key, so a repeated tap shows the order rather than placing another.
 //!
-//! The order's card is the reply, pushed if its reply token has expired (FR-LINE-07). Telling the
-//! seller of it is #33's.
+//! The order's card is the reply, pushed if its reply token has expired (FR-LINE-07), and the
+//! seller is told of it with "รับออเดอร์" and "ปฏิเสธ" (FR-ORD-03).
 
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::Uuid;
@@ -28,14 +28,12 @@ use tracing::info;
 use super::{Basket, Refusal, address_of, basket, carry_on, refused};
 use crate::dispatcher::Turn;
 use crate::dispatcher::pending::{self, Applied, Proposal, Stale, Why};
-use crate::dispatcher::postback::Postback;
 use crate::line::{Action, Message, QuickReply};
-use crate::notifications::templates::{self, CheckoutChange, OrderDetails, OrderLine, labels};
-use crate::orders::{self, cart};
+use crate::notifications::templates::{CheckoutChange, OrderDetails, OrderLine, labels};
+use crate::orders::{actions, cart};
 use crate::persistence::entity::order::{self, Fulfillment, PaymentMethod, PaymentStatus, Status};
-use crate::persistence::entity::{
-    cart_item, counter, order_event, order_item, product, shop, user,
-};
+use crate::persistence::entity::order_event::{self, ActorType};
+use crate::persistence::entity::{cart_item, counter, order_item, product, shop, user};
 use crate::thai::{self, Money};
 use crate::users::access::{self, authorize};
 use crate::users::address;
@@ -329,6 +327,7 @@ impl Proposal for Checkout {
             shop_id = placed.shop_id,
             "order placed"
         );
+        actions::notify_new_order(turn, &placed, &items, &basket.shop, &turn.actor.user);
         turn.essential();
         let card = order_card(turn, &placed, &items, &basket.shop.name, false);
         Ok(Applied::Done(vec![card]))
@@ -445,8 +444,8 @@ fn gone(turn: &Turn<'_>, proposal: Option<&Checkout>) -> Message {
 }
 
 /// The card of order `placed` of shop `shop`, with `items` (FR-CART-08): just placed, or by an
-/// earlier tap if `again`. "ยกเลิกออเดอร์" while the shop is yet to accept it, then where to
-/// carry on.
+/// earlier tap if `again`. What the buyer can do about it now, "ยกเลิกออเดอร์" while the shop is
+/// yet to accept it, then where to carry on.
 fn order_card(
     turn: &Turn<'_>,
     placed: &order::Model,
@@ -454,14 +453,7 @@ fn order_card(
     shop: &str,
     again: bool,
 ) -> Message {
-    let address = match (&placed.delivery_zone, &placed.delivery_house_number) {
-        (Some(zone), Some(house_number)) => Some(templates::address_line(
-            zone,
-            house_number,
-            placed.delivery_landmark_note.as_deref(),
-        )),
-        _ => None,
-    };
+    let address = actions::delivery_address(placed);
     let order = OrderDetails {
         shop,
         lines: items
@@ -482,11 +474,7 @@ fn order_card(
         payment: placed.payment_method,
         note: placed.note.as_deref(),
     };
-    let mut buttons = Vec::new();
-    if placed.status == Status::Pending {
-        let cancel = Postback::new(orders::CANCEL_ORDER).with_int(orders::ORDER_ID, placed.id);
-        buttons.push(cancel.button(labels::CANCEL_ORDER.clone()));
-    }
+    let buttons = actions::buttons(placed, ActorType::Buyer);
     let number = &placed.order_number;
     let card = turn
         .templates

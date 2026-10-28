@@ -16,6 +16,7 @@ mod tests;
 
 use std::cmp;
 use std::future::Future;
+use std::sync::Arc;
 
 use chrono::{DateTime, NaiveTime, TimeDelta, Utc};
 use chrono_tz::Tz;
@@ -30,9 +31,10 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use crate::config::RetentionConfig;
+use crate::config::{Config, NotificationConfig, OrderConfig, RetentionConfig};
+use crate::notifications::templates::Templates;
 use crate::persistence::{self, entity::job};
-use crate::{dispatcher, line, notifications, retention, thai};
+use crate::{dispatcher, line, notifications, orders, retention, thai};
 
 /// How soon a failed run is tried again, unless the job is due sooner anyway.
 const RETRY_AFTER: TimeDelta = TimeDelta::minutes(1);
@@ -44,9 +46,9 @@ const MAX_WAIT: TimeDelta = TimeDelta::minutes(1);
 /// When retention is applied each day: at night (FR-JOB-02), in the business time zone.
 const RETENTION_AT: NaiveTime = NaiveTime::from_hms_opt(3, 0, 0).expect("a valid time");
 
-/// A background job (FR-JOB-02). The others are added by their issues: pending-order expiry
-/// (#33), and the summary and digest (#47, #48). The webhook inbox, processed continuously,
-/// has a worker of its own in the dispatcher.
+/// A background job (FR-JOB-02). The others are added by their issues: the summary and digest
+/// (#47, #48). The webhook inbox, processed continuously, has a worker of its own in the
+/// dispatcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Job {
     /// Deletes expired sessions and pending actions (§5.4)
@@ -56,10 +58,17 @@ pub enum Job {
     RetryPushes,
     /// Deletes what has been kept for as long as §5.4 allows (NFR-PRIV-06)
     ApplyRetention,
+    /// Expires the orders left unanswered for `order.pendingTimeoutMinutes` (FR-ORD-05)
+    ExpireOrders,
 }
 
 impl Job {
-    const ALL: [Self; 3] = [Self::DeleteExpired, Self::RetryPushes, Self::ApplyRetention];
+    const ALL: [Self; 4] = [
+        Self::DeleteExpired,
+        Self::RetryPushes,
+        Self::ApplyRetention,
+        Self::ExpireOrders,
+    ];
 
     /// Its key in `jobs` and in log lines.
     pub fn name(self) -> &'static str {
@@ -67,6 +76,7 @@ impl Job {
             Self::DeleteExpired => "delete-expired",
             Self::RetryPushes => "retry-pushes",
             Self::ApplyRetention => "apply-retention",
+            Self::ExpireOrders => "expire-orders",
         }
     }
 
@@ -75,6 +85,7 @@ impl Job {
             Self::DeleteExpired => Schedule::Every(TimeDelta::minutes(15)),
             Self::RetryPushes => Schedule::Every(TimeDelta::minutes(1)),
             Self::ApplyRetention => Schedule::Daily(RETENTION_AT),
+            Self::ExpireOrders => Schedule::Every(TimeDelta::minutes(1)),
         }
     }
 
@@ -118,6 +129,20 @@ impl Job {
                     );
                 }
             }
+            Self::ExpireOrders => {
+                let expired = orders::expire(
+                    &context.db,
+                    &context.line,
+                    &context.templates,
+                    &context.order,
+                    &context.notification,
+                    Utc::now(),
+                )
+                .await?;
+                if expired > 0 {
+                    info!(expired, "unanswered orders expired");
+                }
+            }
         }
         Ok(())
     }
@@ -131,6 +156,10 @@ struct Context {
     /// The business time zone (`app.timeZone`), which daily schedules are in
     time_zone: Tz,
     retention: RetentionConfig,
+    /// For the notices jobs send
+    templates: Arc<Templates>,
+    order: OrderConfig,
+    notification: NotificationConfig,
 }
 
 /// When a job runs.
@@ -179,22 +208,25 @@ impl Schedule {
     }
 }
 
-/// Registers the jobs, then runs each on `tracker` whenever it is due. Each job stops picking
-/// up work once `stop` is cancelled; a run still going when time runs out is run again at the
-/// next start (NFR-REL-05).
+/// Registers the jobs, then runs each on `tracker` whenever it is due, with what `config` says
+/// of them. Each job stops picking up work once `stop` is cancelled; a run still going when
+/// time runs out is run again at the next start (NFR-REL-05).
 pub async fn start(
     tracker: &TaskTracker,
     stop: CancellationToken,
     db: PgPool,
     line: line::Client,
-    time_zone: Tz,
-    retention: RetentionConfig,
+    config: &Config,
 ) {
+    let time_zone = config.app.time_zone;
     let context = Context {
         db: persistence::orm(db),
         line,
         time_zone,
-        retention,
+        retention: config.retention,
+        templates: Arc::new(Templates::new(&config.app)),
+        order: config.order,
+        notification: config.notification,
     };
     for job in Job::ALL {
         let (name, now) = (job.name(), Utc::now());

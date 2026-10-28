@@ -1,9 +1,10 @@
 //! "ผู้ใช้" (FR-ADM-04): admins find a user by display name, phone or order number, see how
 //! their account and shop stand, and suspend them or lift their suspension with a reason.
 //!
-//! The search is typed in a [flow](FindFlow) of one step. An order number finds its buyer and its
-//! shop's owner; a phone, the users and the shops' owners who gave it; anything else, the users
-//! whose display name contains it, whatever the case. Deleted accounts are never found. Each user
+//! The search is typed in a [flow](FindFlow) of one step. An order number finds the order, which
+//! an admin may cancel while it is open ([`actions`], FR-ORD-12), then its buyer and its shop's
+//! owner; a phone, the users and the shops' owners who gave it; anything else, the users whose
+//! display name contains it, whatever the case. Deleted accounts are never found. Each user
 //! found has a card: their name, roles, zone and when they joined, whether they are suspended
 //! and why, and their shop and how it stands, but no phone or house number (NFR-PRIV-04).
 //!
@@ -17,8 +18,8 @@
 //! Each change asks why in a [flow](ReasonFlow) of one step, tells the user, and is audited in
 //! the transaction that makes it (FR-ADM-08). The buttons carry only the user's ID, and both the
 //! tap and the reason check that the change still applies: another admin may have made it
-//! already (FR-UI-13). No change here touches an order (FR-ADM-09), and none is made by the AI:
-//! they are taken from these menus only (FR-AI-17).
+//! already (FR-UI-13). No change here touches an order's items or amounts (FR-ADM-09), and none
+//! is made by the AI: they are taken from these menus only (FR-AI-17).
 
 #[cfg(test)]
 mod tests;
@@ -45,6 +46,7 @@ use crate::dispatcher::{Input, Turn};
 use crate::line::{Action, Message};
 use crate::notifications::templates::{USERS_FOUND, UserCard, UserShop, labels};
 use crate::notifications::{Kind, To};
+use crate::orders::actions;
 use crate::persistence::entity::{order, shop, user};
 use crate::thai::{self, Label};
 use crate::users::access::{self, Denied, authorize};
@@ -232,12 +234,24 @@ pub async fn answer_query(
     if query.chars().count() > QUERY_CHARS {
         return again(vec![templates.text_too_long(QUERY_CHARS)]).await;
     }
-    let (accounts, more) = find(turn.db, &query).await?;
-    if accounts.is_empty() {
-        return again(vec![templates.no_user_found(&query)]).await;
+    let Found {
+        order,
+        accounts,
+        more,
+    } = find(turn.db, &query).await?;
+    // An order number: the order, which can be cancelled while open (FR-ORD-12), then its parties
+    let mut messages = match &order {
+        Some(order) => vec![actions::found(turn.db, templates, order).await?],
+        None if accounts.is_empty() => {
+            return again(vec![templates.no_user_found(&query)]).await;
+        }
+        None => Vec::new(),
+    };
+    if !accounts.is_empty() {
+        let cards: Vec<_> = accounts.iter().map(Account::card).collect();
+        messages.extend(templates.users_found(&cards, more));
     }
-    let cards: Vec<_> = accounts.iter().map(Account::card).collect();
-    done(templates.users_found(&cards, more)).await
+    done(messages).await
 }
 
 /// The reason, picked or typed (FR-UI-12 step 3): makes the change and tells the user. `None`
@@ -447,9 +461,19 @@ fn ask(turn: &Turn<'_>, change: Change, account: &Account) -> Message {
     }
 }
 
-/// The users `query` finds, in order, at most [`USERS_FOUND`], and whether more matched: by
-/// order number, by phone, or by display name.
-async fn find(db: &impl ConnectionTrait, query: &str) -> Result<(Vec<Account>, bool), DbErr> {
+/// What a query in "ผู้ใช้" finds.
+struct Found {
+    /// The order whose number it is, if it is one
+    order: Option<order::Model>,
+    /// At most [`USERS_FOUND`]
+    accounts: Vec<Account>,
+    /// Whether more users matched than that
+    more: bool,
+}
+
+/// The users `query` finds, in order: by order number, with the order, by phone, or by display
+/// name.
+async fn find(db: &impl ConnectionTrait, query: &str) -> Result<Found, DbErr> {
     // An order number, as on its card: its buyer, and its shop's owner
     let number = query.replace(' ', "").to_uppercase();
     let found = order::Entity::find()
@@ -464,7 +488,11 @@ async fn find(db: &impl ConnectionTrait, query: &str) -> Result<(Vec<Account>, b
             .one(db)
             .await?;
         let ids: Vec<i64> = std::iter::once(order.buyer_id).chain(owner).collect();
-        return Ok((accounts(db, &ids).await?, false));
+        return Ok(Found {
+            accounts: accounts(db, &ids).await?,
+            order: Some(order),
+            more: false,
+        });
     }
     let mut ids: Vec<i64> = match thai::parse_phone(query) {
         // A phone: the users who gave it, then the shops' owners who did
@@ -508,7 +536,11 @@ async fn find(db: &impl ConnectionTrait, query: &str) -> Result<(Vec<Account>, b
     let mut accounts = accounts(db, &ids).await?;
     let more = accounts.len() > USERS_FOUND;
     accounts.truncate(USERS_FOUND);
-    Ok((accounts, more))
+    Ok(Found {
+        order: None,
+        accounts,
+        more,
+    })
 }
 
 /// Users `ids` that aren't deleted, in that order, with their shops.

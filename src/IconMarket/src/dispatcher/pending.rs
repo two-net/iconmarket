@@ -163,9 +163,9 @@ pub async fn kept<T: DeserializeOwned>(
 
 /// A tap on a confirm button: confirms its pending action as the kind it names. Each kind of
 /// proposal adds its arm, as its issue builds it: deleting a category (#21), deleting a product
-/// (#26), quick updates to a product (#30), checkout (#32), order actions (#33) and the AI
-/// assistant's proposals (#37). A product being listed is confirmed by its preview's revision
-/// instead (#25, #30).
+/// (#26), quick updates to a product (#30), checkout (#32) and the AI assistant's proposals
+/// (#37). A product being listed is confirmed by its preview's revision instead (#25, #30), and
+/// an order's buttons, which carry no proposed values, by the order's status (#33).
 pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
     match (postback.name(KIND), postback.uuid(ID)) {
         (Some(DeleteCategory::KIND), Some(id)) => confirm::<DeleteCategory>(turn, id).await,

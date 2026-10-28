@@ -44,6 +44,7 @@ use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
 use crate::notifications::Queued;
 use crate::notifications::templates::labels;
+use crate::orders::actions::{self, ReasonFlow};
 use crate::orders::cart::{self, QuantityFlow};
 use crate::orders::checkout::{self, CheckoutFlow};
 use crate::persistence::entity::webhook_event;
@@ -488,8 +489,8 @@ fn step_name(step: &Step) -> &'static str {
 /// Each flow adds its arm, as its issue builds it: the address (#20), category names (#21),
 /// problem reports (#22), shop applications and the reasons for turning one down (#23), shop
 /// settings (#24), adding products (#25), changing them (#26), searching (#28), the quantity
-/// for the cart (#29), the reasons of the review queue and finding and suspending users (#31)
-/// and checkout (#32).
+/// for the cart (#29), the reasons of the review queue and finding and suspending users (#31),
+/// checkout (#32) and the reasons for rejecting or cancelling an order (#33).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -563,6 +564,10 @@ async fn answer_flow(
             Some(session) => Some(checkout::answer(turn, config, session, input).await),
             None => None,
         },
+        ReasonFlow::NAME => match stored.read::<ReasonFlow>() {
+            Some(session) => Some(actions::answer(turn, session, input).await),
+            None => None,
+        },
         _ => None,
     };
     match answered {
@@ -632,8 +637,8 @@ async fn tapped(
         }
         action if action.starts_with(cart::PREFIX) => return cart::tapped(turn, postback).await,
         orders::CHECKOUT => return checkout::tapped(turn, &context.config, postback).await,
-        orders::CANCEL_ORDER => {
-            return Ok(not_built("cancelling an order", 33, fallback(turn)));
+        action if action.starts_with(orders::PREFIX) => {
+            return actions::tapped(turn, postback).await;
         }
         users::DELETE_ACCOUNT => {
             return Ok(not_built("deleting the account", 36, fallback(turn)));

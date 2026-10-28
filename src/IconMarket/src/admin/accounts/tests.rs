@@ -394,10 +394,14 @@ async fn users_are_found_by_name_phone_or_order_number() {
         let found = s.finds(s.admin.id, phone).await;
         assert_eq!(card_buttons(&found[0]), [[suspend(&s.seller)]], "{phone}");
     }
-    // The order's buyer, then its shop's owner
+    // The order, which can be cancelled while open (FR-ORD-12), then its buyer and its shop's
+    // owner
     let found = s.finds(s.admin.id, "im-20261025-0007").await;
+    assert_eq!(found.len(), 2);
+    let cancel = format!("{}?order={}", orders::ADMIN_CANCEL, s.order.id);
+    assert_eq!(card_buttons(&found[0]), [[cancel]]);
     assert_eq!(
-        card_buttons(&found[0]),
+        card_buttons(&found[1]),
         [[suspend(&s.buyer)], [suspend(&s.seller)]]
     );
     // An admin can't be suspended

@@ -194,7 +194,7 @@ pub struct ShopConfig {
     pub require_approval: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct OrderConfig {
     pub pending_timeout_minutes: u32,
 }
@@ -215,7 +215,7 @@ impl PaymentMethod {
         &[("cash", Self::Cash), ("promptpay", Self::PromptPay)];
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct NotificationConfig {
     pub new_order_to_seller: bool,
     pub order_status_to_buyer: bool,

@@ -50,6 +50,9 @@ pub struct Model {
     pub expired_at: Option<DateTimeUtc>,
     /// Why the seller rejected it or it was cancelled (FR-ORD-04)
     pub cancel_reason: Option<String>,
+    /// When the buyer asked to cancel it once accepted, while the seller is yet to decide
+    /// (FR-ORD-07)
+    pub cancel_requested_at: Option<DateTimeUtc>,
 }
 
 /// Table 4.6-A
@@ -68,6 +71,16 @@ pub enum Status {
     Rejected,
     Cancelled,
     Expired,
+}
+
+impl Status {
+    /// Whether it is final (Table 4.6-A): the order moves no further, and is no longer open.
+    pub fn is_final(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Rejected | Self::Cancelled | Self::Expired
+        )
+    }
 }
 
 /// Kept in checkout's flow and confirmation too

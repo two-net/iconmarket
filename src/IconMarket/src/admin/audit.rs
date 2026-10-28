@@ -48,6 +48,9 @@ pub enum Action {
     UserUnsuspended,
     /// Its owner's card in "ผู้ใช้" lifts a shop's suspension
     ShopUnsuspended,
+    // Orders (FR-ORD-12)
+    /// An open order, found by its number in "ผู้ใช้"
+    OrderCancelled,
 }
 
 impl Action {
@@ -72,6 +75,7 @@ impl Action {
             Self::UserSuspended => "user.suspended",
             Self::UserUnsuspended => "user.unsuspended",
             Self::ShopUnsuspended => "shop.unsuspended",
+            Self::OrderCancelled => "order.cancelled",
         }
     }
 }
@@ -83,6 +87,7 @@ pub enum Target {
     Category(i64),
     Shop(i64),
     Product(i64),
+    Order(i64),
 }
 
 impl Target {
@@ -93,6 +98,7 @@ impl Target {
             Self::Category(id) => ("category", id),
             Self::Shop(id) => ("shop", id),
             Self::Product(id) => ("product", id),
+            Self::Order(id) => ("order", id),
         }
     }
 }

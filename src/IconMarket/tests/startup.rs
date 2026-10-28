@@ -234,6 +234,7 @@ async fn an_empty_database_is_migrated_and_seeded_before_requests_are_accepted()
                 "daily 03:00 Asia/Bangkok".to_owned()
             ),
             ("delete-expired".to_owned(), "every 900s".to_owned()),
+            ("expire-orders".to_owned(), "every 60s".to_owned()),
             ("retry-pushes".to_owned(), "every 60s".to_owned()),
         ]
     );

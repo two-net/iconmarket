@@ -68,7 +68,7 @@ pub enum Kind {
     NewOrder,
     /// To the buyer: their order's status changed (FR-ORD-08)
     OrderStatus,
-    /// To the seller: the buyer cancelled an order
+    /// To the seller: the buyer cancelled an order, or an admin did (FR-ORD-12)
     OrderCancelled,
     /// To the seller: an order expired unanswered (FR-ORD-05)
     OrderExpired,

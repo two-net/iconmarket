@@ -2124,21 +2124,30 @@ async fn reply_to(s: &Setup, running: &Running, event: Value, n: usize) -> Value
     s.replies()[n - 1].1.clone()
 }
 
-/// A returning buyer, at ซอย 3 บ้านเลขที่ 45/2, and a product of a shop that delivers and takes
-/// PromptPay: ไข่ไก่เบอร์ 2 at ฿110, 8 left.
-async fn returning_buyer(s: &Setup) -> (i64, product::Model) {
+/// A seller who blocked the OA, so is pushed nothing (FR-NOT-02).
+async fn blocked_seller(s: &Setup) -> i64 {
+    let seller = user::ActiveModel {
+        is_following: Set(false),
+        ..testing::new_user("U-seller")
+    };
+    seller.insert(&s.db).await.unwrap().id
+}
+
+/// A returning buyer, สมชาย at ซอย 3 บ้านเลขที่ 45/2, and a product of `seller`'s shop, which
+/// delivers and takes PromptPay: ไข่ไก่เบอร์ 2 at ฿110, 8 left.
+async fn returning_buyer(s: &Setup, seller: i64) -> (i64, product::Model) {
     let alice = onboarded(&s.db, ALICE).await;
     let address = user::ActiveModel {
         id: Set(alice),
+        display_name: Set(Some("สมชาย".to_owned())),
         zone: Set(Some("ซอย 3".to_owned())),
         house_number: Set(Some("45/2".to_owned())),
         ..Default::default()
     };
     address.update(&s.db).await.unwrap();
-    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
     let shop = shop::ActiveModel {
         promptpay_id: Set(Some("0812345678".to_owned())),
-        ..testing::new_shop(seller.id)
+        ..testing::new_shop(seller)
     };
     let shop = shop.insert(&s.db).await.unwrap();
     let eggs = testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
@@ -2159,13 +2168,14 @@ async fn tapped_to_summary(s: &Setup, running: &Running, product: &product::Mode
     reply
 }
 
-/// Appendix A.2, NFR-USE-01, FR-CART-04 – FR-CART-08, end to end: a returning buyer goes from a
-/// product's card to a placed order in 8 taps, each on what the reply before offered, without
-/// typing.
+/// Appendix A.2, NFR-USE-01, FR-CART-04 – FR-CART-08, AC-17, end to end: a returning buyer goes
+/// from a product's card to a placed order in 8 taps, each on what the reply before offered,
+/// without typing. Its seller blocked the OA, so no push is attempted.
 #[tokio::test]
 async fn a_returning_buyer_orders_in_eight_taps_end_to_end() {
     let s = setup().await;
-    let (alice, product) = returning_buyer(&s).await;
+    let seller = blocked_seller(&s).await;
+    let (alice, product) = returning_buyer(&s, seller).await;
     let running = s.run();
 
     let summary = tapped_to_summary(&s, &running, &product).await;
@@ -2203,7 +2213,8 @@ async fn a_returning_buyer_orders_in_eight_taps_end_to_end() {
 #[tokio::test]
 async fn an_order_placed_is_pushed_when_its_reply_fails() {
     let s = setup().await;
-    let (_, product) = returning_buyer(&s).await;
+    let seller = blocked_seller(&s).await;
+    let (_, product) = returning_buyer(&s, seller).await;
     let running = s.run();
 
     let summary = tapped_to_summary(&s, &running, &product).await;
@@ -2239,6 +2250,111 @@ async fn an_order_placed_is_pushed_when_its_reply_fails() {
         ),
         ("reply", push_log::Status::Sent, ALICE)
     );
+}
+
+/// The texts of the card `messages` holds, headline first.
+fn card_lines(messages: &Value) -> Vec<&str> {
+    let lines = messages[0]["contents"]["body"]["contents"].as_array();
+    let lines = lines.expect("a card").iter();
+    lines.map(|line| line["text"].as_str().unwrap()).collect()
+}
+
+/// Appendix A.4, FR-ORD-03, FR-ORD-08, FR-ORD-11, end to end: the seller is pushed the new
+/// order with "รับออเดอร์" and "ปฏิเสธ", and accepts it with one tap: they are answered with where
+/// to deliver and the buyer's phone, with "กำลังไปส่ง" and "ยกเลิกออเดอร์", and the buyer is then
+/// pushed that the shop is preparing it, with "ขอยกเลิก".
+#[tokio::test]
+async fn a_seller_receives_and_accepts_an_order_end_to_end() {
+    let s = setup().await;
+    let bob = onboarded(&s.db, BOB).await;
+    let (alice, product) = returning_buyer(&s, bob).await;
+    let phone = user::ActiveModel {
+        id: Set(alice),
+        phone: Set(Some("0812345678".to_owned())),
+        ..Default::default()
+    };
+    phone.update(&s.db).await.unwrap();
+    let running = s.run();
+
+    let summary = tapped_to_summary(&s, &running, &product).await;
+    let confirm = pressed("a8", ALICE, &offered(&summary, "ยืนยันสั่งซื้อ"));
+    reply_to(&s, &running, confirm, 8).await;
+    requested(&s, |path, body| path == PUSH && body["to"] == BOB).await;
+    let order = crate::persistence::entity::order::Entity::find()
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = &order.order_number;
+    let pushed = pushes(&s);
+    assert_eq!(pushed.len(), 1);
+    let (to, alert) = &pushed[0];
+    assert_eq!(to, BOB);
+    assert_eq!(alert[0]["altText"], format!("ออเดอร์ใหม่ค่ะ {number}"));
+    assert_eq!(
+        card_lines(alert),
+        [
+            format!("ออเดอร์ใหม่ค่ะ {number}").as_str(),
+            "ไข่ไก่เบอร์ 2 × 2 แผง = ฿220",
+            "ค่าส่ง ฿10 · รวม ฿230",
+            "ส่งที่ ซอย 3 · เงินสดตอนรับของ",
+            "ลูกค้า: สมชาย",
+        ]
+    );
+    offered(alert, "ปฏิเสธ");
+
+    let accept = pressed("b1", BOB, &offered(alert, "รับออเดอร์"));
+    let accepted = reply_to(&s, &running, accept, 9).await;
+    requested(&s, |path, body| path == PUSH && body["to"] == ALICE).await;
+    running.stop().await;
+
+    assert_eq!(
+        card_lines(&accepted),
+        [
+            format!("รับออเดอร์ {number} แล้วค่ะ").as_str(),
+            "ส่งที่ ซอย 3 บ้านเลขที่ 45/2",
+            "ลูกค้า: สมชาย",
+            "โทร 081-234-5678",
+        ]
+    );
+    offered(&accepted, "กำลังไปส่ง");
+    offered(&accepted, "ยกเลิกออเดอร์");
+    let told = pushes(&s);
+    assert_eq!(told.len(), 2);
+    let (to, told) = &told[1];
+    assert_eq!(to, ALICE);
+    assert_eq!(
+        told[0]["altText"],
+        format!("ร้านป้าแดงรับออเดอร์ {number} แล้วค่ะ กำลังเตรียมของ")
+    );
+    offered(told, "ขอยกเลิก");
+    let order = crate::persistence::entity::order::Entity::find_by_id(order.id)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        order.status,
+        crate::persistence::entity::order::Status::Accepted
+    );
+    // The seller is answered, then the buyer told
+    let paths: Vec<_> = s
+        .line
+        .requests()
+        .into_iter()
+        .map(|request| {
+            let body = body(&request);
+            let to = body["to"].as_str().or(body["replyToken"].as_str());
+            (request.path, to.map(str::to_owned))
+        })
+        .collect();
+    let at = |path: &str, to: &str| {
+        paths
+            .iter()
+            .position(|wanted| wanted.0 == path && wanted.1.as_deref() == Some(to))
+            .unwrap()
+    };
+    assert!(at(REPLY, &token("b1")) < at(PUSH, ALICE), "{paths:?}");
 }
 
 /// FR-LINE-07: a reply that isn't essential is dropped when its reply token fails, as a push

@@ -431,6 +431,7 @@ async fn every_attribute_can_be_stored() {
             cancelled_at: Some(at),
             expired_at: Some(at),
             cancel_reason: Some("สินค้าหมด".to_owned()),
+            cancel_requested_at: Some(at),
         },
     )
     .await;
