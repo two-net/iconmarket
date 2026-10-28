@@ -47,6 +47,7 @@ use crate::notifications::templates::labels;
 use crate::orders::actions::{self, ReasonFlow};
 use crate::orders::cart::{self, QuantityFlow};
 use crate::orders::checkout::{self, CheckoutFlow};
+use crate::orders::lists;
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
 use crate::users::address::{self, AddressFlow};
@@ -637,6 +638,7 @@ async fn tapped(
         }
         action if action.starts_with(cart::PREFIX) => return cart::tapped(turn, postback).await,
         orders::CHECKOUT => return checkout::tapped(turn, &context.config, postback).await,
+        orders::VIEW => return lists::view(turn, postback).await,
         action if action.starts_with(orders::PREFIX) => {
             return actions::tapped(turn, postback).await;
         }
@@ -675,7 +677,8 @@ async fn menu_item(
         AddProduct => return products::tapped(turn, &context.config, &context.ai, postback).await,
         MyProducts => return manage::tapped(turn, &context.config, postback).await,
         Cart => return cart::tapped(turn, postback).await,
-        MyOrders | ShopOrders => 34,
+        MyOrders => return lists::mine(turn, postback).await,
+        ShopOrders => return lists::shop(turn, postback).await,
         Sales => 39,
         Stats => 38,
         Announcements => 49,
@@ -691,7 +694,7 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
         // The AI assistant (#37) also clears the user's AI context here (FR-AI-11)
         Keyword::Restart => return flow::cancel(turn).await,
         Keyword::Cart => return cart::show(turn).await,
-        Keyword::Orders => not_built("orders", 34, fallback(turn)),
+        Keyword::Orders => return lists::typed(turn).await,
         Keyword::Help => return help::show(turn).await,
         Keyword::MyId => onboarding::my_id(turn),
     })

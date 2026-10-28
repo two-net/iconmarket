@@ -21,6 +21,7 @@ use crate::config::{self, Config, NotificationConfig, SessionConfig};
 use crate::dispatcher::Finished;
 use crate::line::flex::{Component, FlexContainer};
 use crate::line::{Body, limits};
+use crate::notifications::templates;
 use crate::persistence::entity::{audit_log, order_event, product, push_log, session};
 use crate::persistence::{orm, random_id, testing};
 use crate::thai::Money;

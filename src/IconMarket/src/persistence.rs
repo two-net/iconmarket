@@ -14,6 +14,7 @@
 pub mod entity;
 mod migration;
 mod money;
+pub mod paging;
 mod seed;
 #[cfg(test)]
 pub mod testing;

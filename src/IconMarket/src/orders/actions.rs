@@ -28,7 +28,7 @@ use tracing::info;
 use super::lifecycle::{self, By, Moved};
 use super::{
     ACCEPT, ADMIN_CANCEL, CANCEL_ORDER, COMPLETE, DELIVERING, GRANT_CANCEL, KEEP, ORDER_ID, READY,
-    RECEIVED, REJECT, REQUEST_CANCEL, SELLER_CANCEL, cart,
+    RECEIVED, REJECT, REQUEST_CANCEL, SELLER_CANCEL, cart, contact,
 };
 use crate::admin::audit::{self, Entry, Target};
 use crate::admin::reason::{REASON_CHARS, Refused, reason};
@@ -37,7 +37,7 @@ use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{Action, Message, QuickReply};
 use crate::notifications::templates::{
-    self, BUYER_ASKED_TO_CANCEL, Contact, FoundOrder, NewOrder, OrderLine, Templates, labels,
+    BUYER_ASKED_TO_CANCEL, FoundOrder, NewOrder, OrderContact, OrderLine, Templates, labels,
 };
 use crate::notifications::{Kind, To};
 use crate::persistence::entity::order::{self, PaymentStatus, Status};
@@ -217,14 +217,18 @@ pub(super) fn notify_new_order(
     shop: &shop::Model,
     buyer: &user::Model,
 ) {
+    let (buyer, zone) = match contact::shown(order, shop, buyer, ActorType::Seller) {
+        OrderContact::Buyer { name, zone } => (name, zone),
+        _ => (None, None),
+    };
     let new = NewOrder {
         lines: items.iter().map(order_line).collect(),
         delivery_fee: order.delivery_fee,
         total: order.total,
         fulfillment: order.fulfillment,
         payment: order.payment_method,
-        buyer: buyer.display_name.as_deref(),
-        zone: order.delivery_zone.as_deref().or(buyer.zone.as_deref()),
+        buyer,
+        zone,
     };
     let buttons = buttons(order, ActorType::Seller);
     let notice = turn
@@ -340,25 +344,13 @@ pub(super) fn expired_notices(
 }
 
 /// The order's line `item`, as it was ordered (DR-03).
-fn order_line(item: &order_item::Model) -> OrderLine<'_> {
+pub(super) fn order_line(item: &order_item::Model) -> OrderLine<'_> {
     OrderLine {
         name: &item.name,
         unit: &item.unit,
         price: item.unit_price,
         quantity: item.quantity,
         total: item.line_total,
-    }
-}
-
-/// Where `order` is delivered, from the copy of the address it keeps; `None` for pickup.
-pub(super) fn delivery_address(order: &order::Model) -> Option<String> {
-    match (&order.delivery_zone, &order.delivery_house_number) {
-        (Some(zone), Some(house_number)) => Some(templates::address_line(
-            zone,
-            house_number,
-            order.delivery_landmark_note.as_deref(),
-        )),
-        _ => None,
     }
 }
 
@@ -491,17 +483,12 @@ fn reply(
     actor: ActorType,
 ) -> Message {
     let (number, next) = (&order.order_number, buttons(order, actor));
-    let reply = match order.status {
-        Status::Accepted => {
-            let contact = Contact {
-                buyer: parties.buyer.display_name.as_deref(),
-                address: delivery_address(order),
-                phone: parties.buyer.phone.as_deref(),
-                note: order.note.as_deref(),
-            };
+    let shown = contact::shown(order, &parties.shop, &parties.buyer, actor);
+    let reply = match (order.status, shown) {
+        (Status::Accepted, OrderContact::BuyerFull { contact, .. }) => {
             templates.order_accepted(number, &contact, next)
         }
-        status => templates.order_moved(number, status, actor, next),
+        (status, _) => templates.order_moved(number, status, actor, next),
     };
     if actor == ActorType::Buyer && order.status.is_final() {
         let carry_on = [cart::continue_shopping(), cart::menu_button()];

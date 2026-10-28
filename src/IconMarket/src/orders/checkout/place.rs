@@ -30,7 +30,7 @@ use crate::dispatcher::Turn;
 use crate::dispatcher::pending::{self, Applied, Proposal, Stale, Why};
 use crate::line::{Action, Message, QuickReply};
 use crate::notifications::templates::{CheckoutChange, OrderDetails, OrderLine, labels};
-use crate::orders::{actions, cart};
+use crate::orders::{actions, cart, contact};
 use crate::persistence::entity::order::{self, Fulfillment, PaymentMethod, PaymentStatus, Status};
 use crate::persistence::entity::order_event::{self, ActorType};
 use crate::persistence::entity::{cart_item, counter, order_item, product, shop, user};
@@ -453,7 +453,7 @@ fn order_card(
     shop: &str,
     again: bool,
 ) -> Message {
-    let address = actions::delivery_address(placed);
+    let address = contact::delivery_address(placed);
     let order = OrderDetails {
         shop,
         lines: items

@@ -81,6 +81,12 @@ impl Status {
             Self::Completed | Self::Rejected | Self::Cancelled | Self::Expired
         )
     }
+
+    /// Whether it is active: accepted and not yet handed over, so its parties see how to reach
+    /// each other (FR-ORD-11).
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Accepted | Self::Ready | Self::Delivering)
+    }
 }
 
 /// Kept in checkout's flow and confirmation too

@@ -26,6 +26,7 @@ use sea_orm::{
 use super::search::Search;
 use crate::notifications::templates::{PRODUCTS_PER_PAGE, SHOPS_PER_PAGE};
 use crate::persistence::entity::{product, shop, user};
+use crate::persistence::paging::{Page, cut, paged};
 
 /// How long a product stays in "ของใหม่วันนี้" once listed or restocked (FR-SRCH-09)
 pub const NEW_FOR: TimeDelta = TimeDelta::hours(24);
@@ -45,13 +46,6 @@ pub enum Listing<'a> {
 
 /// A product as buyers see it, with its shop.
 pub type Listed = (product::Model, shop::Model);
-
-/// A page of a list: its items, in order, and the number of the next page if there is one.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Page<T> {
-    pub items: Vec<T>,
-    pub next: Option<usize>,
-}
 
 /// The products of `listing` at `now` that buyers see, with their shops, in the order lists
 /// show them (FR-SRCH-02): open shops' first, then those in stock, then the most recently
@@ -138,20 +132,4 @@ fn selling<S: QuerySelect + QueryFilter>(select: S) -> S {
         .join(JoinType::InnerJoin, shop::Relation::Owner.def())
         .filter(shop::Column::Status.eq(shop::Status::Approved))
         .filter(user::Column::Status.eq(user::Status::Active))
-}
-
-/// `select` limited to page `page` of `per_page` rows, and one more, which says whether a next
-/// page follows.
-fn paged<S: QuerySelect>(select: S, page: usize, per_page: usize) -> S {
-    let offset = page.saturating_mul(per_page);
-    select
-        .offset(u64::try_from(offset).unwrap_or(u64::MAX))
-        .limit(u64::try_from(per_page + 1).expect("a few rows"))
-}
-
-/// Page `page` of `rows`, as [`paged`] fetched them.
-fn cut<T>(mut rows: Vec<T>, page: usize, per_page: usize) -> Page<T> {
-    let next = (rows.len() > per_page).then_some(page + 1);
-    rows.truncate(per_page);
-    Page { items: rows, next }
 }

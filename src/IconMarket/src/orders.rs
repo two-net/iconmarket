@@ -4,8 +4,10 @@
 pub mod actions;
 pub mod cart;
 pub mod checkout;
+mod contact;
 mod expiry;
 pub mod lifecycle;
+pub mod lists;
 
 pub use expiry::expire;
 
@@ -47,3 +49,8 @@ pub const GRANT_CANCEL: &str = "order.grant_cancel";
 pub const KEEP: &str = "order.keep";
 /// An admin's "ยกเลิกออเดอร์", which asks why (FR-ORD-12)
 pub const ADMIN_CANCEL: &str = "order.admin_cancel";
+
+/// "ดูรายละเอียด" on an order's card in "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน": the order in full,
+/// for its buyer, its seller or an admin (FR-ORD-10). [Lists](lists) show it, not
+/// [acting on it](actions).
+pub const VIEW: &str = "order.view";

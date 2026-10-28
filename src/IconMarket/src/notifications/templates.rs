@@ -1487,6 +1487,200 @@ impl Templates {
         notice(&headline, &details, buttons)
     }
 
+    /// "คำสั่งซื้อของฉัน" (FR-ORD-10): `cards`, a page of the buyer's orders, open ones first,
+    /// then the rest, and "ดูเพิ่มเติม" sending `more` when more follow. `carry_on` are where to
+    /// go next.
+    pub fn my_orders(
+        &self,
+        cards: &[OrderCard<'_>],
+        more: Option<String>,
+        carry_on: Vec<Action>,
+    ) -> Message {
+        let quick_reply = QuickReply::new(carry_on);
+        if cards.is_empty() {
+            let kha = self.kha();
+            let text = format!("ยังไม่มีคำสั่งซื้อ{kha} เลือกซื้อของได้เลย{kha}");
+            return Message::text(text).with_quick_reply(quick_reply);
+        }
+        let cards = cards
+            .iter()
+            .map(|card| self.order_view_card(card, false))
+            .collect();
+        Message::flex(labels::MY_ORDERS.as_str(), carousel(cards, more))
+            .with_quick_reply(quick_reply)
+    }
+
+    /// "ออเดอร์ร้าน" (FR-ORD-10): `cards`, a page of the shop's orders that `filter` picks, and
+    /// "ดูเพิ่มเติม" sending `more` when more follow. `filters` offer the others, and where else
+    /// to go.
+    pub fn shop_orders(
+        &self,
+        filter: &Label,
+        cards: &[OrderCard<'_>],
+        more: Option<String>,
+        filters: Vec<Action>,
+    ) -> Vec<Message> {
+        let kha = self.kha();
+        let filter = filter.as_str();
+        let quick_reply = QuickReply::new(filters);
+        if cards.is_empty() {
+            let text = format!("ตอนนี้ไม่มีออเดอร์ \"{filter}\"{kha}");
+            return vec![Message::text(text).with_quick_reply(quick_reply)];
+        }
+        let heading = Message::text(format!("ออเดอร์ \"{filter}\" ของร้าน{kha}"));
+        let cards = cards
+            .iter()
+            .map(|card| self.order_view_card(card, false))
+            .collect();
+        let alt_text = format!("{} · {filter}", labels::SHOP_ORDERS.as_str());
+        let list = Message::flex(alt_text, carousel(cards, more)).with_quick_reply(quick_reply);
+        vec![heading, list]
+    }
+
+    /// Order `card` in full (FR-ORD-10), with "ดูแผนที่" where FR-ORD-11 shows a location. `back`
+    /// returns to the list it is in.
+    pub fn order_details(&self, card: &OrderCard<'_>, back: Vec<Action>) -> Message {
+        let alt_text = format!("ออเดอร์ {}", card.number);
+        Message::flex(alt_text, self.order_view_card(card, true))
+            .with_quick_reply(QuickReply::new(back))
+    }
+
+    /// Order `card` as a list shows it, or in full if `full`: its number, status and when it was
+    /// placed, its shop on its buyer's card, its lines, at most [`ORDER_LINES_ON_CARD`] of them
+    /// unless `full`, the rest counted, its amounts, how it is received and paid, and as much of
+    /// how to reach the other party as FR-ORD-11 allows. In full, "ดูแผนที่" follows its buttons
+    /// where that shows a location.
+    fn order_view_card(&self, card: &OrderCard<'_>, full: bool) -> Bubble {
+        let headline = Text {
+            weight: Some(Weight::Bold),
+            wrap: Some(true),
+            ..Text::new(format!("ออเดอร์ {}", card.number))
+        };
+        let mut contents: Vec<Component> = vec![
+            headline.into(),
+            row("สถานะ", order_status_name(card.status)),
+            row("สั่งเมื่อ", &self.date_time(card.placed_at)),
+            Separator::default().into(),
+        ];
+        if let Some(shop) = card.shop {
+            let shop = Text {
+                size: Some(Size::Sm),
+                weight: Some(Weight::Bold),
+                wrap: Some(true),
+                ..Text::new(shop_called(shop))
+            };
+            contents.push(shop.into());
+        }
+        let shown = if full {
+            card.lines.len()
+        } else {
+            card.lines.len().min(ORDER_LINES_ON_CARD)
+        };
+        for line in &card.lines[..shown] {
+            let amounts = line_amounts(line.name, line.quantity, line.unit, line.price, line.total);
+            let line = FlexBox {
+                spacing: Some(Spacing::Sm),
+                ..FlexBox::vertical(amounts)
+            };
+            contents.push(line.into());
+        }
+        let rest = card.lines.len() - shown;
+        if rest > 0 {
+            let rest = Text {
+                size: Some(Size::Sm),
+                color: Some(MUTED.to_owned()),
+                ..Text::new(format!("และอีก {rest} รายการ"))
+            };
+            contents.push(rest.into());
+        }
+        contents.push(Separator::default().into());
+        let delivered = card.fulfillment == order::Fulfillment::Delivery;
+        if full {
+            contents.push(amount("ค่าสินค้า", card.subtotal, false));
+        }
+        if delivered {
+            let fee = amount(labels::DELIVERY_FEE.as_str(), card.delivery_fee, false);
+            contents.push(fee);
+        }
+        contents.push(amount("รวม", card.total, true));
+        contents.push(Separator::default().into());
+
+        // How it is received, then who it is for or how to reach the shop, as FR-ORD-11 allows
+        let received = fulfillment_name(card.fulfillment).to_owned();
+        let (received, pickup, people, location) = match &card.contact {
+            OrderContact::None => (received, None, Vec::new(), None),
+            OrderContact::Buyer { name, zone } => {
+                let received = match zone {
+                    Some(zone) if delivered => format!("ส่งที่ {zone}"),
+                    _ => received,
+                };
+                let buyer = match (name, zone) {
+                    (Some(name), Some(zone)) if !delivered => Some(format!("{name} · {zone}")),
+                    (Some(name), _) => Some((*name).to_owned()),
+                    (None, _) => None,
+                };
+                let people = buyer.map(|buyer| row("ลูกค้า", &buyer));
+                (received, None, people.into_iter().collect(), None)
+            }
+            OrderContact::BuyerFull { contact, location } => {
+                let received = match &contact.address {
+                    Some(address) => format!("ส่งที่ {address}"),
+                    None => received,
+                };
+                let mut people = Vec::new();
+                if let Some(buyer) = contact.buyer {
+                    people.push(row("ลูกค้า", buyer));
+                }
+                if let Some(phone) = contact.phone {
+                    people.push(row("โทร", &thai::format_phone(phone)));
+                }
+                if let Some(note) = contact.note {
+                    people.push(row("ฝากถึงร้าน", note));
+                }
+                (received, None, people, *location)
+            }
+            OrderContact::Shop {
+                pickup,
+                location,
+                phone,
+            } => {
+                let phone =
+                    phone.map(|phone| row(labels::SHOP_PHONE.as_str(), &thai::format_phone(phone)));
+                (received, *pickup, phone.into_iter().collect(), *location)
+            }
+        };
+        contents.push(row("รับของ", &received));
+        if let Some(pickup) = pickup {
+            contents.push(row(labels::PICKUP_ADDRESS.as_str(), pickup));
+        }
+        let paid = payment_name(card.payment);
+        let paid = if card.unpaid {
+            format!("{paid} · {}", labels::FILTER_UNPAID.as_str())
+        } else {
+            paid.to_owned()
+        };
+        contents.push(row("ชำระเงิน", &paid));
+        contents.extend(people);
+
+        let mut buttons = card.buttons.clone();
+        if full && let Some((latitude, longitude)) = location {
+            buttons.push(Action::Uri {
+                label: labels::SEE_MAP.clone(),
+                uri: map_url(latitude, longitude),
+            });
+        }
+        let body = FlexBox {
+            spacing: Some(Spacing::Md),
+            ..FlexBox::vertical(contents)
+        };
+        Bubble {
+            size: Some(BubbleSize::Mega),
+            body: Some(body),
+            footer: footer(&buttons),
+            ..Bubble::default()
+        }
+    }
+
     /// "ช่วยเหลือ" (FR-HELP-01): a button for each of `topics`, those of the user's roles.
     pub fn help(&self, topics: impl IntoIterator<Item = Topic>) -> Message {
         let (kha, kha_question) = (self.kha(), self.kha_question());
@@ -3976,6 +4170,54 @@ pub struct Contact<'a> {
     pub note: Option<&'a str>,
 }
 
+/// What one party of an order sees of how to reach the other (FR-ORD-11, NFR-PRIV-04), as
+/// [the order's status allows](crate::orders): cards show this and nothing else of it.
+pub enum OrderContact<'a> {
+    /// Nothing: the buyer's view of an order the shop is yet to accept or that is over
+    None,
+    /// The seller's view of an order yet to be accepted, its buyer's display name and zone, or
+    /// of one over, the name only
+    Buyer {
+        name: Option<&'a str>,
+        zone: Option<&'a str>,
+    },
+    /// The seller's view of an active order: how to reach its buyer, and where they shared they
+    /// are, as latitude and longitude, if they did
+    BuyerFull {
+        contact: Contact<'a>,
+        location: Option<(f64, f64)>,
+    },
+    /// The buyer's view of an active order: where to pick it up, as the shop gave it, and the
+    /// shop's phone, unless its seller hides it (FR-SHOP-08)
+    Shop {
+        pickup: Option<&'a str>,
+        location: Option<(f64, f64)>,
+        phone: Option<&'a str>,
+    },
+}
+
+/// An order's card in "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน" (FR-ORD-10), or in full.
+pub struct OrderCard<'a> {
+    pub number: &'a str,
+    pub status: order::Status,
+    pub placed_at: DateTime<Utc>,
+    /// Its shop's name on its buyer's card; `None` on its seller's
+    pub shop: Option<&'a str>,
+    /// As they were ordered (DR-03)
+    pub lines: Vec<OrderLine<'a>>,
+    pub subtotal: Money,
+    /// ฿0 for pickup
+    pub delivery_fee: Money,
+    pub total: Money,
+    pub fulfillment: order::Fulfillment,
+    pub payment: order::PaymentMethod,
+    /// Whether it is handed over but not paid, on its seller's card: "ค้างชำระ" (FR-PAY-07)
+    pub unpaid: bool,
+    pub contact: OrderContact<'a>,
+    /// What the viewer can do about it now
+    pub buttons: Vec<Action>,
+}
+
 /// An order as an admin finds it by its number (FR-ADM-04, FR-ORD-12).
 pub struct FoundOrder<'a> {
     pub number: &'a str,
@@ -4155,6 +4397,18 @@ fn reviewed_shop(status: shop::Status) -> (&'static str, &'static str) {
 pub const REVIEWS_PER_PAGE: usize = 6;
 /// The reports a card of "รายการรอตรวจ" shows, the latest; it counts the rest
 pub const REVIEW_REPORTS: usize = 3;
+/// Orders on a page of "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน" (FR-ORD-10). Their cards may say as
+/// much as an order's address and note, so fewer than a carousel holds fit its 50 KB
+/// (FR-LINE-11).
+pub const ORDERS_PER_PAGE: usize = 6;
+/// The lines an order's card in a list shows; it counts the rest, which its details show
+pub const ORDER_LINES_ON_CARD: usize = 3;
+
+/// A link that opens `latitude`, `longitude` on a map, in the maps app if there is one
+/// (FR-ORD-11).
+fn map_url(latitude: f64, longitude: f64) -> String {
+    format!("https://www.google.com/maps/search/?api=1&query={latitude:.6},{longitude:.6}")
+}
 /// The users one search of "ผู้ใช้" shows, as many as a carousel holds (FR-LINE-11)
 pub const USERS_FOUND: usize = limits::BUBBLES_PER_CAROUSEL - 2;
 
@@ -5418,6 +5672,19 @@ pub mod labels {
         CONFIRM_RECEIPT = "ได้รับของแล้ว",
         /// The seller goes on with an order the buyer asked to cancel (FR-ORD-07)
         KEEP_ORDER = "ไม่ยกเลิก",
+        /// An order's card in full, from "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน" (FR-ORD-10)
+        ORDER_DETAILS = "ดูรายละเอียด",
+        /// Opens where to deliver or pick up an order on a map (FR-ORD-11)
+        SEE_MAP = "ดูแผนที่",
+        // The filters of "ออเดอร์ร้าน" (FR-ORD-10)
+        /// Orders yet to be accepted
+        FILTER_NEW = "ใหม่",
+        /// Orders accepted, being prepared, ready or on their way
+        FILTER_ACTIVE = "กำลังดำเนินการ",
+        /// Orders handed over but not paid (FR-PAY-07)
+        FILTER_UNPAID = "ค้างชำระ",
+        /// Orders over: completed, rejected, cancelled or expired
+        FILTER_DONE = "เสร็จแล้ว/ยกเลิก",
         // The reasons for rejecting or cancelling an order, sent as typed (FR-ORD-04)
         REASON_SOLD_OUT = "สินค้าหมด",
         REASON_CANT_DELIVER = "ไม่สะดวกส่ง",
@@ -5888,8 +6155,21 @@ mod tests {
             t.ask_order_reason(number, Cancelled, false, Vec::new()),
             t.ask_order_reason(number, Cancelled, true, Vec::new()),
             t.ask_other_order_reason(300),
+            t.my_orders(&[], None, Vec::new()),
         ] {
             texts.push(text(&message).to_owned());
+        }
+        for filter in [
+            &labels::FILTER_NEW,
+            &labels::FILTER_ACTIVE,
+            &labels::FILTER_UNPAID,
+            &labels::FILTER_DONE,
+        ] {
+            texts.extend(
+                t.shop_orders(filter, &[], None, Vec::new())
+                    .iter()
+                    .map(|m| text(m).to_owned()),
+            );
         }
         texts
     }
@@ -7527,6 +7807,204 @@ mod tests {
         ] {
             limits::check(slice::from_ref(&message)).unwrap();
         }
+    }
+
+    /// FR-ORD-10, FR-LINE-11: a full page of "คำสั่งซื้อของฉัน" and of "ออเดอร์ร้าน" fits, and
+    /// an order in full, with the longest values their cards take: 20 lines, the longest names,
+    /// addresses and note, a location shared, and the largest IDs in their buttons.
+    #[test]
+    fn a_full_page_of_orders_fits() {
+        /// An order of 20 lines, each `name` by `unit`, with `contact` and `buttons`.
+        fn order_card<'a>(
+            name: &'a str,
+            unit: &'a str,
+            shop: Option<&'a str>,
+            contact: OrderContact<'a>,
+            buttons: Vec<Action>,
+        ) -> OrderCard<'a> {
+            OrderCard {
+                number: "IM-20261022-9999",
+                status: order::Status::Delivering,
+                placed_at: Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap(),
+                shop,
+                lines: (0..20)
+                    .map(|_| OrderLine {
+                        name,
+                        unit,
+                        price: Money::from_baht(100_000),
+                        quantity: 99,
+                        total: Money::from_baht(100_000).times(99),
+                    })
+                    .collect(),
+                subtotal: Money::from_baht(100_000).times(99 * 20),
+                delivery_fee: Money::from_baht(10_000),
+                total: Money::from_baht(100_000).times(99 * 20),
+                fulfillment: order::Fulfillment::Delivery,
+                payment: order::PaymentMethod::PromptPay,
+                unpaid: true,
+                contact,
+                buttons,
+            }
+        }
+        let t = templates(PoliteParticle::Kha);
+        let (name, unit, shop) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(50));
+        let (zone, house_number, landmark) = ("ข".repeat(50), "ข".repeat(30), "ข".repeat(100));
+        let (buyer, note, pickup) = ("ข".repeat(100), "ข".repeat(200), "ข".repeat(200));
+        let max = i64::MAX;
+        let button = |label: &Label, action: &str| postback(label, format!("{action}?order={max}"));
+        let location = Some((-89.123_456_789, -179.123_456_789));
+        let seller = || {
+            let contact = Contact {
+                buyer: Some(&buyer),
+                address: Some(address_line(&zone, &house_number, Some(&landmark))),
+                phone: Some("0812345678"),
+                note: Some(&note),
+            };
+            let buttons = vec![
+                button(&labels::MARK_COMPLETED, "order.complete"),
+                button(&labels::CANCEL_ORDER, "order.grant_cancel"),
+                button(&labels::KEEP_ORDER, "order.keep"),
+                button(&labels::ORDER_DETAILS, "order.view"),
+            ];
+            let contact = OrderContact::BuyerFull { contact, location };
+            order_card(&name, &unit, None, contact, buttons)
+        };
+        let buyer_card = || {
+            let contact = OrderContact::Shop {
+                pickup: Some(&pickup),
+                location,
+                phone: Some("0812345678"),
+            };
+            let buttons = vec![
+                button(&labels::CONFIRM_RECEIPT, "order.received"),
+                button(&labels::REQUEST_CANCEL, "order.request_cancel"),
+                button(&labels::ORDER_DETAILS, "order.view"),
+            ];
+            order_card(&name, &unit, Some(&shop), contact, buttons)
+        };
+        let more = Some(format!("shop_orders?filter=unpaid&page={max}"));
+        let filters: Vec<Action> = [
+            &labels::FILTER_NEW,
+            &labels::FILTER_ACTIVE,
+            &labels::FILTER_UNPAID,
+            &labels::FILTER_DONE,
+            &labels::MY_ORDERS,
+            &labels::MENU,
+        ]
+        .into_iter()
+        .map(|label| postback(label, "shop_orders?filter=unpaid".to_owned()))
+        .collect();
+        let sellers: Vec<OrderCard<'_>> = (0..ORDERS_PER_PAGE).map(|_| seller()).collect();
+        let page = t.shop_orders(
+            &labels::FILTER_DONE,
+            &sellers,
+            more.clone(),
+            filters.clone(),
+        );
+        limits::check(&page).unwrap();
+        let buyers: Vec<OrderCard<'_>> = (0..ORDERS_PER_PAGE).map(|_| buyer_card()).collect();
+        let page = t.my_orders(&buyers, more, filters.clone());
+        limits::check(slice::from_ref(&page)).unwrap();
+        for card in [seller(), buyer_card()] {
+            let full = t.order_details(&card, filters.clone());
+            limits::check(slice::from_ref(&full)).unwrap();
+        }
+    }
+
+    /// FR-ORD-11: the seller's card of an order shows only what its contact says of the buyer,
+    /// and the buyer's only what it says of the shop.
+    #[test]
+    fn an_orders_card_shows_only_its_contact() {
+        let t = templates(PoliteParticle::Kha);
+        let card = |shop, fulfillment, contact| OrderCard {
+            number: "IM-20261022-0007",
+            status: order::Status::Accepted,
+            placed_at: Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap(),
+            shop,
+            lines: vec![OrderLine {
+                name: "ไข่ไก่เบอร์ 2",
+                unit: "แผง",
+                price: Money::from_baht(110),
+                quantity: 2,
+                total: Money::from_baht(220),
+            }],
+            subtotal: Money::from_baht(220),
+            delivery_fee: Money::from_baht(10),
+            total: Money::from_baht(230),
+            fulfillment,
+            payment: order::PaymentMethod::Cash,
+            unpaid: false,
+            contact,
+            buttons: Vec::new(),
+        };
+        let delivered = order::Fulfillment::Delivery;
+        let pending = OrderContact::Buyer {
+            name: Some("สมชาย"),
+            zone: Some("ซอย 3"),
+        };
+        let pending = t.order_details(&card(None, delivered, pending), Vec::new());
+        let Body::Flex {
+            contents: FlexContainer::Bubble(pending),
+            ..
+        } = &pending.body
+        else {
+            panic!("not a card");
+        };
+        assert_eq!(
+            card_texts(pending),
+            [
+                "ออเดอร์ IM-20261022-0007",
+                "สถานะ",
+                "ร้านรับออเดอร์แล้ว",
+                "สั่งเมื่อ",
+                "22 ต.ค. 2569 14:30",
+                "ไข่ไก่เบอร์ 2",
+                "2 แผง × ฿110",
+                "฿220",
+                "ค่าสินค้า",
+                "฿220",
+                "ค่าส่ง",
+                "฿10",
+                "รวม",
+                "฿230",
+                "รับของ",
+                "ส่งที่ ซอย 3",
+                "ชำระเงิน",
+                "เงินสดตอนรับของ",
+                "ลูกค้า",
+                "สมชาย",
+            ]
+        );
+        let shop = OrderContact::Shop {
+            pickup: Some("หน้าวัด"),
+            location: None,
+            phone: None,
+        };
+        let pickup = t.order_details(
+            &card(Some("ร้านป้าแดง"), order::Fulfillment::Pickup, shop),
+            Vec::new(),
+        );
+        let Body::Flex {
+            contents: FlexContainer::Bubble(pickup),
+            ..
+        } = &pickup.body
+        else {
+            panic!("not a card");
+        };
+        let texts = card_texts(pickup);
+        assert_eq!(texts[5], "ร้านป้าแดง");
+        assert_eq!(
+            texts[texts.len() - 6..],
+            [
+                "รับของ",
+                "รับเองที่ร้าน",
+                "ที่รับของ",
+                "หน้าวัด",
+                "ชำระเงิน",
+                "เงินสดตอนรับของ"
+            ]
+        );
+        assert!(pickup.footer.is_none());
     }
 
     /// FR-SRCH-07: a product's details show its card and every other photo, as many as a carousel

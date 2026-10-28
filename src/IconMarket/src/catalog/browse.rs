@@ -23,7 +23,7 @@ mod tests;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter};
 use url::Url;
 
-use self::listing::{Listed, Listing, Page};
+use self::listing::{Listed, Listing};
 use super::images::{self, Owner};
 use super::products::Availability;
 use super::{categories, shops};
@@ -37,6 +37,7 @@ use crate::notifications::templates::{
 };
 use crate::orders;
 use crate::persistence::entity::{category, product, shop};
+use crate::persistence::paging::Page;
 use crate::thai::Label;
 use crate::users::access::{self, Denied, authorize};
 use crate::users::report::{self, Target};

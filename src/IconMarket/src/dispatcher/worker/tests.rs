@@ -2208,6 +2208,53 @@ async fn a_returning_buyer_orders_in_eight_taps_end_to_end() {
     assert_eq!(pushes(&s), []);
 }
 
+/// AC-17, FR-ORD-10, end to end: a seller who blocked the OA is pushed nothing of a new order,
+/// but, back in the chat, finds it in "ออเดอร์ร้าน", to accept from there, with every line in
+/// "ดูรายละเอียด" and nothing yet of how to reach the buyer (FR-ORD-11).
+#[tokio::test]
+async fn a_blocked_seller_finds_the_order_in_shop_orders_end_to_end() {
+    let s = setup().await;
+    let bob = onboarded(&s.db, BOB).await;
+    let following = |is_following| user::ActiveModel {
+        id: Set(bob),
+        is_following: Set(is_following),
+        ..Default::default()
+    };
+    following(false).update(&s.db).await.unwrap();
+    let (_, product) = returning_buyer(&s, bob).await;
+    let running = s.run();
+
+    let summary = tapped_to_summary(&s, &running, &product).await;
+    let confirm = pressed("a8", ALICE, &offered(&summary, "ยืนยันสั่งซื้อ"));
+    reply_to(&s, &running, confirm, 8).await;
+    // Back, as their `follow` records
+    following(true).update(&s.db).await.unwrap();
+    let list = reply_to(&s, &running, tapped("b1", BOB, "shop_orders"), 9).await;
+    let details = pressed("b2", BOB, &offered(&list, "ดูรายละเอียด"));
+    let full = reply_to(&s, &running, details, 10).await;
+    running.stop().await;
+
+    assert_eq!(pushes(&s), []);
+    let order = crate::persistence::entity::order::Entity::find()
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    let number = &order.order_number;
+    assert_eq!(list[0]["text"], "ออเดอร์ \"ใหม่\" ของร้านค่ะ");
+    assert_eq!(list[1]["altText"], "ออเดอร์ร้าน · ใหม่");
+    assert_eq!(list[1]["contents"]["contents"].as_array().unwrap().len(), 1);
+    offered(&list, "รับออเดอร์");
+    offered(&list, "ปฏิเสธ");
+    assert_eq!(full[0]["altText"], format!("ออเดอร์ {number}"));
+    let full = full.to_string();
+    for shown in ["ไข่ไก่เบอร์ 2", "2 แผง × ฿110", "฿230", "ส่งที่ ซอย 3", "สมชาย"]
+    {
+        assert!(full.contains(shown), "{shown} not shown: {full}");
+    }
+    assert!(!full.contains("45/2"), "the house number before accepting");
+}
+
 /// FR-LINE-07, FR-NOT-05, end to end: the order's card is essential, so when its reply token
 /// fails it is pushed instead, and the push logged.
 #[tokio::test]
