@@ -51,6 +51,7 @@ use crate::orders::actions::{self, ReasonFlow};
 use crate::orders::cart::{self, QuantityFlow};
 use crate::orders::checkout::{self, CheckoutFlow};
 use crate::orders::lists;
+use crate::orders::slip::{self, SlipFlow};
 use crate::persistence::entity::webhook_event;
 use crate::users::access::{Actor, Denied};
 use crate::users::address::{self, AddressFlow};
@@ -514,7 +515,8 @@ fn step_name(step: &Step) -> &'static str {
 /// problem reports (#22), shop applications and the reasons for turning one down (#23), shop
 /// settings (#24), adding products (#25), changing them (#26), searching (#28), the quantity
 /// for the cart (#29), the reasons of the review queue and finding and suspending users (#31),
-/// checkout (#32) and the reasons for rejecting or cancelling an order (#33).
+/// checkout (#32), the reasons for rejecting or cancelling an order (#33) and sending a payment
+/// slip (#41).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -593,6 +595,10 @@ async fn answer_flow(
         },
         ReasonFlow::NAME => match stored.read::<ReasonFlow>() {
             Some(session) => Some(actions::answer(turn, config, session, input).await),
+            None => None,
+        },
+        SlipFlow::NAME => match stored.read::<SlipFlow>() {
+            Some(session) => Some(slip::answer(turn, config, &context.line, session, input).await),
             None => None,
         },
         _ => None,
@@ -729,20 +735,19 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
 
 /// A photo no flow step took (FR-UI-14), sent as `input`. Whoever takes it downloads it while
 /// the event is processed (FR-LINE-09). A seller's is offered for listing, from one message the
-/// AI drafts it from while `ai.features.listing` is on (FR-PROD-02).
+/// AI drafts it from while `ai.features.listing` is on (FR-PROD-02); a buyer whose order awaits
+/// a PromptPay transfer is asked whether it is its slip (FR-PAY-05).
 async fn image(context: &Context, turn: &Turn<'_>, input: &Input) -> Result<Vec<Message>, DbErr> {
     let unexpected = || vec![turn.templates.image_not_expected()];
-    if turn.actor.roles().seller
-        && let Input::Image { message_id } = input
-    {
-        let (config, line) = (&context.config, &context.line);
+    let Input::Image { message_id } = input else {
+        return Ok(unexpected());
+    };
+    let (config, line) = (&context.config, &context.line);
+    if turn.actor.roles().seller {
         return products::photo_sent(turn, config, &context.ai, line, message_id).await;
     }
-    if payments::awaiting_transfer(turn.db, turn.actor.user.id)
-        .await?
-        .is_some()
-    {
-        return Ok(not_built("payment slips", 41, unexpected()));
+    if let Some(order) = payments::awaiting_transfer(turn.db, turn.actor.user.id).await? {
+        return slip::photo_sent(turn, config, line, message_id, &order).await;
     }
     if context.ai.is_enabled(Feature::VisualSearch) {
         return Ok(not_built("visual search", 43, unexpected()));

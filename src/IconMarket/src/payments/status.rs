@@ -6,7 +6,8 @@
 //! payment status is set by hand: in the caller's transaction, it locks the order as the
 //! [lifecycle](crate::orders::lifecycle) does, so recording a payment while the order is
 //! cancelled has one winner, and checks the change is allowed from where the order is now. A
-//! paid order cancelled is to be refunded, which the lifecycle sets as it cancels it.
+//! paid order cancelled is to be refunded, which the lifecycle sets as it cancels it; a transfer
+//! awaits its seller's confirmation once the buyer sends its [slip](super::slip).
 
 #[cfg(test)]
 mod tests;
@@ -89,6 +90,10 @@ pub async fn record(
     }
     .update(txn)
     .await?;
+    // The slip the seller was asked about is the transfer recorded (FR-PAY-05)
+    if to == PaymentStatus::Paid {
+        super::slip::confirm(txn, id).await?;
+    }
     info!(
         order_id = id,
         from = ?from,

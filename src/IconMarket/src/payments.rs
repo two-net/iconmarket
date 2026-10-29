@@ -1,7 +1,8 @@
-//! Payments (SRS §2.1): payment method and status, PromptPay details and slips.
+//! Payments (SRS §2.1): payment method and status, PromptPay details and [slips](slip).
 //! Built by #35, #40 and #41.
 
 mod qr;
+pub mod slip;
 mod status;
 
 #[cfg(test)]
@@ -14,8 +15,9 @@ use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, Que
 use crate::persistence::entity::order::{self, PaymentMethod, PaymentStatus, Status};
 use crate::thai;
 
-/// Buyer `buyer_id`'s latest order that its seller accepted and that awaits a PromptPay
-/// transfer: the order a photo the buyer sends may be the slip of (FR-UI-14, FR-PAY-05).
+/// Buyer `buyer_id`'s latest order that its seller accepted and that
+/// [awaits a PromptPay transfer](slip::awaits_transfer): the order a photo the buyer sends may be
+/// the slip of (FR-UI-14, FR-PAY-05).
 pub async fn awaiting_transfer(
     db: &impl ConnectionTrait,
     buyer_id: i64,

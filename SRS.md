@@ -454,6 +454,7 @@ No other endpoints are exposed.
 | Order status change | Buyer | `notification.orderStatusToBuyer` | on |
 | Order cancelled by the buyer, expired, cancellation request | Seller | always | on |
 | Payment slip received | Seller | always | on |
+| Payment slip not received ("ยังไม่ได้รับ") | Buyer | always | on |
 | Shop approved/rejected/suspended, item held/removed, account suspended, account or shop suspension lifted | Affected user | always | on |
 | Shop application, item held, user report | Admins | `notification.adminAlerts` | on |
 | Daily sales summary | Seller | `notification.dailySummary` | off (C) |

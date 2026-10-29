@@ -250,6 +250,7 @@ async fn each_switch_stops_its_own_notifications() {
         (Kind::ItemHeld, To::User(seller), "สินค้าถูกพัก"),
         (Kind::ItemRemoved, To::User(seller), "สินค้าถูกนำออก"),
         (Kind::AccountSuspended, To::User(buyer), "ระงับบัญชี"),
+        (Kind::SlipNotReceived, To::User(buyer), "ยังไม่ได้รับเงิน"),
     ];
     let outbox = |count: usize| {
         let mut outbox = Outbox::default();
@@ -265,7 +266,7 @@ async fn each_switch_stops_its_own_notifications() {
         [
             push(SELLER, &["ยกเลิก", "หมดเวลา", "ขอยกเลิก", "สลิป", "อนุมัติร้าน"]),
             push(SELLER, &["ไม่อนุมัติร้าน", "สินค้าถูกพัก", "สินค้าถูกนำออก"]),
-            push(BUYER, &["ระงับบัญชี"]),
+            push(BUYER, &["ระงับบัญชี", "ยังไม่ได้รับเงิน"]),
         ]
     );
 

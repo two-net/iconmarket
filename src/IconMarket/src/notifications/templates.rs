@@ -1521,7 +1521,10 @@ impl Templates {
                 format!("โอนพร้อมเพย์ {total}"),
                 format!("เลขพร้อมเพย์: {}", payments::format_promptpay_id(id)),
                 format!("ชื่อร้าน: {shop}"),
-                format!("โอนแล้วร้านจะยืนยันเมื่อได้รับเงิน{kha}"),
+                format!(
+                    "โอนแล้วกด \"{}\" แล้วส่งรูปสลิปในแชตนี้{kha}",
+                    labels::SEND_SLIP.as_str()
+                ),
             ],
             // The shop took its PromptPay ID away since the order was placed
             Some(PromptPayDue { id: None, total }) => vec![
@@ -1592,6 +1595,102 @@ impl Templates {
             format!("{who}ยืนยันว่าได้รับเงินค่าออเดอร์ {number} แล้ว{kha}")
         };
         notice(&headline, &[], buttons)
+    }
+
+    /// Asks the buyer for the photo of the slip of order `number`'s transfer of `total`
+    /// (FR-PAY-05).
+    pub fn ask_slip(&self, number: &str, total: Money) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ส่งรูปสลิปโอนเงินค่าออเดอร์ {number} ยอด {total} มาในแชตนี้ได้เลย{kha}"
+        ))
+    }
+
+    /// Asks the buyer whether the photo they sent unasked is the slip of order `number`'s
+    /// transfer of `total` (FR-UI-14), with "ใช่" and "ไม่ใช่".
+    pub fn is_it_the_slip(&self, number: &str, total: Money) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let text = format!(
+            "ได้รับรูปแล้ว{kha} รูปนี้เป็นสลิปโอนเงินค่าออเดอร์ {number} ยอด {total} ใช่ไหม{kha_question} ถ้าใช่ ระบบจะส่งให้ร้านตรวจสอบ{kha}"
+        );
+        let answers = [&labels::YES, &labels::NOT_SLIP]
+            .map(|label| Action::message(label.clone(), label.as_str()));
+        Message::text(text).with_quick_reply(QuickReply::new(answers.to_vec()))
+    }
+
+    /// The buyer's slip of order `number` went to its seller (FR-PAY-05). `buttons` are what they
+    /// can do now.
+    pub fn slip_sent(&self, number: &str, buttons: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let headline = format!("ส่งสลิปออเดอร์ {number} ให้ร้านแล้ว{kha}");
+        let details = [format!(
+            "รอร้านตรวจสอบยอดเงิน{kha} สถานะการชำระเงิน: {}",
+            payment_status_name(order::PaymentStatus::AwaitingConfirmation)
+        )];
+        notice(&headline, &details, buttons)
+    }
+
+    /// The photo the buyer sent unasked isn't the slip (FR-UI-14), so it isn't kept. The main
+    /// menu follows.
+    pub fn not_a_slip(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "รับทราบ{kha} ไม่ได้ส่งรูปนี้ให้ร้าน เลือกเมนูที่ต้องการได้เลย{kha}"
+        ))
+    }
+
+    /// Tells the seller `buyer` sent the slip of order `number`, whose total is `total`
+    /// (FR-PAY-05). The slip follows as an image whose link lasts `hours` (AC-14). `buttons` are
+    /// "ได้รับเงินแล้ว" and "ยังไม่ได้รับ".
+    pub fn slip_received_notice(
+        &self,
+        number: &str,
+        total: Money,
+        buyer: Option<&str>,
+        hours: u32,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("ลูกค้าส่งสลิปโอนเงินออเดอร์ {number} แล้ว{kha}");
+        let mut details = vec![format!("ยอดออเดอร์ {total}")];
+        if let Some(buyer) = buyer {
+            details.push(format!("ลูกค้า: {buyer}"));
+        }
+        details.push(format!(
+            "ตรวจดูว่าเงินเข้าบัญชีแล้ว แล้วกดตอบด้านล่างได้เลย{kha} รูปสลิปเปิดดูได้ภายใน {hours} ชั่วโมง"
+        ));
+        notice(&headline, &details, buttons)
+    }
+
+    /// The seller didn't get the transfer of order `number`, whose slip is refused (FR-PAY-05):
+    /// its buyer is told. `buttons` are what they can do now.
+    pub fn slip_not_received(&self, number: &str, buttons: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let headline = format!("บันทึกว่ายังไม่ได้รับเงินออเดอร์ {number}{kha}");
+        let details = [format!("แจ้งลูกค้าให้ตรวจสอบการโอนแล้ว{kha}")];
+        notice(&headline, &details, buttons)
+    }
+
+    /// Tells the buyer shop `shop` didn't get the transfer of order `number`'s `total` they sent
+    /// the slip of (FR-PAY-05). `buttons` are what they can do now: "ส่งสลิป", while they can send
+    /// another.
+    pub fn slip_not_received_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        total: Money,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!(
+            "{}แจ้งว่ายังไม่ได้รับเงินค่าออเดอร์ {number}{kha}",
+            shop_called(shop)
+        );
+        let details = [
+            format!("ยอดที่ต้องโอน {total}"),
+            format!("ตรวจสอบการโอนอีกครั้ง หรือสอบถามร้านได้โดยตรง{kha}"),
+        ];
+        notice(&headline, &details, buttons)
     }
 
     /// The seller has yet to get the money of order `number`, handed over (FR-PAY-07): it stays
@@ -6168,7 +6267,7 @@ pub mod labels {
         PICK_UP = "รับเอง",
         /// Has the shop deliver it; its button also shows the fee
         DELIVER = "ให้ไปส่ง",
-        /// Delivers to the address shown
+        /// Delivers to the address shown; also, the photo the buyer sent is the slip (FR-UI-14)
         YES = "ใช่",
         CHANGE_ADDRESS = "เปลี่ยนที่อยู่",
         CASH_ON_RECEIPT = "เงินสดตอนรับของ",
@@ -6202,6 +6301,10 @@ pub mod labels {
         NOT_PAID = "ยังไม่ได้รับ",
         /// The seller, or an admin, records a paid order cancelled as refunded (FR-PAY-09)
         MARK_REFUNDED = "คืนเงินแล้ว",
+        /// The buyer sends the slip of their PromptPay transfer (FR-PAY-05)
+        SEND_SLIP = "ส่งสลิป",
+        /// The photo the buyer sent unasked isn't the slip (FR-UI-14); with YES
+        NOT_SLIP = "ไม่ใช่",
         /// An order's card in full, from "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน" (FR-ORD-10)
         ORDER_DETAILS = "ดูรายละเอียด",
         /// Opens where to deliver or pick up an order on a map (FR-ORD-11)
@@ -6644,6 +6747,11 @@ mod tests {
             t.ask_paid(number, Money::from_baht(230), false, Vec::new()),
             t.ask_paid(number, Money::from_baht(230), true, Vec::new()),
             t.left_unpaid(number, Vec::new()),
+            t.slip_sent(number, Vec::new()),
+            t.slip_received_notice(number, Money::from_baht(230), Some("สมชาย"), 24, Vec::new()),
+            t.slip_received_notice(number, Money::from_baht(230), None, 24, Vec::new()),
+            t.slip_not_received(number, Vec::new()),
+            t.slip_not_received_notice(shop, number, Money::from_baht(230), Vec::new()),
             t.order_rejected_notice(shop, number, "สินค้าหมด", Vec::new()),
             t.order_expired_notice(shop, number, 60, Vec::new()),
             t.order_cancelled_by_buyer_notice(number),
@@ -6707,6 +6815,9 @@ mod tests {
             t.ask_order_reason(number, Cancelled, true, Vec::new()),
             t.ask_other_order_reason(300),
             t.my_orders(&[], None, Vec::new()),
+            t.ask_slip(number, Money::from_baht(230)),
+            t.is_it_the_slip(number, Money::from_baht(230)),
+            t.not_a_slip(),
         ] {
             texts.push(text(&message).to_owned());
         }
@@ -8307,7 +8418,7 @@ mod tests {
                 "โอนพร้อมเพย์ ฿230",
                 "เลขพร้อมเพย์: 081-234-5678",
                 "ชื่อร้าน: ร้านป้าแดง",
-                "โอนแล้วร้านจะยืนยันเมื่อได้รับเงินค่ะ",
+                "โอนแล้วกด \"ส่งสลิป\" แล้วส่งรูปสลิปในแชตนี้ค่ะ",
             ]
         );
         let citizen =
@@ -8320,6 +8431,62 @@ mod tests {
                 "ร้านป้าแดงรับออเดอร์ IM-20261022-0007 แล้วค่ะ กำลังเตรียมของ",
                 "โอนพร้อมเพย์ ฿230",
                 "ร้านยังไม่มีเลขพร้อมเพย์ สอบถามเลขที่จะโอนกับร้านได้โดยตรงค่ะ",
+            ]
+        );
+    }
+
+    /// FR-PAY-05, FR-UI-14: the buyer is asked for the slip, or whether the photo they sent is
+    /// it, and told it went to the seller; the seller gets it with the amount to look for and how
+    /// long its link lasts (AC-14); and the buyer is told when the seller didn't get the money.
+    #[test]
+    fn a_slip_is_asked_for_sent_and_answered() {
+        let t = templates(PoliteParticle::Kha);
+        let (number, total) = ("IM-20261022-0007", Money::from_baht(230));
+        assert_eq!(
+            text(&t.ask_slip(number, total)),
+            "ส่งรูปสลิปโอนเงินค่าออเดอร์ IM-20261022-0007 ยอด ฿230 มาในแชตนี้ได้เลยค่ะ"
+        );
+        let is_it = t.is_it_the_slip(number, total);
+        assert_eq!(
+            text(&is_it),
+            "ได้รับรูปแล้วค่ะ รูปนี้เป็นสลิปโอนเงินค่าออเดอร์ IM-20261022-0007 ยอด ฿230 ใช่ไหมคะ ถ้าใช่ ระบบจะส่งให้ร้านตรวจสอบค่ะ"
+        );
+        let answers: Vec<_> = is_it.quick_reply.unwrap().items;
+        let answers: Vec<_> = answers
+            .iter()
+            .map(|item| item.action.label().as_str())
+            .collect();
+        assert_eq!(answers, ["ใช่", "ไม่ใช่"]);
+        assert_eq!(
+            notice_lines(&t.slip_sent(number, Vec::new())),
+            [
+                "ส่งสลิปออเดอร์ IM-20261022-0007 ให้ร้านแล้วค่ะ",
+                "รอร้านตรวจสอบยอดเงินค่ะ สถานะการชำระเงิน: รอร้านตรวจสอบ",
+            ]
+        );
+        assert_eq!(
+            notice_lines(&t.slip_received_notice(number, total, Some("สมชาย"), 24, Vec::new())),
+            [
+                "ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ",
+                "ยอดออเดอร์ ฿230",
+                "ลูกค้า: สมชาย",
+                "ตรวจดูว่าเงินเข้าบัญชีแล้ว แล้วกดตอบด้านล่างได้เลยค่ะ รูปสลิปเปิดดูได้ภายใน 24 ชั่วโมง",
+            ]
+        );
+        let t = templates(PoliteParticle::Khrap);
+        assert_eq!(
+            notice_lines(&t.slip_not_received(number, Vec::new())),
+            [
+                "บันทึกว่ายังไม่ได้รับเงินออเดอร์ IM-20261022-0007ครับ",
+                "แจ้งลูกค้าให้ตรวจสอบการโอนแล้วครับ",
+            ]
+        );
+        assert_eq!(
+            notice_lines(&t.slip_not_received_notice("ป้าแดง", number, total, Vec::new())),
+            [
+                "ร้านป้าแดงแจ้งว่ายังไม่ได้รับเงินค่าออเดอร์ IM-20261022-0007ครับ",
+                "ยอดที่ต้องโอน ฿230",
+                "ตรวจสอบการโอนอีกครั้ง หรือสอบถามร้านได้โดยตรงครับ",
             ]
         );
     }
@@ -8432,7 +8599,33 @@ mod tests {
                 &shop,
                 number,
                 Some(&due(Some("004999012345678"))),
-                vec![button(&labels::REQUEST_CANCEL, "order.request_cancel")],
+                vec![
+                    button(&labels::SEND_SLIP, "order.send_slip"),
+                    button(&labels::REQUEST_CANCEL, "order.request_cancel"),
+                ],
+            ),
+            t.slip_received_notice(
+                number,
+                Money::from_baht(100_000).times(99 * 20),
+                Some(&buyer),
+                u32::MAX,
+                vec![
+                    button(&labels::MARK_PAID, "order.paid"),
+                    postback(
+                        &labels::NOT_PAID,
+                        format!("order.not_paid?order={max}&slip={max}"),
+                    ),
+                ],
+            ),
+            t.slip_not_received_notice(
+                &shop,
+                number,
+                Money::from_baht(100_000).times(99 * 20),
+                vec![
+                    button(&labels::SEND_SLIP, "order.send_slip"),
+                    button(&labels::CONFIRM_RECEIPT, "order.received"),
+                    button(&labels::REQUEST_CANCEL, "order.request_cancel"),
+                ],
             ),
             t.order_found(
                 &found,
@@ -8517,6 +8710,7 @@ mod tests {
                 promptpay: Some("004999012345678"),
             };
             let buttons = vec![
+                button(&labels::SEND_SLIP, "order.send_slip"),
                 button(&labels::CONFIRM_RECEIPT, "order.received"),
                 button(&labels::REQUEST_CANCEL, "order.request_cancel"),
                 button(&labels::ORDER_DETAILS, "order.view"),

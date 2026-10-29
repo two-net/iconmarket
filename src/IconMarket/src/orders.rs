@@ -1,5 +1,5 @@
 //! Cart & orders (SRS §2.1): cart, checkout, stock reservation and the order lifecycle.
-//! Built by #29, #32, #33, #34 and #35; [`periods`] counts the orders placed of late, for
+//! Built by #29, #32, #33, #34, #35 and #41; [`periods`] counts the orders placed of late, for
 //! "สถิติ" and "ยอดขาย".
 
 pub mod actions;
@@ -10,6 +10,7 @@ mod expiry;
 pub mod lifecycle;
 pub mod lists;
 pub mod periods;
+pub mod slip;
 
 pub use expiry::expire;
 
@@ -54,8 +55,13 @@ pub const ADMIN_CANCEL: &str = "order.admin_cancel";
 /// The seller's, or an admin's, "ได้รับเงินแล้ว" and "คืนเงินแล้ว" (FR-PAY-07 – FR-PAY-09)
 pub const MARK_PAID: &str = "order.paid";
 pub const MARK_REFUNDED: &str = "order.refunded";
-/// The seller's "ยังไม่ได้รับ" when asked whether an order handed over was paid (FR-PAY-07)
+/// The seller's "ยังไม่ได้รับ" when asked whether an order handed over was paid (FR-PAY-07), or
+/// on the notice of its slip (FR-PAY-05), whose ID it then carries as its `slip`
 pub const NOT_PAID: &str = "order.not_paid";
+pub const SLIP_ID: &str = "slip";
+/// The buyer's "ส่งสลิป" while an order awaits their PromptPay transfer (FR-PAY-05), which asks
+/// for the photo of the [slip](slip)
+pub const SEND_SLIP: &str = "order.send_slip";
 
 /// "ดูรายละเอียด" on an order's card in "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน": the order in full,
 /// for its buyer, its seller or an admin (FR-ORD-10). [Lists](lists) show it, not

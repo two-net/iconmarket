@@ -16,11 +16,6 @@
 //! sent it. The flow [`adopt`]s it for what it makes; one that ends without is swept by
 //! [`delete_orphaned_drafts`].
 
-#![allow(
-    dead_code,
-    reason = "the payment flows that upload slips are built by later issues"
-)]
-
 mod process;
 #[cfg(test)]
 mod tests;

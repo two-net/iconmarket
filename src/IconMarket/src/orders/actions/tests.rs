@@ -1269,12 +1269,15 @@ async fn a_promptpay_order_accepted_says_what_to_transfer_where() {
             "โอนพร้อมเพย์ ฿230",
             "เลขพร้อมเพย์: 081-234-5678",
             "ชื่อร้าน: ร้านป้าแดง",
-            "โอนแล้วร้านจะยืนยันเมื่อได้รับเงินค่ะ",
+            "โอนแล้วกด \"ส่งสลิป\" แล้วส่งรูปสลิปในแชตนี้ค่ะ",
         ]
     );
     assert_eq!(
         told.buttons(),
-        [("ขอยกเลิก", data(REQUEST_CANCEL, placed.id).as_str())]
+        [
+            ("ส่งสลิป", data(SEND_SLIP, placed.id).as_str()),
+            ("ขอยกเลิก", data(REQUEST_CANCEL, placed.id).as_str()),
+        ]
     );
     let card = s.details(s.buyer.id, placed.id).await;
     assert!(card.contains("081-234-5678"), "{card}");

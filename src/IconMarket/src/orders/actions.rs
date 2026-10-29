@@ -10,12 +10,13 @@
 //! admin, ask why: one of the reasons of FR-ORD-04, or one typed after "อื่นๆ".
 //!
 //! The buyer of an order paid by PromptPay is told, as it is accepted, what to transfer where
-//! (FR-PAY-03), with the PromptPay QR code for its exact amount right under (FR-PAY-04). The
-//! seller records it paid with "ได้รับเงินแล้ว": a transfer once it arrives, and cash as they hand
-//! the order over, when they are asked "ได้รับเงินแล้วหรือยัง?"; one not paid then stays under
-//! "ค้างชำระ" (FR-PAY-07). A paid order cancelled is to be refunded,
-//! which they record with "คืนเงินแล้ว" (FR-PAY-09). An admin may record either from the
-//! order's card in "ผู้ใช้"; its buyer never can (FR-PAY-08).
+//! (FR-PAY-03), with the PromptPay QR code for its exact amount right under (FR-PAY-04), and
+//! "ส่งสลิป" to send the [slip](super::slip) of the transfer (FR-PAY-05). The seller records it
+//! paid with "ได้รับเงินแล้ว": a transfer once it arrives, and cash as they hand the order over,
+//! when they are asked "ได้รับเงินแล้วหรือยัง?"; one not paid then stays under "ค้างชำระ"
+//! (FR-PAY-07). "ยังไม่ได้รับ" on a slip refuses it, and the buyer is told (FR-PAY-05). A paid
+//! order cancelled is to be refunded, which they record with "คืนเงินแล้ว" (FR-PAY-09). An
+//! admin may record either from the order's card in "ผู้ใช้"; its buyer never can (FR-PAY-08).
 //!
 //! Every move goes through the [lifecycle](super::lifecycle), which checks it again against the
 //! order as it is now: a button of a card the order has moved on from, or tapped again, shows
@@ -38,7 +39,7 @@ use super::lifecycle::{self, By, Moved};
 use super::{
     ACCEPT, ADMIN_CANCEL, CANCEL_ORDER, COMPLETE, DELIVERING, GRANT_CANCEL, KEEP, MARK_PAID,
     MARK_REFUNDED, NOT_PAID, ORDER_ID, READY, RECEIVED, REJECT, REQUEST_CANCEL, SELLER_CANCEL,
-    cart, contact,
+    SEND_SLIP, SLIP_ID, cart, contact, slip,
 };
 use crate::admin::audit::{self, Entry, Target};
 use crate::admin::reason::{REASON_CHARS, Refused, reason};
@@ -53,6 +54,7 @@ use crate::notifications::templates::{
     labels,
 };
 use crate::notifications::{Kind, To};
+use crate::payments::slip::Answered;
 use crate::payments::{self, Recorded};
 use crate::persistence::entity::order::{self, PaymentMethod, PaymentStatus, Status};
 use crate::persistence::entity::order_event::ActorType;
@@ -164,7 +166,8 @@ pub async fn tapped(
         KEEP => keep(turn, id).await,
         MARK_PAID => pays(turn, id, PaymentStatus::Paid).await,
         MARK_REFUNDED => pays(turn, id, PaymentStatus::Refunded).await,
-        NOT_PAID => not_paid(turn, id).await,
+        NOT_PAID => not_paid(turn, id, postback.int(SLIP_ID)).await,
+        SEND_SLIP => slip::start(turn, id).await,
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }
@@ -285,8 +288,9 @@ pub async fn found(
 /// allows them (Table 4.6-B), and the payments they may record (FR-PAY-08). The seller gets the
 /// next step, as in Appendix A.4, "ได้รับเงินแล้ว" or "คืนเงินแล้ว", then "ปฏิเสธ" or
 /// "ยกเลิกออเดอร์", or, while the buyer asks to cancel, the answers to that; the buyer
-/// "ยกเลิกออเดอร์" until it is accepted, then "ได้รับของแล้ว" once it is ready or on its way, and
-/// "ขอยกเลิก"; an admin the payments, and "ยกเลิกออเดอร์" while it is open.
+/// "ยกเลิกออเดอร์" until it is accepted, then "ส่งสลิป" while it awaits their transfer
+/// (FR-PAY-05), "ได้รับของแล้ว" once it is ready or on its way, and "ขอยกเลิก"; an admin the
+/// payments, and "ยกเลิกออเดอร์" while it is open.
 pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
     let can = |to| lifecycle::allowed(order.status, to, viewer, order.fulfillment);
     let acts = |action, label: &Label| button(order, action, label);
@@ -331,6 +335,9 @@ pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
         ActorType::Buyer => {
             if can(Status::Cancelled) {
                 buttons.push(acts(CANCEL_ORDER, &labels::CANCEL_ORDER));
+            }
+            if payments::slip::awaits_transfer(order) {
+                buttons.push(acts(SEND_SLIP, &labels::SEND_SLIP));
             }
             if can(Status::Completed) {
                 buttons.push(acts(RECEIVED, &labels::CONFIRM_RECEIPT));
@@ -615,7 +622,11 @@ fn now_is(templates: &Templates, order: &order::Model, viewer: ActorType) -> Mes
 
 /// `order` as it is now, with how far its payment is, for `viewer`, as what they asked to
 /// record of it can't be (FR-PAY-08): recorded meanwhile, or the same button tapped again.
-fn paid_now_is(templates: &Templates, order: &order::Model, viewer: ActorType) -> Message {
+pub(super) fn paid_now_is(
+    templates: &Templates,
+    order: &order::Model,
+    viewer: ActorType,
+) -> Message {
     let (number, payment) = (&order.order_number, Some(order.payment_status));
     templates.order_now(number, order.status, payment, buttons(order, viewer))
 }
@@ -797,10 +808,12 @@ async fn payer(turn: &Turn<'_>, id: i64) -> Result<Result<ActorType, Denied>, Db
     Ok(as_seller.map(|()| ActorType::Seller))
 }
 
-/// The seller's "ยังไม่ได้รับ" when asked whether order `id`, handed over, was paid (FR-PAY-07):
-/// nothing changes, and it stays under "ค้างชำระ" until they record it paid. Shows the order as
-/// it is if it was recorded meanwhile.
-async fn not_paid(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr> {
+/// The seller's "ยังไม่ได้รับ" on order `id`: on the notice of its slip `slip` (FR-PAY-05), or
+/// when asked whether it was paid as they handed it over (FR-PAY-07). A slip awaiting their
+/// answer is refused, and the buyer is told; otherwise nothing changes, and an order handed
+/// over stays under "ค้างชำระ" until they record it paid. Shows the order as it is if it was
+/// answered or recorded meanwhile, or another slip came since.
+async fn not_paid(turn: &Turn<'_>, id: i64, slip: Option<i64>) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = may_act(turn, id, ActorType::Seller).await? {
         return Ok(vec![turn.denied(denied)]);
     }
@@ -808,10 +821,39 @@ async fn not_paid(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr> {
     let Some(order) = order::Entity::find_by_id(id).one(turn.db).await? else {
         return Ok(vec![templates.denied(Denied::NotFound)]);
     };
+    if order.payment_status == PaymentStatus::AwaitingConfirmation {
+        return slip_not_received(turn, id, slip).await;
+    }
     let unpaid = payments::UNPAID.contains(&order.payment_status);
-    if order.status != Status::Completed || !unpaid {
+    if slip.is_some() || order.status != Status::Completed || !unpaid {
         return Ok(vec![paid_now_is(templates, &order, ActorType::Seller)]);
     }
     let next = buttons(&order, ActorType::Seller);
     Ok(vec![templates.left_unpaid(&order.order_number, next)])
+}
+
+/// The seller didn't get the transfer of order `id`, whose slip `slip`, or the one awaiting
+/// their answer, is refused (FR-PAY-05): the order awaits a transfer again, and the buyer is
+/// told, with "ส่งสลิป" while they can send another.
+async fn slip_not_received(
+    turn: &Turn<'_>,
+    id: i64,
+    slip: Option<i64>,
+) -> Result<Vec<Message>, DbErr> {
+    let templates = turn.templates;
+    let order = match payments::slip::not_received(turn.db, id, slip, turn.now).await? {
+        Answered::Done(order) => order,
+        Answered::Refused(order) => {
+            return Ok(vec![paid_now_is(templates, &order, ActorType::Seller)]);
+        }
+        Answered::NotFound => return Ok(vec![templates.denied(Denied::NotFound)]),
+    };
+    let parties = Parties::of(turn.db, &order).await?;
+    let (number, shop) = (&order.order_number, &parties.shop.name);
+    let next = buttons(&order, ActorType::Buyer);
+    let told = templates.slip_not_received_notice(shop, number, order.total, next);
+    turn.notify(Kind::SlipNotReceived, To::User(order.buyer_id), vec![told]);
+    turn.essential();
+    let next = buttons(&order, ActorType::Seller);
+    Ok(vec![templates.slip_not_received(number, next)])
 }

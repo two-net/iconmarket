@@ -76,6 +76,8 @@ pub enum Kind {
     CancellationRequested,
     /// To the seller: a payment slip (FR-PAY-05)
     SlipReceived,
+    /// To the buyer: the seller didn't get the transfer of the slip they sent (FR-PAY-05)
+    SlipNotReceived,
     /// To the buyer: their PromptPay order was accepted, with what to transfer and where
     /// (FR-PAY-03)
     PaymentDetails,
@@ -117,6 +119,7 @@ impl Kind {
             Self::OrderExpired => "order.expired",
             Self::CancellationRequested => "order.cancellation_requested",
             Self::SlipReceived => "payment.slip",
+            Self::SlipNotReceived => "payment.slip_not_received",
             Self::PaymentDetails => "payment.promptpay",
             Self::PaymentToConfirm => "payment.to_confirm",
             Self::ShopApproved => "shop.approved",
@@ -143,6 +146,7 @@ impl Kind {
             | Self::OrderExpired
             | Self::CancellationRequested
             | Self::SlipReceived
+            | Self::SlipNotReceived
             | Self::PaymentDetails
             | Self::PaymentToConfirm
             | Self::ShopApproved
