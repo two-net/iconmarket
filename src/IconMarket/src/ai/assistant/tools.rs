@@ -25,7 +25,7 @@ use crate::admin::statistics::{self, Statistics};
 use crate::ai::{Gateway, Schema, Tool, ToolCall, as_data};
 use crate::catalog::browse;
 use crate::catalog::browse::listing::{self, Listing};
-use crate::catalog::browse::search::{KEYWORD_CHARS, Search};
+use crate::catalog::browse::search::{KEYWORD_CHARS, KEYWORDS, Search};
 use crate::catalog::categories;
 use crate::catalog::products::{self, Availability, listing as drafting, manage};
 use crate::catalog::shops::{sales, settings};
@@ -48,8 +48,6 @@ use crate::users::roles::Roles;
 
 /// The most of the shop's products `get_my_products` tells of, the newest first
 const MY_PRODUCTS: u64 = 30;
-/// The most keywords a search takes: the item and a few other words for it
-const KEYWORDS: usize = 5;
 /// The highest price a search takes, in baht: the most a product may cost (FR-PROD-03)
 const MAX_PRICE: f64 = 100_000.0;
 /// The periods of "ยอดขาย" `get_sales_summary` takes, by name, with their length in days

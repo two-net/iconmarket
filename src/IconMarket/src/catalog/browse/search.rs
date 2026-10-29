@@ -16,6 +16,11 @@
 //! (NFR-SEC-03), so a list longer than a page [keeps](pending::keep) the search for its
 //! "ดูเพิ่มเติม" to page through, until `session.pendingActionMinutes` have passed; after
 //! that, or once `ยกเลิก` discards it, the button asks for the keyword again.
+//!
+//! A buyer may also search by a photo, which the AI turns into a search ([`visual`],
+//! FR-SRCH-10).
+
+pub mod visual;
 
 use sea_orm::prelude::Uuid;
 use sea_orm::sea_query::Expr;
@@ -46,6 +51,8 @@ const KIND: &str = "search";
 
 /// The longest keyword, in characters: as long as a product's name (FR-PROD-03)
 pub const KEYWORD_CHARS: usize = 80;
+/// The most keywords the AI searches with: the item and a few other words for it
+pub const KEYWORDS: usize = 5;
 
 /// A search (FR-SRCH-04): the keyword the user typed, or what the AI assistant makes of a
 /// request in plain Thai (FR-SRCH-05). What the AI adds reads as nothing from a search kept

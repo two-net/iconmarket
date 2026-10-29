@@ -1078,6 +1078,66 @@ async fn a_buyer_searches_and_pages_through_what_is_found() {
     assert_eq!(replies[&token("a4")], json!(s.fallback()));
 }
 
+/// FR-SRCH-10, FR-UI-14, FR-AIP-04, end to end: a buyer's photo that nothing else takes is
+/// searched by what the AI sees in it, while visual search is on and the model accepts images;
+/// otherwise it gets the friendly reply, and the AI isn't asked.
+#[tokio::test]
+async fn a_buyer_searches_by_a_photo_end_to_end() {
+    use crate::ai::Feature;
+    use crate::ai::testing::{self as scripted, Turn as Scripted};
+
+    let s = setup().await;
+    let t = &s.templates;
+    onboarded(&s.db, ALICE).await;
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = testing::new_shop(seller.id).insert(&s.db).await.unwrap();
+    let sweets = testing::new_category("ขนม/ของหวาน")
+        .insert(&s.db)
+        .await
+        .unwrap();
+    testing::new_product(shop.id, sweets.id, "ขนมครก", Some(5))
+        .insert(&s.db)
+        .await
+        .unwrap();
+    let jpeg = include_bytes!("../../ai/provider/fixtures/media/slip.jpg");
+
+    // Off by config, off as the model takes no images, and on
+    let cases: [(&[Feature], bool); 3] =
+        [(&[Feature::VisualSearch], true), (&[], false), (&[], true)];
+    let mut replies = Vec::new();
+    for (n, (off, images)) in cases.into_iter().enumerate() {
+        let id = format!("a{}", n + 1);
+        s.line.script(
+            &format!("/v2/bot/message/{id}/content"),
+            [Answer::bytes("image/jpeg", jpeg)],
+        );
+        let seen = json!({ "keywords": ["ขนมครก"], "category": "ขนม/ของหวาน" });
+        let (ai, model) = scripted::scripted(&s.pool, [Scripted::Json(seen)], images, off);
+        let mut context = s.context(&s.pool, 20);
+        context.ai = ai;
+        let photo = json!({ "id": id, "type": "image", "contentProvider": { "type": "line" } });
+        store(&s.db, [sent(&id, ALICE, photo)]).await;
+        let running = s.run_with(context, 1);
+        settled(&s.db, n + 1).await;
+        replied(&s, n + 1).await;
+        running.stop().await;
+        let reply: HashMap<_, _> = s.replies().into_iter().collect();
+        replies.push((reply[&token(&id)].clone(), model.requests().len()));
+    }
+
+    let friendly = json!([t.image_not_expected()]);
+    assert_eq!(replies[0], (friendly.clone(), 0));
+    assert_eq!(replies[1], (friendly, 0));
+    let (found, asked) = &replies[2];
+    assert_eq!(*asked, 1);
+    assert_eq!(found[0], json!(t.photo_searched("ขนมครก")));
+    assert_eq!(found[1]["altText"], "ผลการค้นหา \"ขนมครก\"");
+    let found = found[1].to_string();
+    for shown in ["ขนมครก", "฿110 / แผง", "เหลือ 5"] {
+        assert!(found.contains(shown), "{shown} in {found}");
+    }
+}
+
 /// AC (FR-HELP-01, FR-HELP-02): "ช่วยเหลือ" offers each user their roles' topics, and a buyer's
 /// report on a product, once its reason is given, is filed and pushed to the admins after the
 /// reply.

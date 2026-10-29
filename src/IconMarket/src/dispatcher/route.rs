@@ -37,7 +37,7 @@ use crate::admin::categories::{self, CategoryFlow};
 use crate::admin::{review, statistics};
 use crate::ai::{Feature, assistant};
 use crate::catalog::browse;
-use crate::catalog::browse::search::{self, SearchFlow};
+use crate::catalog::browse::search::{self, SearchFlow, visual};
 use crate::catalog::products::listing::{self, Typed};
 use crate::catalog::products::manage::{self, EditFlow};
 use crate::catalog::products::{self, ProductFlow};
@@ -741,7 +741,8 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
 /// A photo no flow step took (FR-UI-14), sent as `input`. Whoever takes it downloads it while
 /// the event is processed (FR-LINE-09). A seller's is offered for listing, from one message the
 /// AI drafts it from while `ai.features.listing` is on (FR-PROD-02); a buyer whose order awaits
-/// a PromptPay transfer is asked whether it is its slip (FR-PAY-05).
+/// a PromptPay transfer is asked whether it is its slip (FR-PAY-05); any other buyer's is
+/// searched by while `ai.features.visualSearch` is on (FR-SRCH-10).
 async fn image(context: &Context, turn: &Turn<'_>, input: &Input) -> Result<Vec<Message>, DbErr> {
     let unexpected = || vec![turn.templates.image_not_expected()];
     let Input::Image { message_id } = input else {
@@ -755,7 +756,7 @@ async fn image(context: &Context, turn: &Turn<'_>, input: &Input) -> Result<Vec<
         return slip::photo_sent(turn, config, line, message_id, &order).await;
     }
     if context.ai.is_enabled(Feature::VisualSearch) {
-        return Ok(not_built("visual search", 43, unexpected()));
+        return visual::photo_sent(turn, config, &context.ai, line, message_id).await;
     }
     Ok(unexpected())
 }

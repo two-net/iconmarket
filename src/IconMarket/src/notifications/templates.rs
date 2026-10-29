@@ -971,6 +971,21 @@ impl Templates {
         ))
     }
 
+    /// A buyer's photo searched by (FR-SRCH-10): what the AI took it for, `keyword`. What it
+    /// finds follows.
+    pub fn photo_searched(&self, keyword: &str) -> Message {
+        Message::text(format!("จากรูป ลองหา \"{keyword}\" ให้แล้ว{}", self.kha()))
+    }
+
+    /// A buyer's photo in which the AI saw nothing to search for (FR-SRCH-10): what to search
+    /// for, typed. The cancel button follows.
+    pub fn photo_not_recognized(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ดูจากรูปแล้วยังไม่แน่ใจว่าเป็นอะไร{kha} พิมพ์ชื่อสินค้าที่อยากหามาได้เลย เช่น ขนมครก{kha}"
+        ))
+    }
+
     /// A page of a product list (FR-SRCH-02, FR-SRCH-03): of what was `browsed`, a card for each
     /// of `cards` (FR-SRCH-07) and, when more follow, "ดูเพิ่มเติม" sending the postback `more`;
     /// `next` are its Quick Replies.
@@ -6665,6 +6680,7 @@ mod tests {
     use sea_orm::Iterable;
 
     use super::*;
+    use crate::catalog::browse::search::KEYWORD_CHARS;
     use crate::line::Body;
     use crate::line::flex::{Component, Text};
     use crate::orders::relay::MESSAGE_CHARS;
@@ -6813,6 +6829,8 @@ mod tests {
             text(&t.nothing_to_browse()).to_owned(),
             text(&t.ask_keyword()).to_owned(),
             text(&t.search_expired()).to_owned(),
+            text(&t.photo_searched(&"ข".repeat(KEYWORD_CHARS))).to_owned(),
+            text(&t.photo_not_recognized()).to_owned(),
             text(&t.ask_report_reason(&REPORTED, 300, Vec::new())).to_owned(),
             text(&t.already_reported(&REPORTED)).to_owned(),
             text(&t.report_received(&REPORTED)).to_owned(),

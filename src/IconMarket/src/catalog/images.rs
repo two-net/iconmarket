@@ -435,6 +435,15 @@ pub async fn media(db: &impl ConnectionTrait, ids: &[Uuid]) -> Result<Vec<ai::Me
         .collect())
 }
 
+/// `processed` as the AI is sent it, never stored: a photo only the AI reads, such as one a
+/// buyer searches by (FR-SRCH-10).
+pub fn unstored_media(processed: Processed) -> ai::Media {
+    ai::Media {
+        media_type: JPEG.to_owned(),
+        bytes: processed.jpeg,
+    }
+}
+
 /// The IDs of the images of products `ids`, each product's in their order: what product lists
 /// show of their photos. A product without any has no entry.
 pub async fn of_products(
