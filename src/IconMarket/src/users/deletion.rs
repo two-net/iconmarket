@@ -5,11 +5,12 @@
 //! order at their shop is open (AC-13). Otherwise the user confirms (FR-UI-13), and in one
 //! transaction their personal data is cleared: every field the entity models mark (DR-10) on
 //! their row, their shop's and the orders they placed, their consent, their payment slips and
-//! draft photos, and the logs that hold their LINE user ID. Their shop is closed for good and
-//! its products are deleted, both kept as rows (DR-04), so their photos go with retention
-//! (§5.4). Their cart, guided flow, pending actions, join-code attempts and AI memory go too.
-//! Their past orders stay, the other party seeing them as [`DELETED_ACCOUNT`]; the shop keeps
-//! its name, so its buyers still recognise them.
+//! draft photos, the PromptPay QR codes their shop's buyers were sent, and the logs that hold
+//! their LINE user ID. Their shop is closed for good and its products are deleted, both kept as
+//! rows (DR-04), so their photos go with retention (§5.4). Their cart, guided flow, pending
+//! actions, join-code attempts and AI memory go too. Their past orders stay, the other party
+//! seeing them as [`DELETED_ACCOUNT`]; the shop keeps its name, so its buyers still recognise
+//! them.
 //!
 //! The user's row stays as an anonymous `DELETED` one, which no LINE user ID leads to: should
 //! the same LINE account write again, it is registered as someone new and onboarded afresh.
@@ -25,7 +26,7 @@ use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::Expr;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseTransaction, DbErr, EntityTrait, Iterable, JoinType,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, RelationTrait,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -262,6 +263,17 @@ async fn delete(
         }
         closed
             .filter(shop::Column::Id.eq(shop.id))
+            .exec(txn)
+            .await?;
+        // The PromptPay QR codes its buyers were sent show its PromptPay ID
+        let orders = order::Entity::find()
+            .select_only()
+            .column(order::Column::Id)
+            .filter(order::Column::ShopId.eq(shop.id))
+            .into_query();
+        image::Entity::delete_many()
+            .filter(image::Column::OwnerType.eq(OwnerType::PaymentQr))
+            .filter(image::Column::OwnerId.in_subquery(orders))
             .exec(txn)
             .await?;
         products = product::Entity::update_many()

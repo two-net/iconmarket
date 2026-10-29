@@ -1,8 +1,12 @@
 //! Payments (SRS §2.1): payment method and status, PromptPay details and slips.
 //! Built by #35, #40 and #41.
 
+mod qr;
 mod status;
 
+#[cfg(test)]
+pub use qr::tests::scan_qr;
+pub use qr::{draw_qr, promptpay_payload};
 pub use status::{Recorded, UNPAID, allowed, record};
 
 use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder};

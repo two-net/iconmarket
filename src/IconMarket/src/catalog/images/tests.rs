@@ -19,7 +19,8 @@ use super::*;
 use crate::config::Secret;
 use crate::persistence::testing::{self, market, new_order};
 use crate::persistence::{entity::order, orm};
-use crate::{dispatcher, http, webhook};
+use crate::thai::Money;
+use crate::{dispatcher, http, payments, webhook};
 
 fn config() -> ImageConfig {
     ImageConfig {
@@ -434,6 +435,50 @@ async fn a_slip_link_is_denied_after_slip_link_hours() {
         let status = get(&db, &format!("/img/p/{image_id}")).await.status();
         assert_eq!(status, StatusCode::NOT_FOUND, "slip image {image_id}");
     }
+}
+
+/// FR-PAY-04: an order's PromptPay QR code is a PNG served by its random ID, which no cache may
+/// keep, as it shows the shop's PromptPay ID.
+#[tokio::test]
+async fn a_promptpay_qr_code_is_served_by_its_random_id_and_never_cached() {
+    let (_container, pool) = testing::migrated().await;
+    let db = orm(pool);
+    let market = market(&db).await;
+    let order = new_order(market.buyer.id, market.shop.id, "20261024-001", random_id())
+        .insert(&db)
+        .await
+        .unwrap();
+
+    let payload = payments::promptpay_payload("0812345678", Some(Money::from_baht(230))).unwrap();
+    let qr = payments::draw_qr(&payload);
+    let owner = Owner::PaymentQr(order.id);
+    let id = store_png(&db, owner, qr.png.clone(), qr.side, qr.side, Utc::now())
+        .await
+        .unwrap();
+
+    let stored = image::Entity::find_by_id(id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    let side = i32::try_from(qr.side).unwrap();
+    assert_eq!(
+        (stored.owner_type, stored.owner_id, stored.position),
+        (OwnerType::PaymentQr, order.id, 0)
+    );
+    assert_eq!(
+        (stored.content_type.as_str(), stored.width, stored.height),
+        ("image/png", side, side)
+    );
+    assert_eq!(stored.size_bytes, i32::try_from(qr.png.len()).unwrap());
+
+    let response = get(&db, &format!("/img/p/{id}")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(headers[header::CACHE_CONTROL], PRIVATE);
+    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(payments::scan_qr(&body(response).await), payload);
 }
 
 /// A payment slip for `order` with a stored image, reachable through `link`, as the payment

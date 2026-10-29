@@ -22,6 +22,7 @@ use crate::dispatcher::Finished;
 use crate::line::flex::{Component, FlexContainer};
 use crate::line::{Body, limits};
 use crate::notifications::templates;
+use crate::persistence::entity::image::{self, OwnerType};
 use crate::persistence::entity::{audit_log, order_event, product, push_log, session};
 use crate::persistence::{orm, random_id, testing};
 use crate::thai::Money;
@@ -186,8 +187,10 @@ impl Setup {
 
     async fn tapped(&self, user_id: i64, data: &str) -> (Vec<Message>, bool) {
         let postback = Postback::parse(data).unwrap();
-        self.handle(user_id, async |turn| tapped(turn, &postback).await)
-            .await
+        self.handle(user_id, async |turn| {
+            tapped(turn, &self.config, &postback).await
+        })
+        .await
     }
 
     async fn taps(&self, user_id: i64, data: &str) -> Vec<Message> {
@@ -215,7 +218,7 @@ impl Setup {
                     .as_ref()
                     .and_then(|flow| flow.read::<ReasonFlow>());
                 let session = session.expect("giving a reason");
-                let answered = answer(turn, session, &input).await?;
+                let answered = answer(turn, &self.config, session, &input).await?;
                 Ok(answered.expect("an answer"))
             })
             .await;
@@ -259,6 +262,16 @@ impl Setup {
             ..Default::default()
         };
         row.update(&self.db).await.unwrap();
+    }
+
+    /// The PromptPay QR codes stored for order `id` (FR-PAY-04).
+    async fn qr_codes(&self, id: i64) -> Vec<image::Model> {
+        image::Entity::find()
+            .filter(image::Column::OwnerType.eq(OwnerType::PaymentQr))
+            .filter(image::Column::OwnerId.eq(id))
+            .all(&self.db)
+            .await
+            .unwrap()
     }
 
     async fn stock(&self) -> Option<i32> {
@@ -1227,7 +1240,8 @@ async fn an_order_found_by_its_number_offers_cancelling_while_open() {
 /// FR-PAY-03: once the seller accepts an order paid by PromptPay, the buyer is told the shop's
 /// PromptPay ID, its name and the exact amount, even with `notification.orderStatusToBuyer` off,
 /// as they can't pay without it; if the shop took its ID away since, to ask the shop for it.
-/// While they are yet to pay, the order's card shows the ID too.
+/// While they are yet to pay, the order's card shows the ID too. FR-PAY-04: the PromptPay QR
+/// code for that amount comes right under, in the same push.
 #[tokio::test]
 async fn a_promptpay_order_accepted_says_what_to_transfer_where() {
     let s = setup().await;
@@ -1264,6 +1278,23 @@ async fn a_promptpay_order_accepted_says_what_to_transfer_where() {
     );
     let card = s.details(s.buyer.id, placed.id).await;
     assert!(card.contains("081-234-5678"), "{card}");
+    let sent = pushes[0].2.as_ref().unwrap().as_array().unwrap();
+    assert_eq!(sent.len(), 2);
+    let [qr] = &s.qr_codes(placed.id).await[..] else {
+        panic!("one QR code");
+    };
+    let link = images::product_image_url(&s.config.app.base_url, qr.id).to_string();
+    assert_eq!(
+        sent[1],
+        serde_json::json!({
+            "type": "image",
+            "originalContentUrl": link,
+            "previewImageUrl": link,
+        })
+    );
+    assert_eq!(qr.content_type, "image/png");
+    let paying = payments::promptpay_payload("0812345678", Some(Money::from_baht(230)));
+    assert_eq!(Some(payments::scan_qr(&qr.data)), paying);
 
     s.forget_pushes().await;
     s.set_promptpay(None).await;
@@ -1280,12 +1311,16 @@ async fn a_promptpay_order_accepted_says_what_to_transfer_where() {
             "ร้านยังไม่มีเลขพร้อมเพย์ สอบถามเลขที่จะโอนกับร้านได้โดยตรงค่ะ",
         ]
     );
+    // Nothing to draw a QR code of
+    assert_eq!(pushes[0].2.as_ref().unwrap().as_array().unwrap().len(), 1);
+    assert_eq!(s.qr_codes(other.id).await, []);
 
     // A cash order's acceptance still follows the switch
     s.forget_pushes().await;
     let cash = s.order(Status::Pending, order::Fulfillment::Pickup).await;
     s.taps(s.seller.id, &data(ACCEPT, cash.id)).await;
     assert_eq!(s.pushes().await, []);
+    assert_eq!(s.qr_codes(cash.id).await, []);
 }
 
 /// FR-PAY-07: asked whether they got the money of an order handed over, the seller answers

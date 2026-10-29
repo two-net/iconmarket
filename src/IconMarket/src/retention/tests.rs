@@ -265,6 +265,7 @@ async fn log_rows_past_their_limit_are_deleted() {
             ai_call_logs: 1,
             push_logs: 2,
             slip_images: 0,
+            payment_qr_images: 0,
             deleted_owner_images: 0,
             audit_logs: 1,
         }
@@ -416,6 +417,55 @@ async fn slip_images_are_deleted_after_their_order_has_been_final_for_slip_days(
         [None, None, None, None, recent.image_id, open.image_id]
     );
     assert_eq!(order::Entity::find().count(&db).await.unwrap(), 6);
+}
+
+/// FR-PAY-04: an order's PromptPay QR code goes as soon as the order is final, as only its buyer
+/// needed it, to pay; an open order's stays, however old.
+#[tokio::test]
+async fn payment_qr_codes_are_deleted_once_their_order_is_final() {
+    let (_container, pool) = testing::migrated().await;
+    let db = orm(pool);
+    let market = market(&db).await;
+    let product_image = image(&db, OwnerType::Product, market.product.id).await;
+
+    // Final a moment ago, whatever the status
+    let mut finished = Vec::new();
+    for (n, status) in [
+        order::Status::Completed,
+        order::Status::Rejected,
+        order::Status::Cancelled,
+        order::Status::Expired,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let number = format!("IM-20261024-{:04}", n + 1);
+        let order = order(&db, &market, &number, status, past(0)).await;
+        image(&db, OwnerType::PaymentQr, order.id).await;
+        finished.push(order.id);
+    }
+    // Still open, however old
+    let accepted = order(
+        &db,
+        &market,
+        "IM-20260601-0001",
+        order::Status::Accepted,
+        past(400),
+    )
+    .await;
+    let open = image(&db, OwnerType::PaymentQr, accepted.id).await;
+    // IDs are per table: the first order shares its ID with the product, whose image stays
+    assert_eq!(finished[0], market.product.id);
+
+    let deleted = apply_twice(&db).await;
+    assert_eq!(
+        deleted,
+        Deleted {
+            payment_qr_images: 4,
+            ..Default::default()
+        }
+    );
+    assert_eq!(images(&db).await, BTreeSet::from([product_image, open]));
 }
 
 #[tokio::test]

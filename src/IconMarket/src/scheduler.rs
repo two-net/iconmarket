@@ -123,6 +123,7 @@ impl Job {
                         ai_call_logs = deleted.ai_call_logs,
                         push_logs = deleted.push_logs,
                         slip_images = deleted.slip_images,
+                        payment_qr_images = deleted.payment_qr_images,
                         deleted_owner_images = deleted.deleted_owner_images,
                         audit_logs = deleted.audit_logs,
                         "retention applied"

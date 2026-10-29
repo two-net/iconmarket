@@ -9,6 +9,7 @@
 //! | AI call logs | `aiCallLogDays` | the call |
 //! | Push logs, once sent or given up | `pushLogDays` | the last try |
 //! | Payment-slip images | `slipDays` | the order's final status |
+//! | PromptPay QR codes (FR-PAY-04) | until the order is final | — |
 //! | Images of deleted products and shops | `deletedImageDays` | the deletion |
 //! | Audit log | `auditLogDays` | the action |
 //!
@@ -44,6 +45,8 @@ pub struct Deleted {
     pub push_logs: u64,
     /// Images of payment slips; the slips themselves are kept, without an image
     pub slip_images: u64,
+    /// PromptPay QR codes of orders that are final
+    pub payment_qr_images: u64,
     /// Images of deleted products and shops
     pub deleted_owner_images: u64,
     pub audit_logs: u64,
@@ -86,6 +89,7 @@ pub async fn apply(
         .await?
         .rows_affected;
     let slip_images = slip_images(db, before(config.slip_days)).await?;
+    let payment_qr_images = payment_qr_images(db, now).await?;
     let deleted_owner_images = deleted_owner_images(db, before(config.deleted_image_days)).await?;
     let audit_logs = audit_log::Entity::delete_many()
         .filter(audit_log::Column::CreatedAt.lt(before(config.audit_log_days)))
@@ -99,6 +103,7 @@ pub async fn apply(
         ai_call_logs,
         push_logs,
         slip_images,
+        payment_qr_images,
         deleted_owner_images,
         audit_logs,
     })
@@ -115,6 +120,22 @@ async fn slip_images(db: &impl ConnectionTrait, cutoff: DateTimeUtc) -> Result<u
         .into_query();
     let deleted = image::Entity::delete_many()
         .filter(image::Column::OwnerType.eq(OwnerType::Slip))
+        .filter(image::Column::OwnerId.in_subquery(finished))
+        .exec(db)
+        .await?;
+    Ok(deleted.rows_affected)
+}
+
+/// Deletes the PromptPay QR codes of orders that reached a final status before `cutoff`: only
+/// their buyer needed them, to pay, and they show the shop's PromptPay ID.
+async fn payment_qr_images(db: &impl ConnectionTrait, cutoff: DateTimeUtc) -> Result<u64, DbErr> {
+    let finished = order::Entity::find()
+        .select_only()
+        .column(order::Column::Id)
+        .filter(final_before(cutoff))
+        .into_query();
+    let deleted = image::Entity::delete_many()
+        .filter(image::Column::OwnerType.eq(OwnerType::PaymentQr))
         .filter(image::Column::OwnerId.in_subquery(finished))
         .exec(db)
         .await?;

@@ -592,7 +592,7 @@ async fn answer_flow(
             None => None,
         },
         ReasonFlow::NAME => match stored.read::<ReasonFlow>() {
-            Some(session) => Some(actions::answer(turn, session, input).await),
+            Some(session) => Some(actions::answer(turn, config, session, input).await),
             None => None,
         },
         _ => None,
@@ -666,7 +666,7 @@ async fn tapped(
         orders::CHECKOUT => return checkout::tapped(turn, &context.config, postback).await,
         orders::VIEW => return lists::view(turn, postback).await,
         action if action.starts_with(orders::PREFIX) => {
-            return actions::tapped(turn, postback).await;
+            return actions::tapped(turn, &context.config, postback).await;
         }
         users::DELETE_ACCOUNT => return deletion::tapped(turn).await,
         _ => {}

@@ -1,5 +1,5 @@
-//! A stored image: a product or shop photo, or a payment slip (FR-PROD-04). The bytes live
-//! in PostgreSQL, the only data store (CON-03).
+//! A stored image: a product or shop photo, a payment slip (FR-PROD-04), or the PromptPay QR
+//! code of an order (FR-PAY-04). The bytes live in PostgreSQL, the only data store (CON-03).
 
 use sea_orm::entity::prelude::*;
 
@@ -12,8 +12,8 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub owner_type: OwnerType,
-    /// The product, shop or payment slip, or the user who sent a draft; not a foreign key, as
-    /// it points at one of several tables
+    /// The product, shop, payment slip or order, or the user who sent a draft; not a foreign
+    /// key, as it points at one of several tables
     #[sea_orm(indexed)]
     pub owner_id: i64,
     /// Display order among the owner's images
@@ -40,6 +40,9 @@ pub enum OwnerType {
     /// owned by the user who sent it until the flow gives it to what it makes, and deleted if
     /// the flow ends without
     Draft,
+    /// The PromptPay QR code for an order's exact amount, sent to its buyer as it is accepted
+    /// (FR-PAY-04), and deleted once the order is final
+    PaymentQr,
 }
 
 #[derive(Clone, Copy, Debug, EnumIter, DeriveRelation)]
@@ -47,7 +50,8 @@ pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
 
-/// A slip image shows the payer's name and account.
+/// A slip image shows the payer's name and account, and a PromptPay QR code the shop's
+/// PromptPay ID.
 impl PersonalData for Entity {
     const FIELDS: &'static [Column] = &[Column::Data];
 }

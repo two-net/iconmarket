@@ -10,9 +10,10 @@
 //! admin, ask why: one of the reasons of FR-ORD-04, or one typed after "อื่นๆ".
 //!
 //! The buyer of an order paid by PromptPay is told, as it is accepted, what to transfer where
-//! (FR-PAY-03). The seller records it paid with "ได้รับเงินแล้ว": a transfer once it arrives,
-//! and cash as they hand the order over, when they are asked "ได้รับเงินแล้วหรือยัง?"; one
-//! not paid then stays under "ค้างชำระ" (FR-PAY-07). A paid order cancelled is to be refunded,
+//! (FR-PAY-03), with the PromptPay QR code for its exact amount right under (FR-PAY-04). The
+//! seller records it paid with "ได้รับเงินแล้ว": a transfer once it arrives, and cash as they hand
+//! the order over, when they are asked "ได้รับเงินแล้วหรือยัง?"; one not paid then stays under
+//! "ค้างชำระ" (FR-PAY-07). A paid order cancelled is to be refunded,
 //! which they record with "คืนเงินแล้ว" (FR-PAY-09). An admin may record either from the
 //! order's card in "ผู้ใช้"; its buyer never can (FR-PAY-08).
 //!
@@ -31,6 +32,7 @@ use sea_orm::{ActiveModelTrait, ConnectionTrait, DbErr, EntityTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::info;
+use url::Url;
 
 use super::lifecycle::{self, By, Moved};
 use super::{
@@ -40,6 +42,8 @@ use super::{
 };
 use crate::admin::audit::{self, Entry, Target};
 use crate::admin::reason::{REASON_CHARS, Refused, reason};
+use crate::catalog::images::{self, Owner};
+use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
@@ -136,23 +140,27 @@ impl Parties {
 }
 
 /// A tap on one of an order's buttons (Table 4.6-B), by the action it names.
-pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
+pub async fn tapped(
+    turn: &Turn<'_>,
+    config: &Config,
+    postback: &Postback,
+) -> Result<Vec<Message>, DbErr> {
     use ActorType::{Buyer, Seller};
     let Some(id) = postback.int(ORDER_ID) else {
         return Ok(vec![turn.templates.denied(Denied::NotFound)]);
     };
     match postback.action() {
-        ACCEPT => moves(turn, id, Status::Accepted, Seller).await,
-        READY => moves(turn, id, Status::Ready, Seller).await,
-        DELIVERING => moves(turn, id, Status::Delivering, Seller).await,
-        COMPLETE => moves(turn, id, Status::Completed, Seller).await,
-        CANCEL_ORDER => moves(turn, id, Status::Cancelled, Buyer).await,
-        RECEIVED => moves(turn, id, Status::Completed, Buyer).await,
+        ACCEPT => moves(turn, config, id, Status::Accepted, Seller).await,
+        READY => moves(turn, config, id, Status::Ready, Seller).await,
+        DELIVERING => moves(turn, config, id, Status::Delivering, Seller).await,
+        COMPLETE => moves(turn, config, id, Status::Completed, Seller).await,
+        CANCEL_ORDER => moves(turn, config, id, Status::Cancelled, Buyer).await,
+        RECEIVED => moves(turn, config, id, Status::Completed, Buyer).await,
         REJECT => ask_reason(turn, id, Act::Reject).await,
         SELLER_CANCEL => ask_reason(turn, id, Act::SellerCancel).await,
         ADMIN_CANCEL => ask_reason(turn, id, Act::AdminCancel).await,
         REQUEST_CANCEL => request_cancel(turn, id).await,
-        GRANT_CANCEL => grant_cancel(turn, id).await,
+        GRANT_CANCEL => grant_cancel(turn, config, id).await,
         KEEP => keep(turn, id).await,
         MARK_PAID => pays(turn, id, PaymentStatus::Paid).await,
         MARK_REFUNDED => pays(turn, id, PaymentStatus::Refunded).await,
@@ -166,6 +174,7 @@ pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>
 /// (FR-UI-14).
 pub async fn answer(
     turn: &Turn<'_>,
+    config: &Config,
     session: Session<ReasonFlow>,
     input: &Input,
 ) -> Result<Option<Vec<Message>>, DbErr> {
@@ -216,7 +225,7 @@ pub async fn answer(
             }
         }
     };
-    let messages = apply(turn, order_id, act.to(), act.actor(), Some(&reason)).await?;
+    let messages = apply(turn, config, order_id, act.to(), act.actor(), Some(&reason)).await?;
     done(messages).await
 }
 
@@ -413,6 +422,7 @@ async fn may_act(turn: &Turn<'_>, id: i64, actor: ActorType) -> Result<Result<()
 /// Moves order `id` to `to` as the actor, `actor`, if they may.
 async fn moves(
     turn: &Turn<'_>,
+    config: &Config,
     id: i64,
     to: Status,
     actor: ActorType,
@@ -420,7 +430,7 @@ async fn moves(
     if let Err(denied) = may_act(turn, id, actor).await? {
         return Ok(vec![turn.denied(denied)]);
     }
-    apply(turn, id, to, actor, None).await
+    apply(turn, config, id, to, actor, None).await
 }
 
 /// Moves order `id` to `to` as the actor, `actor`, for `reason`: tells the other party, and
@@ -428,6 +438,7 @@ async fn moves(
 /// it is instead (FR-ORD-02).
 async fn apply(
     turn: &Turn<'_>,
+    config: &Config,
     id: i64,
     to: Status,
     actor: ActorType,
@@ -451,8 +462,9 @@ async fn apply(
         audit::record(turn.db, turn.now, [entry]).await?;
     }
     let parties = Parties::of(turn.db, &order).await?;
-    for (kind, to, notice) in notices(templates, &order, &parties, actor) {
-        turn.notify(kind, to, vec![notice]);
+    let qr = payment_qr(turn, config, &order, &parties.shop).await?;
+    for (kind, to, messages) in notices(templates, &order, &parties, actor, qr.as_ref()) {
+        turn.notify(kind, to, messages);
     }
     turn.essential();
     Ok(vec![reply(templates, &order, &parties, actor)])
@@ -461,15 +473,17 @@ async fn apply(
 /// The notices telling the other party that `actor` moved `order`, with `parties`, to where it
 /// is now (Table 4.6-B, Table 4.8-A): the buyer of every move they didn't make (FR-ORD-08), with
 /// what to transfer where once one paid by PromptPay is accepted, whatever
-/// `notification.orderStatusToBuyer` says, as they can't pay without it (FR-PAY-03); the seller
-/// of a cancellation they didn't make, and, asked whether they got the money, of the buyer
-/// receiving one not paid (FR-PAY-07). Expiry has its own ([`expired_notices`]).
+/// `notification.orderStatusToBuyer` says, as they can't pay without it (FR-PAY-03), and its `qr`
+/// code under, in the same push (FR-PAY-04); the seller of a cancellation they didn't make, and,
+/// asked whether they got the money, of the buyer receiving one not paid (FR-PAY-07). Expiry has
+/// its own ([`expired_notices`]).
 fn notices(
     templates: &Templates,
     order: &order::Model,
     parties: &Parties,
     actor: ActorType,
-) -> Vec<(Kind, To, Message)> {
+    qr: Option<&Url>,
+) -> Vec<(Kind, To, Vec<Message>)> {
     let (number, shop) = (&order.order_number, &parties.shop.name);
     let (buyer, seller) = (To::User(order.buyer_id), To::User(parties.shop.owner_id));
     let reason = order.cancel_reason.as_deref().unwrap_or_default();
@@ -484,31 +498,33 @@ fn notices(
                 total: order.total,
             };
             let notice = templates.order_accepted_notice(shop, number, Some(&due), next);
-            vec![(Kind::PaymentDetails, buyer, notice)]
+            let qr = qr.map(|url| Message::image(url, url));
+            vec![(
+                Kind::PaymentDetails,
+                buyer,
+                [notice].into_iter().chain(qr).collect(),
+            )]
         }
         (Status::Accepted, _) => {
-            vec![(
-                status,
-                buyer,
-                templates.order_accepted_notice(shop, number, None, next),
-            )]
+            let notice = templates.order_accepted_notice(shop, number, None, next);
+            vec![(status, buyer, vec![notice])]
         }
         (Status::Ready | Status::Delivering, _) | (Status::Completed, ActorType::Seller) => {
             let notice = templates.order_progress_notice(shop, number, order.status, next);
-            vec![(status, buyer, notice)]
+            vec![(status, buyer, vec![notice])]
         }
         (Status::Rejected, _) => {
             let notice = templates.order_rejected_notice(shop, number, reason, carry_on());
-            vec![(status, buyer, notice)]
+            vec![(status, buyer, vec![notice])]
         }
         (Status::Cancelled, ActorType::Buyer) => {
             let notice = templates.order_cancelled_by_buyer_notice(number);
-            vec![(Kind::OrderCancelled, seller, notice)]
+            vec![(Kind::OrderCancelled, seller, vec![notice])]
         }
         (Status::Cancelled, ActorType::Seller) => {
             let notice =
                 templates.order_cancelled_notice(shop, number, false, reason, refund, carry_on());
-            vec![(status, buyer, notice)]
+            vec![(status, buyer, vec![notice])]
         }
         (Status::Cancelled, ActorType::Admin) => {
             let to_buyer =
@@ -517,14 +533,14 @@ fn notices(
             let to_seller =
                 templates.order_cancelled_by_admin_notice(number, reason, refund, seller_can);
             vec![
-                (status, buyer, to_buyer),
-                (Kind::OrderCancelled, seller, to_seller),
+                (status, buyer, vec![to_buyer]),
+                (Kind::OrderCancelled, seller, vec![to_seller]),
             ]
         }
         // The buyer's own "ได้รับของแล้ว" (FR-ORD-09)
         (Status::Completed, _) if payments::UNPAID.contains(&order.payment_status) => {
             let ask = templates.ask_paid(number, order.total, true, paid_or_not(order));
-            vec![(Kind::PaymentToConfirm, seller, ask)]
+            vec![(Kind::PaymentToConfirm, seller, vec![ask])]
         }
         (Status::Completed, _) => Vec::new(),
         // Moves no user makes here: placing, and expiry, tell of themselves
@@ -532,6 +548,31 @@ fn notices(
             Vec::new()
         }
     }
+}
+
+/// The PromptPay QR code for `order`'s exact amount, drawn and stored as it is accepted, if it is
+/// paid by PromptPay and `shop` has a PromptPay ID (FR-PAY-04): its link under `app.baseUrl`.
+/// Stored in the turn's transaction, so it is there only if the order is accepted.
+async fn payment_qr(
+    turn: &Turn<'_>,
+    config: &Config,
+    order: &order::Model,
+    shop: &shop::Model,
+) -> Result<Option<Url>, DbErr> {
+    if order.status != Status::Accepted || order.payment_method != PaymentMethod::PromptPay {
+        return Ok(None);
+    }
+    let payload = shop
+        .promptpay_id
+        .as_deref()
+        .and_then(|id| payments::promptpay_payload(id, Some(order.total)));
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    let qr = payments::draw_qr(&payload);
+    let owner = Owner::PaymentQr(order.id);
+    let id = images::store_png(turn.db, owner, qr.png, qr.side, qr.side, turn.now).await?;
+    Ok(Some(images::product_image_url(&config.app.base_url, id)))
 }
 
 /// What `actor` is told once they moved `order`, with `parties`, and what they can do next:
@@ -652,7 +693,7 @@ async fn request_cancel(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr>
 
 /// The seller's "ยกเลิกออเดอร์" on the buyer's request to cancel order `id` (FR-ORD-07): cancels
 /// it, the request being the reason.
-async fn grant_cancel(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr> {
+async fn grant_cancel(turn: &Turn<'_>, config: &Config, id: i64) -> Result<Vec<Message>, DbErr> {
     if let Err(denied) = may_act(turn, id, ActorType::Seller).await? {
         return Ok(vec![turn.denied(denied)]);
     }
@@ -663,7 +704,15 @@ async fn grant_cancel(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr> {
         return Ok(vec![now_is(turn.templates, &order, ActorType::Seller)]);
     }
     let reason = Some(BUYER_ASKED_TO_CANCEL);
-    apply(turn, id, Status::Cancelled, ActorType::Seller, reason).await
+    apply(
+        turn,
+        config,
+        id,
+        Status::Cancelled,
+        ActorType::Seller,
+        reason,
+    )
+    .await
 }
 
 /// The seller's "ไม่ยกเลิก" on the buyer's request to cancel order `id` (FR-ORD-07): goes on with

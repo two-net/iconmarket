@@ -459,6 +459,13 @@ async fn deleting_the_account_clears_their_personal_data() {
     let t = &s.templates;
     let db = &s.db;
     let e = everything(&s).await;
+    // A PromptPay QR code sent for an order at her shop shows her PromptPay ID; one for her
+    // order at Bob's, his (FR-PAY-04)
+    let sold = s
+        .order(e.bob, e.shop, "IM-20261022-0002", order::Status::Completed)
+        .await;
+    s.photo(OwnerType::PaymentQr, sold).await;
+    s.photo(OwnerType::PaymentQr, e.order).await;
 
     let ask = s.asks(e.alice).await;
     let confirm = quick_reply_data(&ask[0])[0].unwrap().to_owned();
@@ -566,6 +573,8 @@ async fn deleting_the_account_clears_their_personal_data() {
             .filter(image::Column::OwnerType.eq(owner_type))
     };
     assert_eq!(count(db, images(OwnerType::Slip, e.slip)).await, 0);
+    assert_eq!(count(db, images(OwnerType::PaymentQr, sold)).await, 0);
+    assert_eq!(count(db, images(OwnerType::PaymentQr, e.order)).await, 1);
     // The products' photos go with retention
     assert_eq!(count(db, images(OwnerType::Product, for_sale.id)).await, 1);
 

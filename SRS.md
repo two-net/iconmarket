@@ -301,7 +301,7 @@ Routing priority (FR-UI-12):
 | Endpoint | Purpose | Access |
 | --- | --- | --- |
 | `POST /webhook/line` | LINE webhook | Valid LINE signature required |
-| `GET /img/p/{imageId}` | Product and shop images used in Flex and image messages | Public; ID is random, at least 128 bits |
+| `GET /img/p/{imageId}` | Product and shop images, and PromptPay QR codes, used in Flex and image messages | Public; ID is random, at least 128 bits |
 | `GET /img/s/{token}` | Payment-slip images shown to the seller | Random single-purpose token, expires after `image.slipLinkHours` |
 | `GET /health` | Liveness/readiness including database status | Public; no sensitive data |
 
@@ -560,7 +560,7 @@ Entity names and physical types are the implementer's choice; the information be
 | Shop | A seller's shop | id, owner (unique), name, description, photo, status, open flag, opening hours, pickup and delivery flags, delivery fee, minimum order, PromptPay ID, phone, show-phone flag, pickup address/location, timestamps |
 | Category | Product grouping | id, name (unique), sort order, active flag |
 | Product | Item for sale | id, shop, category, name, description, price, unit, stock (null = unlimited), status, timestamps, deleted-at |
-| Image | Stored image | id (random), owner type (product / shop / slip), owner id, order, content type, width, height, size, binary data, created-at |
+| Image | Stored image | id (random), owner type (product / shop / slip / payment QR), owner id, order, content type, width, height, size, binary data, created-at |
 | CartItem | A line in a buyer's cart | user, product (unique together), quantity, added-at |
 | Order | One checkout at one shop | id, order number (unique), checkout key (unique — the pending action that created it), buyer, shop, status, fulfillment, delivery address snapshot, note, subtotal, delivery fee, total, payment method, payment status, status timestamps, cancel reason |
 | OrderItem | A line of an order | order, product, name snapshot, unit snapshot, unit-price snapshot, quantity, line total |
@@ -617,6 +617,7 @@ Applied automatically by the daily retention job.
 | AI call logs | 90 days | `retention.aiCallLogDays` |
 | Push logs | 90 days | `retention.pushLogDays` |
 | Payment-slip images | 90 days after the order reaches a final status | `retention.slipDays` |
+| PromptPay QR images | Until the order reaches a final status | — |
 | Images of deleted products and shops | 30 days after deletion | `retention.deletedImageDays` |
 | Audit log | 365 days | `retention.auditLogDays` |
 | Sessions and pending actions | Until they expire | `session.timeoutMinutes`, `session.pendingActionMinutes` |

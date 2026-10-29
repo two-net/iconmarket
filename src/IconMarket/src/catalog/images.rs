@@ -7,6 +7,10 @@
 //! [`SlipLink`] at `/img/s/{token}`, until the link expires (AC-14). A product without a photo
 //! shows the [placeholder](placeholder_url) instead (FR-SRCH-07).
 //!
+//! The PromptPay QR code of an order accepted is drawn by the system, not uploaded: it is
+//! [stored as a PNG](store_png) and sent to the buyer from `/img/p/{id}` like a photo
+//! (FR-PAY-04), but no cache may keep it, as it shows the shop's PromptPay ID.
+//!
 //! A photo sent in a guided flow before what it is for exists, such as the photo of a shop
 //! applied for or those of a product being added, is a [draft](Owner::Draft) of the user who
 //! sent it. The flow [`adopt`]s it for what it makes; one that ends without is swept by
@@ -51,8 +55,10 @@ use crate::persistence::{self, random_id};
 
 pub use process::{Processed, process};
 
-/// Every stored image is a JPEG.
+/// Every stored upload is a JPEG.
 const JPEG: &str = "image/jpeg";
+/// What the system draws, a PromptPay QR code, is a PNG.
+const PNG: &str = "image/png";
 /// Uploads processed at once; others wait their turn. Decoding a large photo keeps a core busy
 /// and takes hundreds of megabytes, so this bounds both on the 2-vCPU server (NFR-CAP-02).
 static PROCESSING: Semaphore = Semaphore::const_new(2);
@@ -62,7 +68,8 @@ const TARGET: Duration = Duration::from_secs(5);
 /// IDs are random and an image never changes, as a new photo gets a new ID, so caches may keep
 /// it for good.
 const PUBLIC: &str = "public, max-age=31536000, immutable";
-/// A slip shows the payer's name and account, so no cache keeps it past its link's expiry.
+/// A slip shows the payer's name and account, so no cache keeps it past its link's expiry, and
+/// a PromptPay QR code the shop's PromptPay ID, so none keeps it past its order.
 const PRIVATE: &str = "private, no-store";
 /// The placeholder may change with a release, so caches keep it a day.
 const PLACEHOLDER_CACHE: &str = "public, max-age=86400";
@@ -100,6 +107,8 @@ pub enum Owner {
     Slip(i64),
     /// The user with this ID, who sent it in a guided flow (FR-SHOP-01, FR-PROD-01)
     Draft(i64),
+    /// The order with this ID, whose PromptPay QR code it is (FR-PAY-04)
+    PaymentQr(i64),
 }
 
 impl Owner {
@@ -109,6 +118,7 @@ impl Owner {
             Self::Shop(id) => (OwnerType::Shop, id),
             Self::Slip(id) => (OwnerType::Slip, id),
             Self::Draft(user_id) => (OwnerType::Draft, user_id),
+            Self::PaymentQr(order_id) => (OwnerType::PaymentQr, order_id),
         }
     }
 }
@@ -233,6 +243,37 @@ pub async fn store(
         .await?;
     txn.commit().await?;
     Ok(Ok(id))
+}
+
+/// Stores `png`, an image of `width` × `height` the system drew rather than one uploaded, as
+/// `owner`'s only image, at `now`, and returns its new random ID (NFR-SEC-04): an order's
+/// PromptPay QR code (FR-PAY-04).
+pub async fn store_png(
+    db: &impl ConnectionTrait,
+    owner: Owner,
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
+    now: DateTimeUtc,
+) -> Result<Uuid, DbErr> {
+    let (owner_type, owner_id) = owner.parts();
+    let id = random_id();
+    let row = image::ActiveModel {
+        id: Set(id),
+        owner_type: Set(owner_type),
+        owner_id: Set(owner_id),
+        position: Set(0),
+        content_type: Set(PNG.to_owned()),
+        width: Set(i32::try_from(width).expect("a QR code of a few hundred pixels")),
+        height: Set(i32::try_from(height).expect("a QR code of a few hundred pixels")),
+        size_bytes: Set(i32::try_from(png.len()).expect("far less than 2 GiB")),
+        data: Set(png),
+        created_at: Set(now),
+    };
+    image::Entity::insert(row)
+        .exec_without_returning(db)
+        .await?;
+    Ok(id)
 }
 
 /// Gives user `user_id`'s draft `id` to `owner`, as its first image. Returns whether there was
@@ -483,7 +524,8 @@ impl SlipLink {
 }
 
 /// `/img/p/{id}` under `app.baseUrl`: a product or shop image for Flex and image messages
-/// (FR-LINE-01). LINE accepts the same link as the preview, as stored images are small.
+/// (FR-LINE-01), or an order's PromptPay QR code (FR-PAY-04). LINE accepts the same link as the
+/// preview, as stored images are small.
 pub fn product_image_url(base: &Url, id: Uuid) -> Url {
     link(base, "p", id)
 }
@@ -513,8 +555,9 @@ fn link(base: &Url, kind: &str, id: Uuid) -> Url {
     url
 }
 
-/// `GET /img/p/{imageId}`: a product or shop image, or a draft of one, public by its random ID.
-/// Never a slip image, though it has an ID too.
+/// `GET /img/p/{imageId}`: a product or shop image, or a draft of one, public by its random ID,
+/// or an order's PromptPay QR code, likewise but kept by no cache. Never a slip image, though it
+/// has an ID too.
 pub async fn serve_product(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Ok(id) = Uuid::try_parse(&id) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -524,10 +567,12 @@ pub async fn serve_product(State(state): State<AppState>, Path(id): Path<String>
             OwnerType::Product,
             OwnerType::Shop,
             OwnerType::Draft,
+            OwnerType::PaymentQr,
         ]))
         .one(&persistence::orm(state.db))
         .await;
     match found {
+        Ok(Some(image)) if image.owner_type == OwnerType::PaymentQr => serve(image, PRIVATE),
         Ok(Some(image)) => serve(image, PUBLIC),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => unavailable(&e),
