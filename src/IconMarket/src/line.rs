@@ -28,7 +28,7 @@ pub use client::Client;
     reason = "the flows that talk to users are built by later issues"
 )]
 pub use {
-    client::{Content, Profile},
+    client::{BotInfo, Content, Profile},
     delivery::{Delivery, Importance, Pushed, RetryKey},
     error::{Error, LimitError},
     message::{Action, Body, Message, QuickReply, QuickReplyItem, flex},

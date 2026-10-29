@@ -1,6 +1,7 @@
 //! Routing (§3.1.3): who handles an event. Group events go to the village group digest, or
-//! nowhere (FR-LINE-06). A user's message or tap goes, after the rate limit (NFR-SEC-05), to
-//! the first of these that applies (FR-UI-12):
+//! nowhere (FR-LINE-06): `#groupid` from an admin, and with the digest on, `join` and `leave`.
+//! A user's message or tap goes, after the rate limit (NFR-SEC-05), to the first of these that
+//! applies (FR-UI-12):
 //!
 //! 1. a postback, to the module owning its action;
 //! 2. onboarding, until it is complete; only `#myid` and `ช่วยเหลือ` work besides;
@@ -37,6 +38,7 @@ use crate::admin::categories::{self, CategoryFlow};
 use crate::admin::{review, statistics};
 use crate::ai::{Feature, assistant};
 use crate::catalog::browse;
+use crate::catalog::browse::digest;
 use crate::catalog::browse::search::{self, SearchFlow, visual};
 use crate::catalog::products::listing::{self, Typed};
 use crate::catalog::products::manage::{self, EditFlow};
@@ -64,7 +66,8 @@ use crate::{orders, payments};
 
 /// Typed by the operator to get their own LINE user ID, for `admin.lineUserIds` (FR-ONB-08)
 const MY_ID: &str = "#myid";
-/// Typed by an admin in the village group to get its ID, for `line.villageGroupId` (FR-NOT-07)
+/// Typed by an admin in the village group to get its ID, for `line.villageGroupId` (FR-NOT-07).
+/// Answered whether the digest is on or not, as the ID is needed to turn it on.
 const GROUP_ID: &str = "#groupid";
 /// What the actions of onboarding's buttons start with (FR-ONB-02)
 const ONBOARDING: &str = "onboarding.";
@@ -171,9 +174,8 @@ pub async fn handle(
         Source::User(line_user_id) => {
             user_event(context, txn, row, &line_user_id, kind, now).await?
         }
-        Source::Group { .. } => {
-            group_event(context, &kind);
-            Finished::default()
+        Source::Group { group_id, user_id } => {
+            group_event(context, txn, &group_id, user_id.as_deref(), kind, now).await?
         }
         // Multi-person chats, and events from no chat, are ignored
         Source::Room | Source::Unknown => Finished::default(),
@@ -276,19 +278,45 @@ async fn load_turn<'a>(
         .map(Some)
 }
 
-/// A group event (FR-LINE-06): with the village group digest on (FR-NOT-07), `join`, `leave`
-/// and `#groupid` are the digest's; everything else in groups is ignored.
-fn group_event(context: &Context, kind: &Kind) {
-    if !context.config.notification.group_digest {
-        return;
-    }
-    let what = match kind {
-        Kind::Join => "joining a group",
-        Kind::Leave => "leaving a group",
-        Kind::Message(Content::Text(text)) if text.trim() == GROUP_ID => GROUP_ID,
-        _ => return,
+/// An event in group `group_id`, from its member `user_id` if LINE says (FR-LINE-06): the reply,
+/// in the group. `#groupid` from an admin gets the group's ID, so it can be set as the village
+/// group; with the village group digest on (FR-NOT-07), `join` and `leave` tell the digest
+/// whether the OA is in the group. Everything else in groups is ignored.
+async fn group_event(
+    context: &Context,
+    txn: &DatabaseTransaction,
+    group_id: &str,
+    user_id: Option<&str>,
+    kind: Kind,
+    now: DateTimeUtc,
+) -> Result<Finished, DbErr> {
+    let config = &context.config;
+    let messages = match kind {
+        Kind::Message(Content::Text(text)) if text.trim() == GROUP_ID => {
+            let admins = &config.admin.line_user_ids;
+            if !user_id.is_some_and(|user_id| admins.iter().any(|admin| admin == user_id)) {
+                debug!("{GROUP_ID} from someone not an admin; ignored");
+                return Ok(Finished::default());
+            }
+            info!("group ID given to an admin");
+            context.templates.group_id(group_id)
+        }
+        _ if !config.notification.group_digest => return Ok(Finished::default()),
+        Kind::Join => {
+            let village = config.line.village_group_id.as_deref();
+            let (templates, notification) = (&context.templates, &config.notification);
+            digest::joined(txn, templates, notification, village, group_id, now).await?
+        }
+        Kind::Leave => {
+            digest::left(txn, group_id, now).await?;
+            Vec::new()
+        }
+        _ => return Ok(Finished::default()),
     };
-    debug!(what, issue = 48, "not built yet");
+    Ok(Finished {
+        messages,
+        ..Finished::default()
+    })
 }
 
 /// What the routing priority (FR-UI-12) found about the user and the features on.

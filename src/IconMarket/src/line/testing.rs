@@ -25,6 +25,7 @@ pub const USER: &str = "U0123456789abcdef0123456789abcdef";
 pub const GROUP: &str = "C0123456789abcdef0123456789abcdef";
 pub const PUSH: &str = "/v2/bot/message/push";
 pub const REPLY: &str = "/v2/bot/message/reply";
+pub const BOT_INFO: &str = "/v2/bot/info";
 
 /// What the fake answers to one request.
 #[derive(Clone)]

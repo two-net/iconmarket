@@ -1,5 +1,6 @@
 //! The connection to LINE: TLS, the access token, timeouts and error mapping, plus the calls
-//! that read from LINE or only show something: profiles, content and the loading animation.
+//! that read from LINE or only show something: the OA's own details, profiles, content and the
+//! loading animation.
 
 use std::time::Duration;
 
@@ -50,6 +51,14 @@ pub struct Client {
 pub struct Profile {
     pub display_name: String,
     pub picture_url: Option<String>,
+}
+
+/// The OA's own details, as far as IconMarket needs them.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotInfo {
+    /// Its basic ID, such as `@216ruvtu`, which links to a chat with it open
+    pub basic_id: String,
 }
 
 /// An image or audio file a user sent.
@@ -140,6 +149,12 @@ impl Client {
     ) -> Result<T, Error> {
         let response = self.send(request).await?;
         response.json().await.map_err(Error::network)
+    }
+
+    /// The OA's own details, such as the basic ID that links to a chat with it (FR-NOT-07).
+    pub async fn bot_info(&self) -> Result<BotInfo, Error> {
+        let request = self.http.get(self.api_url(&["v2", "bot", "info"]));
+        self.fetch(request).await
     }
 
     /// A user's display name and picture (FR-LINE-10). `None` when LINE won't say: the user

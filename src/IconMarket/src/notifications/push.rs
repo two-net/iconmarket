@@ -1,5 +1,6 @@
 //! Push notifications (§4.8): the notifications of Table 4.8-A, pushed only to users who follow
-//! the OA, in as few requests as LINE allows, each logged.
+//! the OA, in as few requests as LINE allows, each logged. The village group digest goes to the
+//! group instead ([`queue_group`]).
 //!
 //! A processing step, such as the handling of one event, collects what it notifies in an
 //! [`Outbox`]. Just before the step's transaction commits, [`Outbox::queue`] drops what the
@@ -37,7 +38,7 @@ use crate::config::NotificationConfig;
 use crate::line::limits::{self, MESSAGES_PER_REQUEST};
 use crate::line::{self, Message, Pushed, RetryKey};
 use crate::persistence::entity::push_log::{self, Status};
-use crate::persistence::entity::user;
+use crate::persistence::entity::{line_group, user};
 use crate::thai;
 
 /// How long the retry job waits before sending a push again, by the send calls made so far: a
@@ -60,8 +61,7 @@ const RETRIES_PER_RUN: u64 = 100;
 
 /// A notification of Table 4.8-A. Each feature builds its own, with buttons for what the
 /// recipient can do about it (FR-NOT-03), using
-/// [`templates::notice`](super::templates::notice). The village group digest and announcements
-/// are added by #48 and #49.
+/// [`templates::notice`](super::templates::notice). Announcements are added by #49.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// To the seller: a new order (FR-ORD-03)
@@ -112,6 +112,8 @@ pub enum Kind {
     UserReport,
     /// To the seller: how their shop's day went (FR-NOT-06)
     DailySummary,
+    /// To the village group: "ของใหม่วันนี้" (FR-NOT-07)
+    GroupDigest,
 }
 
 impl Kind {
@@ -140,6 +142,7 @@ impl Kind {
             Self::HeldForReview => "admin.held_for_review",
             Self::UserReport => "admin.user_report",
             Self::DailySummary => "seller.daily_summary",
+            Self::GroupDigest => "group.digest",
         }
     }
 
@@ -150,6 +153,7 @@ impl Kind {
             Self::OrderStatus => config.order_status_to_buyer,
             Self::ShopApplication | Self::HeldForReview | Self::UserReport => config.admin_alerts,
             Self::DailySummary => config.daily_summary,
+            Self::GroupDigest => config.group_digest,
             Self::OrderCancelled
             | Self::OrderExpired
             | Self::CancellationRequested
@@ -266,19 +270,14 @@ impl Outbox {
 
         let rows = requests.into_iter().map(|request| {
             let push_type: Vec<_> = request.kinds.iter().map(|kind| kind.as_str()).collect();
-            let messages = serde_json::to_value(&request.messages).expect("messages serialize");
-            push_log::ActiveModel {
-                push_type: Set(push_type.join(",")),
-                recipient: Set(request.recipient.to_owned()),
-                retry_key: Set(Some(RetryKey::random().uuid())),
-                status: Set(Status::Pending),
-                error: Set(None),
-                sent_at: Set(now),
-                messages: Set(Some(messages)),
-                attempts: Set(0),
-                queued_at: Set(now),
-                ..Default::default()
-            }
+            let push_type = push_type.join(",");
+            pending(
+                push_type,
+                request.recipient,
+                &request.messages,
+                RetryKey::random(),
+                now,
+            )
         });
         let mut pushes: Vec<Push> = push_log::Entity::insert_many(rows)
             .exec_with_returning(db)
@@ -289,6 +288,73 @@ impl Outbox {
         pushes.sort_by_key(|push| push.id);
         Ok(Queued(pushes))
     }
+}
+
+/// Queues a notification of `kind` for the LINE group `group_id` in `db`, the step's
+/// transaction, at `now`, if switched on (FR-NOT-01): `messages`, up to five, in one request.
+/// A group follows nothing, so FR-NOT-02 doesn't apply; the step checks that the OA is in the
+/// group. Messages that break one of LINE's limits are a bug: they are logged and dropped, as
+/// [`Outbox::add`] does. Returns the request to [`send`] once the transaction commits.
+pub async fn queue_group(
+    db: &impl ConnectionTrait,
+    config: &NotificationConfig,
+    kind: Kind,
+    group_id: &str,
+    messages: &[Message],
+    now: DateTimeUtc,
+) -> Result<Queued, DbErr> {
+    if !kind.is_on(config) {
+        debug!(kind = kind.as_str(), "switched off; not pushed");
+        return Ok(Queued::default());
+    }
+    if let Err(e) = limits::check(messages) {
+        error!(
+            kind = kind.as_str(),
+            error = %e,
+            "the notification breaks LINE's limits, so it is not sent"
+        );
+        return Ok(Queued::default());
+    }
+    let row = pending(
+        kind.as_str().to_owned(),
+        group_id,
+        messages,
+        RetryKey::random(),
+        now,
+    );
+    let row = push_log::Entity::insert(row)
+        .exec_with_returning(db)
+        .await?;
+    Ok(Queued(Push::from_row(row).into_iter().collect()))
+}
+
+/// A push of `messages` of `push_type` to `recipient` with `retry_key`, queued at `now`, as the
+/// push log holds it until it is sent.
+fn pending(
+    push_type: String,
+    recipient: &str,
+    messages: &[Message],
+    retry_key: RetryKey,
+    now: DateTimeUtc,
+) -> push_log::ActiveModel {
+    let messages = serde_json::to_value(messages).expect("messages serialize");
+    push_log::ActiveModel {
+        push_type: Set(push_type),
+        recipient: Set(recipient.to_owned()),
+        retry_key: Set(Some(retry_key.uuid())),
+        status: Set(Status::Pending),
+        error: Set(None),
+        sent_at: Set(now),
+        messages: Set(Some(messages)),
+        attempts: Set(0),
+        queued_at: Set(now),
+        ..Default::default()
+    }
+}
+
+/// Whether `recipient` is a LINE group: its ID starts with C, a user's with U.
+fn is_group(recipient: &str) -> bool {
+    recipient.starts_with('C')
 }
 
 /// One push request being put together.
@@ -450,20 +516,7 @@ pub async fn log_reply_pushed(
     result: &Result<Pushed, line::Error>,
 ) -> Result<Status, DbErr> {
     let now = Utc::now();
-    let row = push_log::ActiveModel {
-        push_type: Set(REPLY.to_owned()),
-        recipient: Set(recipient.to_owned()),
-        retry_key: Set(Some(retry_key.uuid())),
-        status: Set(Status::Pending),
-        error: Set(None),
-        sent_at: Set(now),
-        messages: Set(Some(
-            serde_json::to_value(messages).expect("messages serialize"),
-        )),
-        attempts: Set(0),
-        queued_at: Set(now),
-        ..Default::default()
-    };
+    let row = pending(REPLY.to_owned(), recipient, messages, retry_key, now);
     let row = push_log::Entity::insert(row)
         .exec_with_returning(db)
         .await?;
@@ -484,7 +537,7 @@ pub struct Retried {
 /// The retry job's work (FR-JOB-02, FR-LINE-12): sends at `now` the pushes due again, oldest
 /// first, each with its own retry key, so a push already delivered isn't delivered again. A push
 /// is given up when too late for its retry key, or when its recipient no longer follows the OA
-/// (FR-NOT-02).
+/// (FR-NOT-02), or, for a group, when the OA has left it (FR-NOT-07).
 pub async fn retry(
     db: &DatabaseConnection,
     line: &line::Client,
@@ -513,8 +566,19 @@ pub async fn retry(
     let following: HashSet<String> = user::Entity::find()
         .select_only()
         .column(user::Column::LineUserId)
-        .filter(user::Column::LineUserId.is_in(recipients))
+        .filter(user::Column::LineUserId.is_in(recipients.iter().copied()))
         .filter(user::Column::IsFollowing.eq(true))
+        .into_tuple()
+        .all(db)
+        .await?
+        .into_iter()
+        .collect();
+    // A group the OA was never seen leaving is taken to have it still
+    let left: HashSet<String> = line_group::Entity::find()
+        .select_only()
+        .column(line_group::Column::GroupId)
+        .filter(line_group::Column::GroupId.is_in(recipients))
+        .filter(line_group::Column::LeftAt.is_not_null())
         .into_tuple()
         .all(db)
         .await?
@@ -525,7 +589,12 @@ pub async fn retry(
     for row in rows {
         let id = row.id;
         let too_late = row.queued_at <= now - RETRY_WINDOW;
-        let follows = following.contains(&row.recipient);
+        let group = is_group(&row.recipient);
+        let follows = if group {
+            !left.contains(&row.recipient)
+        } else {
+            following.contains(&row.recipient)
+        };
         let status = match Push::from_row(row) {
             Some(push) if !too_late && follows => {
                 let result = line
@@ -536,6 +605,8 @@ pub async fn retry(
             _ => {
                 let why = if too_late {
                     "too late to send it only once"
+                } else if !follows && group {
+                    "the OA is no longer in the group"
                 } else if !follows {
                     "the recipient no longer follows the OA"
                 } else {

@@ -11,7 +11,7 @@ use super::flex::{
     Weight,
 };
 use super::limits;
-use super::testing::{Answer, Fake, GROUP, PUSH, REPLY, TOKEN, USER};
+use super::testing::{Answer, BOT_INFO, Fake, GROUP, PUSH, REPLY, TOKEN, USER};
 use super::*;
 use crate::config::Secret;
 use crate::thai::Label;
@@ -701,6 +701,34 @@ async fn no_profile_for_users_who_are_not_friends() {
     );
     let profile = client.profile(USER).await.unwrap().unwrap();
     assert_eq!(profile.picture_url, None);
+}
+
+/// FR-NOT-07: the OA's basic ID, which the village group digest links to its chat with.
+#[tokio::test]
+async fn the_bot_info_has_the_basic_id() {
+    let fake = Fake::start().await;
+    fake.script(
+        BOT_INFO,
+        [Answer::json(
+            200,
+            json!({
+                "userId": "Ub9952f8...",
+                "basicId": "@216ruvtu",
+                "displayName": "IconMarket",
+                "chatMode": "bot",
+                "markAsReadMode": "auto",
+            }),
+        )],
+    );
+
+    let info = fake.client().bot_info().await.unwrap();
+
+    assert_eq!(info.basic_id, "@216ruvtu");
+    let request = &fake.requests()[0];
+    assert_eq!(
+        (request.method.as_str(), request.path.as_str()),
+        ("GET", BOT_INFO)
+    );
 }
 
 // Rich menus (#17)

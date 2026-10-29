@@ -24,8 +24,9 @@ use super::*;
 use crate::config::{AdminConfig, CatalogConfig};
 use crate::thai::Money;
 
-/// The entities of §5.1, the schema versions (MIG-09) and the jobs (FR-JOB-03), by table name.
-const TABLES: [&str; 23] = [
+/// The entities of §5.1, the schema versions (MIG-09), the jobs (FR-JOB-03) and the LINE groups
+/// (FR-NOT-07), by table name.
+const TABLES: [&str; 24] = [
     "ai_call_logs",
     "ai_messages",
     "audit_logs",
@@ -35,6 +36,7 @@ const TABLES: [&str; 23] = [
     "images",
     "jobs",
     "join_attempts",
+    "line_groups",
     "order_events",
     "order_items",
     "orders",
@@ -157,6 +159,7 @@ fn personal_data_is_marked() {
         unmarked::<image::Entity>(image::Entity::FIELDS),
         unmarked::<job::Entity>(&[]),
         unmarked::<join_attempt::Entity>(&[]),
+        unmarked::<line_group::Entity>(&[]),
         unmarked::<order::Entity>(order::Entity::FIELDS),
         unmarked::<order_event::Entity>(&[]),
         unmarked::<order_item::Entity>(&[]),
@@ -630,6 +633,16 @@ async fn every_attribute_can_be_stored() {
             due_at: at,
             last_run_at: Some(at),
             last_error: Some("ฐานข้อมูลไม่ตอบ".to_owned()),
+        },
+    )
+    .await;
+    assert_stored::<line_group::Entity>(
+        &db,
+        line_group::Model {
+            group_id: "C0123456789abcdef0123456789abcdef".to_owned(),
+            joined_at: Some(at),
+            left_at: Some(at),
+            digest_sent_on: NaiveDate::from_ymd_opt(2026, 10, 22),
         },
     )
     .await;

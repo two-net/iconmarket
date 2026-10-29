@@ -10,7 +10,7 @@
     reason = "the flows that send these messages are built by later issues"
 )]
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use chrono_tz::Tz;
 use url::Url;
 
@@ -378,6 +378,28 @@ impl Templates {
             "นี่คือ LINE user ID ของคุณ{kha} กดค้างที่ข้อความถัดไปเพื่อคัดลอก ผู้ดูแลระบบใช้เพิ่มผู้ดูแลใน admin.lineUserIds ได้{kha}"
         );
         vec![Message::text(what), Message::text(line_user_id)]
+    }
+
+    /// The answer to `#groupid` from an admin in a group (FR-NOT-07): what it is for, then the
+    /// ID alone, to copy.
+    pub fn group_id(&self, group_id: &str) -> Vec<Message> {
+        let kha = self.kha();
+        let what = format!(
+            "นี่คือรหัสของกลุ่มนี้{kha} กดค้างที่ข้อความถัดไปเพื่อคัดลอก ผู้ดูแลระบบใส่ใน line.villageGroupId เพื่อให้โพสต์ \"{}\" ในกลุ่มนี้ทุกวัน{kha}",
+            labels::NEW_TODAY.as_str()
+        );
+        vec![Message::text(what), Message::text(group_id)]
+    }
+
+    /// The OA was added to the village group (FR-NOT-07): what it posts there, and when.
+    pub fn group_joined(&self, at: NaiveTime) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "สวัสดี{kha} {app} จะโพสต์ \"{new}\" สินค้าที่เพิ่งลงขายหรือเติมของในหมู่บ้าน ในกลุ่มนี้ทุกวัน เวลา {at} น. สั่งซื้อได้ในแชท {app}{kha}",
+            app = self.app_name,
+            new = labels::NEW_TODAY.as_str(),
+            at = at.format("%H:%M"),
+        ))
     }
 
     /// Asks for the zone of the address (FR-ONB-04), first of its steps: one of
@@ -1038,6 +1060,33 @@ impl Templates {
         let bubbles = cards.iter().map(product_card).collect();
         Message::flex(headline(browsed), carousel(bubbles, more))
             .with_quick_reply(QuickReply::new(next))
+    }
+
+    /// The village group digest (FR-NOT-07): "ของใหม่วันนี้" on the day of `at`, a page of
+    /// product `cards` whose buttons open the chat with the OA at `chat`, as its "ดูเพิ่มเติม"
+    /// does when `more` follow. Buttons that send postbacks would do nothing in a group.
+    pub fn group_digest(
+        &self,
+        at: DateTime<Utc>,
+        cards: &[ProductCard<'_>],
+        chat: &Url,
+        more: bool,
+    ) -> Vec<Message> {
+        let kha = self.kha();
+        let headline = format!("{} {}", labels::NEW_TODAY.as_str(), self.date(at));
+        let intro = format!(
+            "{headline} มาแล้ว{kha} กดที่สินค้าเพื่อสั่งซื้อในแชท {}{kha}",
+            self.app_name
+        );
+        let bubbles = cards.iter().map(product_card).collect();
+        let more = more.then(|| Action::Uri {
+            label: labels::MORE.clone(),
+            uri: chat.to_string(),
+        });
+        vec![
+            Message::text(intro),
+            Message::flex(&headline, carousel_with(bubbles, more)),
+        ]
     }
 
     /// A product's details, from a tap on its card (FR-SRCH-07): its card with its description
@@ -4944,8 +4993,9 @@ pub struct ProductCard<'a> {
     pub photo: &'a Url,
     /// "ใส่ตะกร้า", while it can be ordered (FR-PROD-06)
     pub add_to_cart: Option<Action>,
-    /// "ดูร้าน": its shop's card
-    pub view_shop: Action,
+    /// Its other button: "ดูร้าน", its shop's card, or in the village group digest, the chat
+    /// with the OA
+    pub button: Action,
     /// A tap anywhere else on the card: its details
     pub details: Action,
 }
@@ -5593,8 +5643,8 @@ fn headline(browsed: Browsed<'_>) -> String {
 }
 
 /// A product's card in a list (FR-SRCH-07): its photo, name, price per unit, shop and whether it
-/// can be ordered, with "ใส่ตะกร้า" while it can, and "ดูร้าน". A tap anywhere else shows its
-/// details.
+/// can be ordered, with "ใส่ตะกร้า" while it can, and its other button, such as "ดูร้าน". A tap
+/// anywhere else shows its details.
 fn product_card(card: &ProductCard<'_>) -> Bubble {
     let name = Text {
         weight: Some(Weight::Bold),
@@ -5628,7 +5678,7 @@ fn product_card(card: &ProductCard<'_>) -> Bubble {
     let buttons: Vec<Action> = card
         .add_to_cart
         .iter()
-        .chain([&card.view_shop])
+        .chain([&card.button])
         .cloned()
         .collect();
     Bubble {
@@ -6521,7 +6571,14 @@ pub fn carousel_page<T>(
 /// `cards`, a page of a list already paged, as a carousel (FR-LINE-11, FR-SRCH-03): with a
 /// "ดูเพิ่มเติม" bubble last whose button sends the postback `more`, when more follow. There
 /// must be room for that bubble.
-pub fn carousel(mut cards: Vec<Bubble>, more: Option<String>) -> FlexContainer {
+pub fn carousel(cards: Vec<Bubble>, more: Option<String>) -> FlexContainer {
+    let more = more.map(|more| Action::postback(labels::MORE.clone(), more));
+    carousel_with(cards, more)
+}
+
+/// `cards` as a carousel, as [`carousel`] makes one, but with `more` as the button of the
+/// "ดูเพิ่มเติม" bubble, whatever it does.
+fn carousel_with(mut cards: Vec<Bubble>, more: Option<Action>) -> FlexContainer {
     debug_assert!(
         cards.len() < limits::BUBBLES_PER_CAROUSEL,
         "no room for ดูเพิ่มเติม"
@@ -6529,10 +6586,7 @@ pub fn carousel(mut cards: Vec<Bubble>, more: Option<String>) -> FlexContainer {
     if let Some(more) = more {
         // A carousel's bubbles must all be the same size
         let size = cards.first().and_then(|bubble| bubble.size);
-        cards.push(more_bubble(
-            size,
-            Action::postback(labels::MORE.clone(), more),
-        ));
+        cards.push(more_bubble(size, more));
     }
     Carousel::new(cards).into()
 }
@@ -6741,6 +6795,8 @@ pub mod labels {
         ADD_TO_CART = "ใส่ตะกร้า",
         /// A product's shop, from its card (FR-SRCH-07)
         VIEW_SHOP = "ดูร้าน",
+        /// Opens the chat with the OA from a card in the village group digest (FR-NOT-07)
+        ORDER_IN_CHAT = "สั่งซื้อในแชท",
 
         // The cart (FR-CART), with CART, ADD_TO_CART and REMOVE
         /// Checks out the shop of the product just put in the cart (FR-CART-01)
@@ -8670,7 +8726,7 @@ mod tests {
                     &labels::ADD_TO_CART,
                     format!("cart.add?product={max}"),
                 )),
-                view_shop: postback(&labels::VIEW_SHOP, format!("browse.front?shop={max}")),
+                button: postback(&labels::VIEW_SHOP, format!("browse.front?shop={max}")),
                 details: postback(
                     &Label::fit(name.as_str()),
                     format!("browse.product?product={max}"),

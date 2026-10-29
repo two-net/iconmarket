@@ -5,7 +5,8 @@
 //!
 //! A feature notifies through the [`Outbox`] of its processing step:
 //! [`Turn::notify`](crate::dispatcher::Turn::notify) while handling an event, or an outbox of
-//! its own in a job, queued in the job's transaction and sent once that commits.
+//! its own in a job, queued in the job's transaction and sent once that commits. The village
+//! group digest, for a group rather than users, is queued with [`queue_group`].
 
 mod push;
 mod rich_menus;
@@ -18,6 +19,7 @@ mod tests;
     reason = "the features that notify are built by later issues"
 )]
 pub use push::{
-    Kind, Outbox, PushStats, Queued, Retried, To, log_reply_pushed, reaches, retry, send, stats,
+    Kind, Outbox, PushStats, Queued, Retried, To, log_reply_pushed, queue_group, reaches, retry,
+    send, stats,
 };
 pub use rich_menus::{RichMenus, provision_rich_menus, relink_rich_menus};

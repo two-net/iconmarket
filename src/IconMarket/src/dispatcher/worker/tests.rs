@@ -32,8 +32,8 @@ use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::orders::cart;
 use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{
-    ai_message, audit_log, category, image, join_attempt, order, pending_action, product, push_log,
-    report, session, shop, user,
+    ai_message, audit_log, category, image, join_attempt, line_group, order, pending_action,
+    product, push_log, report, session, shop, user,
 };
 use crate::persistence::{orm, random_id, testing};
 use crate::thai::{Label, Money};
@@ -560,6 +560,111 @@ async fn other_chats_and_event_types_are_ignored() {
     assert_eq!(statuses(&rows), vec![(Status::Done, 1); 7]);
     assert_eq!(setup.line.requests().len(), 0);
     assert_eq!(user::Entity::find().all(&setup.db).await.unwrap(), []);
+}
+
+/// FR-NOT-07, the acceptance of #48: `#groupid` from an admin is answered in the group with its
+/// ID, even while the digest is off, as the ID is needed to turn it on; from anyone else, or
+/// from no one LINE names, it is ignored, as is all else in the group.
+#[tokio::test]
+async fn groupid_is_answered_for_admins_only() {
+    let s = setup().await;
+    let mut context = s.context(&s.pool, 20);
+    let config = Arc::get_mut(&mut context.config).unwrap();
+    config.admin.line_user_ids = vec![ALICE.to_owned()];
+    assert!(!config.notification.group_digest);
+    let from = |user_id: &str| json!({ "type": "group", "groupId": GROUP, "userId": user_id });
+    let text =
+        |id: &str, text: &str| json!({ "message": { "id": id, "type": "text", "text": text } });
+    store(
+        &s.db,
+        [
+            event("g1", "message", from(BOB), text("g1", "#groupid")),
+            event("g2", "message", from(ALICE), text("g2", " #groupid ")),
+            event(
+                "g3",
+                "message",
+                json!({ "type": "group", "groupId": GROUP }),
+                text("g3", "#groupid"),
+            ),
+            event("g4", "message", from(ALICE), text("g4", "เมนู")),
+            event(
+                "g5",
+                "join",
+                json!({ "type": "group", "groupId": GROUP }),
+                json!({}),
+            ),
+        ],
+    )
+    .await;
+
+    let running = s.run_with(context, 2);
+    let rows = settled(&s.db, 5).await;
+    running.stop().await;
+
+    assert_eq!(statuses(&rows), vec![(Status::Done, 1); 5]);
+    let answer = serde_json::to_value(s.templates.group_id(GROUP)).unwrap();
+    assert_eq!(s.replies(), [(token("g2"), answer)]);
+    assert_eq!(s.line.requests().len(), 1);
+    // No one is registered by what they say in a group, and the join, with the digest off,
+    // is ignored
+    assert_eq!(user::Entity::find().all(&s.db).await.unwrap(), []);
+    assert_eq!(line_group::Entity::find().all(&s.db).await.unwrap(), []);
+}
+
+/// FR-NOT-07, FR-LINE-06: with the digest on, `join` and `leave` say whether the OA is in a group,
+/// and joining the village group tells it what the OA posts there, and when.
+#[tokio::test]
+async fn with_the_digest_on_joins_and_leaves_are_kept() {
+    const OTHER_GROUP: &str = "Ce5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5";
+    let s = setup().await;
+    let mut context = s.context(&s.pool, 20);
+    let config = Arc::get_mut(&mut context.config).unwrap();
+    config.notification.group_digest = true;
+    config.line.village_group_id = Some(GROUP.to_owned());
+    let joined = s
+        .templates
+        .group_joined(config.notification.group_digest_time);
+    let group = |id: &str| json!({ "type": "group", "groupId": id });
+    let mut leave = event("v3", "leave", group(GROUP), json!({}));
+    leave.as_object_mut().unwrap().remove("replyToken");
+    store(
+        &s.db,
+        [
+            event("v1", "join", group(GROUP), json!({})),
+            event(
+                "v2",
+                "message",
+                json!({ "type": "group", "groupId": GROUP, "userId": ALICE }),
+                json!({ "message": { "id": "v2", "type": "text", "text": "เมนู" } }),
+            ),
+            leave,
+            event("o1", "join", group(OTHER_GROUP), json!({})),
+        ],
+    )
+    .await;
+
+    let running = s.run_with(context, 2);
+    let rows = settled(&s.db, 4).await;
+    running.stop().await;
+
+    assert_eq!(statuses(&rows), vec![(Status::Done, 1); 4]);
+    let answer = serde_json::to_value([joined]).unwrap();
+    assert_eq!(s.replies(), [(token("v1"), answer)]);
+    let groups: Vec<(String, bool, bool)> = line_group::Entity::find()
+        .order_by_asc(line_group::Column::GroupId)
+        .all(&s.db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.group_id, row.joined_at.is_some(), row.left_at.is_some()))
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            (GROUP.to_owned(), true, true),
+            (OTHER_GROUP.to_owned(), true, false),
+        ]
+    );
 }
 
 /// FR-UI-12, FR-UI-14, FR-UI-09, FR-UI-15: what each input gets, end to end.

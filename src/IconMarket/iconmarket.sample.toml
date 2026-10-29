@@ -36,8 +36,9 @@ adminContact = ""
 channelSecret = "change-me"
 # Required. Messaging API access token
 channelAccessToken = "change-me"
-# Group for the daily digest: C followed by 32 hex digits. Type #groupid in the group
-# to get it. Required when notification.groupDigest is true
+# Group for the daily digest: C followed by 32 hex digits. Add the OA to the group, then an
+# admin (admin.lineUserIds) types #groupid there to get it, even while
+# notification.groupDigest is off. Required when notification.groupDigest is true
 villageGroupId = ""
 
 [line.richMenu]
@@ -142,7 +143,9 @@ adminAlerts = true
 # seller who had an order placed or completed that day, counted against the push quota
 dailySummary = false
 dailySummaryTime = "20:00"
-# Village group digest (FR-NOT-07), posted at groupDigestTime (HH:mm)
+# Village group digest (FR-NOT-07), posted at groupDigestTime (HH:mm) to line.villageGroupId:
+# "ของใหม่วันนี้", on days with something new. LINE counts a push to a group once per member
+# against the push quota
 groupDigest = false
 groupDigestTime = "07:00"
 

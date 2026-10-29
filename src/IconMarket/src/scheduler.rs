@@ -30,7 +30,9 @@ use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{Instrument, debug, info, info_span, warn};
+use url::Url;
 
+use crate::catalog::browse::digest;
 use crate::catalog::shops::summary;
 use crate::config::{Config, NotificationConfig, OrderConfig, RetentionConfig};
 use crate::notifications::templates::Templates;
@@ -47,8 +49,8 @@ const MAX_WAIT: TimeDelta = TimeDelta::minutes(1);
 /// When retention is applied each day: at night (FR-JOB-02), in the business time zone.
 const RETENTION_AT: NaiveTime = NaiveTime::from_hms_opt(3, 0, 0).expect("a valid time");
 
-/// A background job (FR-JOB-02). The digest is added by #48. The webhook inbox, processed
-/// continuously, has a worker of its own in the dispatcher.
+/// A background job (FR-JOB-02). The webhook inbox, processed continuously, has a worker of its
+/// own in the dispatcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Job {
     /// Deletes expired sessions and pending actions (§5.4)
@@ -63,15 +65,19 @@ pub enum Job {
     /// Pushes each seller how their shop's day went at `notification.dailySummaryTime`, while
     /// `notification.dailySummary` is on (FR-NOT-06)
     SendDailySummary,
+    /// Posts "ของใหม่วันนี้" to the village group at `notification.groupDigestTime`, while
+    /// `notification.groupDigest` is on (FR-NOT-07)
+    PostGroupDigest,
 }
 
 impl Job {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::DeleteExpired,
         Self::RetryPushes,
         Self::ApplyRetention,
         Self::ExpireOrders,
         Self::SendDailySummary,
+        Self::PostGroupDigest,
     ];
 
     /// Its key in `jobs` and in log lines.
@@ -82,6 +88,7 @@ impl Job {
             Self::ApplyRetention => "apply-retention",
             Self::ExpireOrders => "expire-orders",
             Self::SendDailySummary => "daily-summary",
+            Self::PostGroupDigest => "group-digest",
         }
     }
 
@@ -89,6 +96,7 @@ impl Job {
     fn is_on(self, notification: &NotificationConfig) -> bool {
         match self {
             Self::SendDailySummary => notification.daily_summary,
+            Self::PostGroupDigest => notification.group_digest,
             Self::DeleteExpired | Self::RetryPushes | Self::ApplyRetention | Self::ExpireOrders => {
                 true
             }
@@ -102,6 +110,7 @@ impl Job {
             Self::ApplyRetention => Schedule::Daily(RETENTION_AT),
             Self::ExpireOrders => Schedule::Every(TimeDelta::minutes(1)),
             Self::SendDailySummary => Schedule::Daily(notification.daily_summary_time),
+            Self::PostGroupDigest => Schedule::Daily(notification.group_digest_time),
         }
     }
 
@@ -174,6 +183,21 @@ impl Job {
                     info!(sent, "daily sales summaries sent");
                 }
             }
+            Self::PostGroupDigest => {
+                let posted = digest::post(
+                    &context.db,
+                    &context.line,
+                    &context.templates,
+                    &context.notification,
+                    context.village_group_id.as_deref(),
+                    &context.base_url,
+                    Utc::now(),
+                )
+                .await?;
+                if posted {
+                    info!("village group digest posted");
+                }
+            }
         }
         Ok(())
     }
@@ -186,6 +210,10 @@ struct Context {
     line: line::Client,
     /// For the daily summary's comment
     ai: ai::Gateway,
+    /// `line.villageGroupId`, where the digest is posted
+    village_group_id: Option<String>,
+    /// `app.baseUrl`, which the digest's photos are linked from
+    base_url: Url,
     /// The business time zone (`app.timeZone`), which daily schedules are in
     time_zone: Tz,
     retention: RetentionConfig,
@@ -257,6 +285,8 @@ pub async fn start(
         db: persistence::orm(db),
         line,
         ai,
+        village_group_id: config.line.village_group_id.clone(),
+        base_url: config.app.base_url.clone(),
         time_zone,
         retention: config.retention,
         templates: Arc::new(Templates::new(&config.app)),

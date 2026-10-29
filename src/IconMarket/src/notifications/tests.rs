@@ -1,7 +1,8 @@
 //! Push notifications against a database and a fake LINE: the switches (FR-NOT-01), followers
 //! only (FR-NOT-02, AC-17), one request per recipient per step (FR-NOT-04), the push log and its
-//! statistics (FR-NOT-05), and retries that never deliver twice (FR-LINE-12). Each test starts a
-//! throwaway PostgreSQL, so they need Docker.
+//! statistics (FR-NOT-05), retries that never deliver twice (FR-LINE-12), and the village group
+//! digest's push to the group (FR-NOT-07). Each test starts a throwaway PostgreSQL, so they need
+//! Docker.
 
 use chrono::{TimeDelta, TimeZone, Utc};
 use chrono_tz::Asia::Bangkok;
@@ -19,7 +20,7 @@ use crate::config::{self, NotificationConfig};
 use crate::line::testing::{Answer, Fake, PUSH};
 use crate::line::{Message, RetryKey};
 use crate::persistence::entity::push_log::{self, Status};
-use crate::persistence::entity::user;
+use crate::persistence::entity::{line_group, user};
 use crate::persistence::{orm, testing};
 
 const SELLER: &str = "U5e11e75e11e75e11e75e11e75e11e7";
@@ -27,6 +28,7 @@ const BUYER: &str = "Ub0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
 const ADMIN_1: &str = "Ua1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 const ADMIN_2: &str = "Ua2a2a2a2a2a2a2a2a2a2a2a2a2a2a2";
 const ADMIN_3: &str = "Ua3a3a3a3a3a3a3a3a3a3a3a3a3a3a3";
+const GROUP: &str = "C0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c";
 
 struct Setup {
     _container: ContainerAsync<Postgres>,
@@ -642,6 +644,96 @@ async fn pushes_too_late_or_to_users_who_left_are_given_up_unsent() {
                 None
             ),
         ]
+    );
+}
+
+/// Queues the village group digest `texts` for the group at `now` in a step that commits, with
+/// `switches`, then sends it, as the digest job does.
+async fn post_digest(s: &Setup, texts: &str, switches: &NotificationConfig, now: DateTimeUtc) {
+    let txn = s.db.begin().await.unwrap();
+    let queued = queue_group(&txn, switches, Kind::GroupDigest, GROUP, &text(texts), now)
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    send(&s.db, &s.line.client(), queued).await;
+}
+
+/// FR-NOT-01, FR-NOT-07: the digest is pushed to the group, which follows nothing, only while
+/// `notification.groupDigest` is on, and logged as what it is.
+#[tokio::test]
+async fn the_group_digest_goes_to_the_group_only_while_switched_on() {
+    let s = setup().await;
+    let off = switches();
+    assert!(!off.group_digest);
+    post_digest(&s, "ของใหม่วันนี้ค่ะ", &off, Utc::now()).await;
+    assert!(s.line.requests().is_empty());
+    assert!(s.logs().await.is_empty());
+
+    let on = NotificationConfig {
+        group_digest: true,
+        ..off
+    };
+    post_digest(&s, "ของใหม่วันนี้ค่ะ", &on, Utc::now()).await;
+    assert_eq!(s.pushes(), [push(GROUP, &["ของใหม่วันนี้ค่ะ"])]);
+    let log = &s.logs().await[0];
+    assert_eq!(
+        (log.push_type.as_str(), log.recipient.as_str(), log.status),
+        ("group.digest", GROUP, Status::Sent)
+    );
+}
+
+/// FR-LINE-12: a failed push to the group is sent again by the retry job, though no user holds
+/// the group's ID, unless the OA has left the group since.
+#[tokio::test]
+async fn a_failed_group_push_is_retried_unless_the_oa_left_the_group() {
+    let s = setup().await;
+    let on = NotificationConfig {
+        group_digest: true,
+        ..switches()
+    };
+    // Each send is tried four times by the client
+    let failing = || vec![Answer::error(500, "Internal server error"); 4];
+    s.line.script(PUSH, failing());
+    let now = Utc::now();
+    post_digest(&s, "ของใหม่วันนี้ค่ะ", &on, now).await;
+    assert_eq!(s.logs().await[0].status, Status::Pending);
+
+    let retried = s.retry(now + minutes(6)).await;
+    assert_eq!(
+        retried,
+        Retried {
+            sent: 1,
+            ..Retried::default()
+        }
+    );
+    assert_eq!(s.line.deliveries(), 1);
+
+    s.line.script(PUSH, failing());
+    post_digest(&s, "ของใหม่พรุ่งนี้ค่ะ", &on, now).await;
+    line_group::ActiveModel {
+        group_id: Set(GROUP.to_owned()),
+        left_at: Set(Some(now)),
+        ..Default::default()
+    }
+    .insert(&s.db)
+    .await
+    .unwrap();
+    let retried = s.retry(now + minutes(6)).await;
+    assert_eq!(
+        retried,
+        Retried {
+            failed: 1,
+            ..Retried::default()
+        }
+    );
+    assert_eq!(s.line.deliveries(), 1);
+    let log = &s.logs().await[1];
+    assert_eq!(
+        (log.status, log.error.as_deref()),
+        (
+            Status::Failed,
+            Some("given up: the OA is no longer in the group")
+        )
     );
 }
 

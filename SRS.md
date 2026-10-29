@@ -277,7 +277,7 @@ Routing priority (FR-UI-12):
 | FR-LINE-03 | Valid requests shall be stored in the event inbox in the database and then acknowledged with HTTP 200 before any processing (target ≤ 1 s). Requests without events (e.g., the console's webhook verification) are acknowledged with 200. If the database is unavailable the endpoint shall return 5xx so LINE can redeliver. | M |
 | FR-LINE-04 | Events shall be de-duplicated by `webhookEventId`; duplicates and redeliveries shall have no additional effect. | M |
 | FR-LINE-05 | Inbox events shall be processed by an in-process worker, strictly in order for each user and concurrently across users. | M |
-| FR-LINE-06 | Handled events: `follow`, `unfollow`, `message` (text, image, location; audio when voice is enabled) and `postback`; plus `join`, `leave` and the `#groupid` command in the village group when FR-NOT-07 is enabled. Group and multi-person chat messages are otherwise ignored. Other event types are acknowledged and ignored. | M |
+| FR-LINE-06 | Handled events: `follow`, `unfollow`, `message` (text, image, location; audio when voice is enabled) and `postback`; plus `join` and `leave` in groups when FR-NOT-07 is enabled, and the `#groupid` command from an admin in any group, enabled or not, so that the village group's ID can be found before FR-NOT-07 is enabled. Group and multi-person chat messages are otherwise ignored. Other event types are acknowledged and ignored. | M |
 | FR-LINE-07 | Responses to a user's event shall use the reply API with that event's reply token. Push shall be used only for asynchronous notifications, or for essential messages (e.g., an order confirmation) whose reply token has expired or failed; non-essential replies are dropped in that case. | M |
 | FR-LINE-08 | While an AI request is running, the system should start LINE's loading animation for that user (one-to-one chats only; 5–60 s). | S |
 | FR-LINE-09 | Image and audio content sent by users shall be downloaded from LINE as soon as the event is processed, because LINE keeps it only temporarily. | M |
@@ -470,7 +470,7 @@ No other endpoints are exposed.
 | FR-NOT-04 | Messages for the same recipient produced in one processing step shall be sent in a single push request (within LINE's per-request limit), because LINE counts pushes per recipient, not per message object. | S |
 | FR-NOT-05 | Every push shall be logged (type, recipient, result). Admin statistics show the pushes sent in the current month and the failures. | S |
 | FR-NOT-06 | Daily sales summary at `notification.dailySummaryTime`: today's orders and completed sales, with a short AI-written comment when the AI assistant is enabled. | C |
-| FR-NOT-07 | Village group digest: when the OA has been added to the village LINE group and `line.villageGroupId` is set, post "ของใหม่วันนี้" daily at `notification.groupDigestTime`. An admin can obtain the group ID by typing `#groupid` in that group. | C |
+| FR-NOT-07 | Village group digest: when the OA has been added to the village LINE group and `line.villageGroupId` is set, post "ของใหม่วันนี้" daily at `notification.groupDigestTime`. An admin can obtain the group ID by typing `#groupid` in that group, before the digest is enabled too. | C |
 
 ### 4.9 AI Assistant (FR-AI)
 

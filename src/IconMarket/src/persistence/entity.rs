@@ -33,6 +33,7 @@ pub mod counter;
 pub mod image;
 pub mod job;
 pub mod join_attempt;
+pub mod line_group;
 pub mod order;
 pub mod order_event;
 pub mod order_item;

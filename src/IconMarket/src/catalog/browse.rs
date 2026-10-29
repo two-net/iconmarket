@@ -14,14 +14,17 @@
 //! Every button carries only IDs and page numbers, and each tap finds what it names afresh: a
 //! product or shop that buyers no longer see is not found (FR-UI-13). Anyone may browse,
 //! suspended users too (FR-ADM-04).
+//!
+//! "ของใหม่วันนี้" is also posted to the village LINE group each day: the [`digest`].
 
+pub mod digest;
 pub mod listing;
 pub mod search;
 #[cfg(test)]
 mod tests;
 
 use chrono::NaiveDate;
-use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter};
 use url::Url;
 
 use self::listing::{Listed, Listing};
@@ -240,19 +243,7 @@ async fn list(
     more: Option<Postback>,
 ) -> Result<Message, DbErr> {
     let ids: Vec<i64> = offered.iter().map(|(product, ..)| product.id).collect();
-    let photos = images::of_products(turn.db, &ids).await?;
-    let base = &config.app.base_url;
-    let placeholder = images::placeholder_url(base);
-    let urls: Vec<Url> = offered
-        .iter()
-        .map(|(product, ..)| {
-            let first = photos.get(&product.id).and_then(|photos| photos.first());
-            first.map_or_else(
-                || placeholder.clone(),
-                |&id| images::product_image_url(base, id),
-            )
-        })
-        .collect();
+    let urls = card_photos(turn.db, &config.app.base_url, &ids).await?;
     let cards: Vec<ProductCard<'_>> = offered
         .iter()
         .zip(&urls)
@@ -268,6 +259,27 @@ async fn list(
     Ok(turn
         .templates
         .product_list(browsed, &cards, more, carry_on()))
+}
+
+/// The photo each of products `ids` shows on its card, in order: its first, or the placeholder.
+async fn card_photos(
+    db: &impl ConnectionTrait,
+    base: &Url,
+    ids: &[i64],
+) -> Result<Vec<Url>, DbErr> {
+    let photos = images::of_products(db, ids).await?;
+    let placeholder = images::placeholder_url(base);
+    let urls = ids
+        .iter()
+        .map(|id| {
+            let first = photos.get(id).and_then(|photos| photos.first());
+            first.map_or_else(
+                || placeholder.clone(),
+                |&id| images::product_image_url(base, id),
+            )
+        })
+        .collect();
+    Ok(urls)
 }
 
 /// What `product` of `shop`'s card shows on `today`, with its first photo, or the placeholder,
@@ -289,7 +301,7 @@ fn card<'a>(
         ready_on: products::ready_on(product, today),
         photo,
         add_to_cart: availability.orderable().then(|| add_to_cart(product.id)),
-        view_shop: view_shop(shop.id),
+        button: view_shop(shop.id),
         details: details.button(Label::fit(product.name.as_str())),
     }
 }
