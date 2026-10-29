@@ -11,6 +11,11 @@
 //! "ได้รับเงินแล้ว" and "ยังไม่ได้รับ", and the order awaits their confirmation. Those answers are
 //! [acting on the order](super::actions): the first records it paid; the second refuses the slip
 //! and tells the buyer.
+//!
+//! While `ai.features.slipReading` is on, the AI [reads](payments::slip::reading) the slip as it
+//! is sent, while the buyer sees LINE's loading animation, and the seller sees what it read beside
+//! the order's total, what doesn't match standing out (FR-PAY-06). It is only advice: the order
+//! awaits the seller's answer all the same.
 
 #[cfg(test)]
 mod tests;
@@ -22,6 +27,7 @@ use tracing::warn;
 
 use super::actions::{self, Parties};
 use super::{MARK_PAID, NOT_PAID, ORDER_ID, SLIP_ID, contact};
+use crate::ai::{Feature, Gateway, assistant};
 use crate::catalog::images::{self, Owner, Rejected, SlipLink};
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
@@ -29,7 +35,7 @@ use crate::dispatcher::menu;
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{self, Message};
-use crate::notifications::templates::labels;
+use crate::notifications::templates::{SlipReading, labels};
 use crate::notifications::{Kind, To};
 use crate::payments::{self, slip::Submitted};
 use crate::persistence::entity::order;
@@ -119,6 +125,7 @@ pub async fn photo_sent(
 pub async fn answer(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &Gateway,
     line: &line::Client,
     session: Session<SlipFlow>,
     input: &Input,
@@ -156,7 +163,7 @@ pub async fn answer(
                 }
             };
             match step {
-                Step::Photo => send(turn, config, &order, photo).await?,
+                Step::Photo => send(turn, config, ai, line, &order, photo).await?,
                 Step::Confirm => {
                     discard(turn, draft.photo).await?;
                     let draft = SlipFlow {
@@ -169,7 +176,7 @@ pub async fn answer(
             }
         }
         (Input::Text(text), Step::Confirm, Some(photo)) if is(text, &labels::YES) => {
-            send(turn, config, &order, photo).await?
+            send(turn, config, ai, line, &order, photo).await?
         }
         (Input::Text(text), Step::Confirm, photo) if is(text, &labels::NOT_SLIP) => {
             discard(turn, photo).await?;
@@ -209,18 +216,36 @@ async fn buyers(turn: &Turn<'_>, id: i64) -> Result<Result<order::Model, Message
 
 /// Sends `photo`, the buyer's draft, as the slip of `order` (FR-PAY-05): pushed to the seller as
 /// an image whose link lasts `image.slipLinkHours` (AC-14), above the notice with
-/// "ได้รับเงินแล้ว" and "ยังไม่ได้รับ", which is the preview the chat list shows. The flow ends,
-/// unless the photo is gone: then it asks for one again.
+/// "ได้รับเงินแล้ว" and "ยังไม่ได้รับ", which is the preview the chat list shows. The notice has
+/// what the AI read from the slip, if it did (FR-PAY-06). The flow ends, unless the photo is
+/// gone: then it asks for one again.
 async fn send(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &Gateway,
+    line: &line::Client,
     order: &order::Model,
     photo: Uuid,
 ) -> Result<Vec<Message>, DbErr> {
     let templates = turn.templates;
+    // Read before the order is locked to send it, so that the AI's time doesn't hold it
+    if ai.is_enabled(Feature::SlipReading) {
+        assistant::loading(turn, config, line).await;
+    }
+    let time_zone = templates.time_zone();
+    let reading = payments::slip::reading::read(turn.db, ai, photo, time_zone).await?;
     let link = SlipLink::new(turn.now, &config.image);
     let buyer = turn.actor.user.id;
-    let submitted = payments::slip::submit(turn.db, order.id, buyer, photo, link, turn.now).await?;
+    let submitted = payments::slip::submit(
+        turn.db,
+        order.id,
+        buyer,
+        photo,
+        link,
+        reading.as_ref(),
+        turn.now,
+    )
+    .await?;
     let (order, slip) = match submitted {
         Submitted::Done { order, slip } => (order, slip),
         Submitted::Refused(order) => {
@@ -260,8 +285,19 @@ async fn send(
     ];
     let buyer = contact::buyer_name(&parties.buyer);
     let hours = config.image.slip_link_hours;
-    let notice =
-        templates.slip_received_notice(&order.order_number, order.total, buyer, hours, answers);
+    let reading = reading.as_ref().map(|reading| SlipReading {
+        amount: reading.checked_amount(&order),
+        paid_at: reading.checked_paid_at(&order, turn.now),
+        reference: reading.reference.as_deref(),
+    });
+    let notice = templates.slip_received_notice(
+        &order.order_number,
+        order.total,
+        buyer,
+        hours,
+        reading.as_ref(),
+        answers,
+    );
     let seller = To::User(parties.shop.owner_id);
     turn.notify(
         Kind::SlipReceived,

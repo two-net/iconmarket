@@ -43,7 +43,7 @@ const MONTH_NAMES: [&str; 12] = [
 const WEEKDAYS: [&str; 7] = ["อา.", "จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส."];
 
 /// Buddhist Era (พ.ศ.) minus Common Era: 2026 is 2569.
-const BUDDHIST_ERA_OFFSET: i32 = 543;
+pub const BUDDHIST_ERA_OFFSET: i32 = 543;
 
 /// `22 ต.ค. 2569`
 pub fn format_date(at: DateTime<Utc>, time_zone: Tz) -> String {

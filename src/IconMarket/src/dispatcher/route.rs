@@ -601,7 +601,9 @@ async fn answer_flow(
             None => None,
         },
         SlipFlow::NAME => match stored.read::<SlipFlow>() {
-            Some(session) => Some(slip::answer(turn, config, &context.line, session, input).await),
+            Some(session) => {
+                Some(slip::answer(turn, config, &context.ai, &context.line, session, input).await)
+            }
             None => None,
         },
         RelayFlow::NAME => match stored.read::<RelayFlow>() {

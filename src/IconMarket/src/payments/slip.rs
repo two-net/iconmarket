@@ -7,7 +7,11 @@
 //! which [confirms](confirm) the slip; "ยังไม่ได้รับ" refuses it ([`not_received`]), and the order
 //! awaits a transfer again. Like [`record`](super::record), each locks the order in the caller's
 //! transaction, so a slip sent while the order is cancelled, or answered twice, has one winner.
+//!
+//! While `ai.features.slipReading` is on, the slip is [read](reading) as it is sent, for the
+//! seller to compare: advice kept with it, which changes nothing of the order (FR-PAY-06).
 
+pub mod reading;
 #[cfg(test)]
 mod tests;
 
@@ -25,6 +29,8 @@ use crate::catalog::images::{self, Owner, SlipLink};
 use crate::orders::lifecycle;
 use crate::persistence::entity::order::{self, PaymentMethod, PaymentStatus};
 use crate::persistence::entity::payment_slip::{self, Status};
+
+use self::reading::Reading;
 
 /// Whether `order` awaits a PromptPay transfer, so its buyer may send the slip (FR-PAY-05,
 /// FR-UI-14): accepted and not yet handed over or called off, and neither paid nor awaiting the
@@ -53,13 +59,15 @@ pub enum Submitted {
 
 /// Sends `photo`, a draft of buyer `buyer_id`'s, as the slip of order `order_id` at `now`, in
 /// `txn`, if the order is theirs and [awaits a transfer](awaits_transfer): the photo becomes the
-/// slip's image, reachable through `link`, and the order awaits its seller's confirmation.
+/// slip's image, reachable through `link`, and the order awaits its seller's confirmation. What
+/// the AI read from it, if it did, is kept with it, and changes nothing else (FR-PAY-06).
 pub async fn submit(
     txn: &DatabaseTransaction,
     order_id: i64,
     buyer_id: i64,
     photo: Uuid,
     link: SlipLink,
+    reading: Option<&Reading>,
     now: DateTime<Utc>,
 ) -> Result<Submitted, DbErr> {
     let Some(current) = lifecycle::lock(txn, order_id).await? else {
@@ -68,6 +76,7 @@ pub async fn submit(
     if current.buyer_id != buyer_id || !awaits_transfer(&current) {
         return Ok(Submitted::Refused(current));
     }
+    let read = reading.cloned().unwrap_or_default();
     // Undone if the photo is gone, so that no slip is left without one
     let savepoint = txn.begin().await?;
     let slip = payment_slip::ActiveModel {
@@ -75,6 +84,9 @@ pub async fn submit(
         image_id: Set(None),
         access_token: Set(link.token),
         token_expires_at: Set(link.expires_at),
+        ai_amount: Set(read.amount),
+        ai_paid_at: Set(read.paid_at),
+        ai_reference: Set(read.reference),
         status: Set(Status::Submitted),
         created_at: Set(now),
         ..Default::default()

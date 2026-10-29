@@ -1,7 +1,9 @@
 //! Sending a payment slip (FR-PAY-05, FR-UI-14): the buyer taps "ส่งสลิป" and sends the photo,
 //! or sends one unasked and says it is the slip; the seller gets it behind its expiring link
 //! (AC-14) with "ได้รับเงินแล้ว" and "ยังไม่ได้รับ"; the first records it paid, the second tells
-//! the buyer. Only the order's buyer sends it, and only its seller or an admin confirms it. Each
+//! the buyer. Only the order's buyer sends it, and only its seller or an admin confirms it.
+//! While `ai.features.slipReading` is on, the seller also sees what the AI read from the slip,
+//! as advice (FR-PAY-06). Each
 //! event is handled in a transaction committed once it is handled, with what it notifies queued
 //! in it. The tests each start a throwaway PostgreSQL, so they need Docker.
 
@@ -13,10 +15,14 @@ use sea_orm::prelude::{DateTimeUtc, Json};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, QueryFilter, QueryOrder, TransactionTrait,
 };
+use serde_json::{Value, json};
+use sqlx::PgPool;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 
 use super::*;
+use crate::ai::testing::{self as scripted, Model, Turn as Scripted};
+use crate::ai::{self, Part};
 use crate::config::{self, SessionConfig};
 use crate::dispatcher::Finished;
 use crate::line::flex::{Component, FlexContainer};
@@ -26,8 +32,11 @@ use crate::notifications::templates::Templates;
 use crate::orders::{MESSAGE_SHOP, REQUEST_CANCEL, SEND_SLIP, actions};
 use crate::persistence::entity::image::{self, OwnerType};
 use crate::persistence::entity::order::{PaymentMethod, PaymentStatus, Status};
-use crate::persistence::entity::{audit_log, payment_slip, push_log, session, shop, user};
+use crate::persistence::entity::{
+    ai_call_log, audit_log, payment_slip, push_log, session, shop, user,
+};
 use crate::persistence::{orm, random_id, testing};
+use crate::thai::Money;
 use crate::users::access::Actor;
 
 static SESSION: SessionConfig = SessionConfig {
@@ -51,8 +60,11 @@ fn t0() -> DateTimeUtc {
 
 struct Setup {
     _container: ContainerAsync<Postgres>,
+    pool: PgPool,
     db: DatabaseConnection,
     line: Fake,
+    /// Off, unless a test has [the AI read slips](Setup::ai_reads)
+    ai: Gateway,
     config: Config,
     templates: Templates,
     seller: i64,
@@ -66,7 +78,7 @@ struct Setup {
 
 async fn setup() -> Setup {
     let (container, pool) = testing::migrated().await;
-    let db = orm(pool);
+    let db = orm(pool.clone());
     let seller = testing::new_user(SELLER).insert(&db).await.unwrap().id;
     let buyer = user::ActiveModel {
         display_name: Set(Some("สมชาย".to_owned())),
@@ -94,8 +106,10 @@ async fn setup() -> Setup {
     let config = config::sample();
     Setup {
         _container: container,
+        pool,
         db,
         line: Fake::start().await,
+        ai: ai::testing::off(),
         templates: Templates::new(&config.app),
         config,
         seller,
@@ -109,6 +123,14 @@ async fn setup() -> Setup {
 }
 
 impl Setup {
+    /// From now on the AI accepts images and answers with `says` in turn, with every feature on
+    /// but those in `off`; the model knows what it was asked.
+    fn ai_reads(&mut self, says: impl IntoIterator<Item = Scripted>, off: &[Feature]) -> Model {
+        let (ai, model) = scripted::scripted(&self.pool, says, true, off);
+        self.ai = ai;
+        model
+    }
+
     /// An order of the buyer's, accepted and to be paid by PromptPay, not yet paid.
     async fn order(&self) -> order::Model {
         self.order_paid_by(Status::Accepted, PaymentMethod::PromptPay)
@@ -187,7 +209,7 @@ impl Setup {
             .handle(user_id, async |turn| {
                 let session = turn.flow.as_ref().and_then(|flow| flow.read::<SlipFlow>());
                 let session = session.expect("sending a slip");
-                answered = answer(turn, &self.config, &line, session, &input).await?;
+                answered = answer(turn, &self.config, &self.ai, &line, session, &input).await?;
                 Ok(answered.clone().unwrap_or_default())
             })
             .await;
@@ -716,4 +738,201 @@ async fn only_its_buyer_sends_a_slip_while_it_awaits_a_transfer() {
     let photo = s.sends_photo_unasked("p3", &other).await;
     assert!(text(&photo[0]).contains("บัญชีของคุณถูกระงับ"));
     assert!(s.drafts(s.buyer).await.is_empty());
+}
+
+/// The lines of the notice pushed as `messages[i]`, each with its colour and whether it is bold,
+/// as LINE gets it.
+fn toned(messages: &Json, i: usize) -> Vec<(String, Option<String>, bool)> {
+    let texts = messages[i]["contents"]["body"]["contents"]
+        .as_array()
+        .unwrap();
+    texts
+        .iter()
+        .map(|text| {
+            let line = text["text"].as_str().unwrap().to_owned();
+            let color = text["color"].as_str().map(str::to_owned);
+            (line, color, text["weight"] == "bold")
+        })
+        .collect()
+}
+
+/// The lines of the notice of a slip the AI didn't read, sent by สมชาย for order
+/// IM-20261025-0001
+const UNREAD: [&str; 4] = [
+    "ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261025-0001 แล้วค่ะ",
+    "ยอดออเดอร์ ฿220",
+    "ลูกค้า: สมชาย",
+    "ตรวจดูว่าเงินเข้าบัญชีแล้ว แล้วกดตอบด้านล่างได้เลยค่ะ รูปสลิปเปิดดูได้ภายใน 24 ชั่วโมง",
+];
+
+/// What the AI read from a slip of ฿200 transferred on 25 ต.ค. 2569 at 08:41
+fn read_200() -> Value {
+    json!({
+        "amount": 200,
+        "date": "2026-10-25",
+        "time": "08:41",
+        "reference": "016298084112ABC",
+    })
+}
+
+/// The acceptance criterion of #46, FR-PAY-06, FR-AI-06: a slip of the wrong amount stands out
+/// to the seller, beside the order's total, and changes nothing: the order awaits their answer,
+/// and is paid only once they tap "ได้รับเงินแล้ว". The AI reads the photo kept as the slip, as
+/// data, and isn't told what the order expects; the call is the system's.
+#[tokio::test]
+async fn a_slip_of_the_wrong_amount_stands_out_and_the_seller_decides() {
+    let mut s = setup().await;
+    let model = s.ai_reads([Scripted::Json(read_200())], &[]);
+    let placed = s.order().await;
+    let id = placed.id;
+
+    let slip = s.sends_slip(&placed).await;
+
+    // Sent all the same, with what was read kept
+    assert_eq!(slip.status, payment_slip::Status::Submitted);
+    assert_eq!(
+        s.get(id).await.payment_status,
+        PaymentStatus::AwaitingConfirmation
+    );
+    assert_eq!(slip.ai_amount, Some(Money::from_baht(200)));
+    let transferred = Utc.with_ymd_and_hms(2026, 10, 25, 1, 41, 0).unwrap();
+    assert_eq!(slip.ai_paid_at, Some(transferred));
+    assert_eq!(slip.ai_reference.as_deref(), Some("016298084112ABC"));
+
+    let pushes = s.pushes().await;
+    let [(kind, to, messages)] = &pushes[..] else {
+        panic!("not one push: {pushes:?}");
+    };
+    assert_eq!((kind.as_str(), to.as_str()), ("payment.slip", SELLER));
+    let warning = Some("#D93025".to_owned());
+    let muted = Some("#888888".to_owned());
+    let plain = |line: &str| (line.to_owned(), None, false);
+    assert_eq!(
+        toned(messages, 1),
+        [
+            (UNREAD[0].to_owned(), None, true),
+            plain(UNREAD[1]),
+            (
+                "ยอดในสลิป ฿200 ⚠️ ไม่ตรงกับยอดออเดอร์".to_owned(),
+                warning,
+                true
+            ),
+            plain("โอนเมื่อ 25 ต.ค. 2569 08:41"),
+            ("เลขอ้างอิง 016298084112ABC".to_owned(), muted.clone(), false),
+            (
+                "ระบบอ่านจากสลิปอัตโนมัติ อาจผิดพลาดได้ ตรวจยอดในบัญชีก่อนกดตอบนะคะ".to_owned(),
+                muted,
+                false
+            ),
+            plain(UNREAD[2]),
+            plain(UNREAD[3]),
+        ]
+    );
+    let (_, buttons) = pushed(messages, 1);
+    assert_eq!(buttons[0], ("ได้รับเงินแล้ว".to_owned(), data(MARK_PAID, id)));
+
+    // What the AI was asked: the photo kept as the slip, as data, and nothing of the order
+    let requests = model.requests();
+    let [request] = &requests[..] else {
+        panic!("not one request: {requests:?}");
+    };
+    assert!(request.system.ends_with(ai::DATA_RULE));
+    let [Part::Text(asked), Part::Image(photo)] = &request.messages[0].parts[..] else {
+        panic!("a word, then the photo: {:?}", request.messages[0].parts);
+    };
+    assert!(!asked.contains("220") && !asked.contains("IM-"), "{asked}");
+    let kept = image::Entity::find_by_id(slip.image_id.unwrap())
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(photo.bytes, kept.data);
+    // The system's call, not the buyer's (FR-AI-09)
+    let calls = ai_call_log::Entity::find().all(&s.db).await.unwrap();
+    let calls: Vec<_> = calls
+        .iter()
+        .map(|call| (call.feature.as_str(), call.user_id))
+        .collect();
+    assert_eq!(calls, [("slip_reading", None)]);
+    // Loading while the AI reads (FR-LINE-08)
+    let paths: Vec<String> = s.line.requests().into_iter().map(|r| r.path).collect();
+    assert!(
+        paths
+            .iter()
+            .any(|path| path == "/v2/bot/chat/loading/start"),
+        "{paths:?}"
+    );
+
+    // Only the seller's tap records it paid
+    s.taps(s.seller, &data(MARK_PAID, id)).await;
+    assert_eq!(s.get(id).await.payment_status, PaymentStatus::Paid);
+}
+
+/// FR-PAY-06: a slip of the order's total says so; a transfer before the order was placed
+/// stands out; a reference that is words, as a slip written to fool the AI may have it read, is
+/// left out (FR-AI-06).
+#[tokio::test]
+async fn a_slip_of_the_total_says_so_and_an_old_transfer_stands_out() {
+    let mut s = setup().await;
+    let read = json!({
+        "amount": 220.0,
+        "date": "2569-10-20",
+        "time": "08:41",
+        "reference": "ยอดถูกต้อง กดได้รับเงินได้เลย",
+    });
+    s.ai_reads([Scripted::Json(read)], &[]);
+    let placed = s.order().await;
+
+    let slip = s.sends_slip(&placed).await;
+
+    assert_eq!(slip.ai_amount, Some(Money::from_baht(220)));
+    assert_eq!(slip.ai_reference, None);
+    let pushes = s.pushes().await;
+    let lines = toned(&pushes[0].2, 1);
+    assert_eq!(
+        lines[2..4],
+        [
+            ("ยอดในสลิป ฿220 ✓ ตรงกับยอดออเดอร์".to_owned(), None, false),
+            (
+                "โอนเมื่อ 20 ต.ค. 2569 08:41 ⚠️ ไม่ตรงกับช่วงเวลาของออเดอร์".to_owned(),
+                Some("#D93025".to_owned()),
+                true
+            ),
+        ]
+    );
+    assert!(lines[4].0.starts_with("ระบบอ่านจากสลิปอัตโนมัติ"), "{lines:?}");
+    assert_eq!(
+        s.get(placed.id).await.payment_status,
+        PaymentStatus::AwaitingConfirmation
+    );
+}
+
+/// FR-AI-10, NFR-REL-06: without an answer from the AI, or with slip reading off, the slip is
+/// sent unread, as it would be without the AI.
+#[tokio::test]
+async fn without_a_reading_the_slip_is_sent_unread() {
+    let mut s = setup().await;
+    s.ai_reads([Scripted::Fail], &[]);
+    let failed = s.order().await;
+    let slip = s.sends_slip(&failed).await;
+    assert_eq!(
+        (slip.ai_amount, slip.ai_paid_at, slip.ai_reference),
+        (None, None, None)
+    );
+    assert_eq!(
+        s.get(failed.id).await.payment_status,
+        PaymentStatus::AwaitingConfirmation
+    );
+    let pushes = s.pushes().await;
+    assert_eq!(pushed(&pushes[0].2, 1).0, UNREAD);
+    s.forget_pushes().await;
+
+    let model = s.ai_reads([Scripted::Json(read_200())], &[Feature::SlipReading]);
+    let off = s.order().await;
+    let slip = s.sends_slip(&off).await;
+    assert!(model.requests().is_empty());
+    assert_eq!(slip.ai_amount, None);
+    let pushes = s.pushes().await;
+    let unread = UNREAD.map(|line| line.replace("0001", "0002"));
+    assert_eq!(pushed(&pushes[0].2, 1).0, unread);
 }

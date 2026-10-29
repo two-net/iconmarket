@@ -1684,26 +1684,58 @@ impl Templates {
     }
 
     /// Tells the seller `buyer` sent the slip of order `number`, whose total is `total`
-    /// (FR-PAY-05). The slip follows as an image whose link lasts `hours` (AC-14). `buttons` are
-    /// "ได้รับเงินแล้ว" and "ยังไม่ได้รับ".
+    /// (FR-PAY-05), and, beside the total, what the AI read from it if it did (FR-PAY-06): what
+    /// doesn't match stands out, and it is said to be advice. The slip follows as an image whose
+    /// link lasts `hours` (AC-14). `buttons` are "ได้รับเงินแล้ว" and "ยังไม่ได้รับ".
     pub fn slip_received_notice(
         &self,
         number: &str,
         total: Money,
         buyer: Option<&str>,
         hours: u32,
+        reading: Option<&SlipReading<'_>>,
         buttons: Vec<Action>,
     ) -> Message {
-        let kha = self.kha();
+        let (kha, kha_question) = (self.kha(), self.kha_question());
         let headline = format!("ลูกค้าส่งสลิปโอนเงินออเดอร์ {number} แล้ว{kha}");
-        let mut details = vec![format!("ยอดออเดอร์ {total}")];
-        if let Some(buyer) = buyer {
-            details.push(format!("ลูกค้า: {buyer}"));
+        let mut details = vec![(format!("ยอดออเดอร์ {total}"), Tone::Plain)];
+        if let Some(reading) = reading {
+            details.push(match reading.amount {
+                Some((amount, true)) => {
+                    (format!("ยอดในสลิป {amount} ✓ ตรงกับยอดออเดอร์"), Tone::Plain)
+                }
+                Some((amount, false)) => (
+                    format!("ยอดในสลิป {amount} ⚠️ ไม่ตรงกับยอดออเดอร์"),
+                    Tone::Warning,
+                ),
+                None => ("⚠️ อ่านยอดในสลิปไม่ได้".to_owned(), Tone::Warning),
+            });
+            match reading.paid_at {
+                Some((at, true)) => {
+                    details.push((format!("โอนเมื่อ {}", self.date_time(at)), Tone::Plain));
+                }
+                Some((at, false)) => details.push((
+                    format!("โอนเมื่อ {} ⚠️ ไม่ตรงกับช่วงเวลาของออเดอร์", self.date_time(at)),
+                    Tone::Warning,
+                )),
+                None => {}
+            }
+            if let Some(reference) = reading.reference {
+                details.push((format!("เลขอ้างอิง {reference}"), Tone::Muted));
+            }
+            details.push((
+                format!("ระบบอ่านจากสลิปอัตโนมัติ อาจผิดพลาดได้ ตรวจยอดในบัญชีก่อนกดตอบนะ{kha_question}"),
+                Tone::Muted,
+            ));
         }
-        details.push(format!(
-            "ตรวจดูว่าเงินเข้าบัญชีแล้ว แล้วกดตอบด้านล่างได้เลย{kha} รูปสลิปเปิดดูได้ภายใน {hours} ชั่วโมง"
+        if let Some(buyer) = buyer {
+            details.push((format!("ลูกค้า: {buyer}"), Tone::Plain));
+        }
+        details.push((
+            format!("ตรวจดูว่าเงินเข้าบัญชีแล้ว แล้วกดตอบด้านล่างได้เลย{kha} รูปสลิปเปิดดูได้ภายใน {hours} ชั่วโมง"),
+            Tone::Plain,
         ));
-        notice(&headline, &details, buttons)
+        Message::flex(&headline, toned_notice_card(&headline, &details, buttons))
     }
 
     /// The seller didn't get the transfer of order `number`, whose slip is refused (FR-PAY-05):
@@ -5096,6 +5128,18 @@ pub struct PromptPayDue<'a> {
     pub total: Money,
 }
 
+/// What the AI read from a payment slip, as its seller is shown it beside what the order expects
+/// (FR-PAY-06): advice, never a decision. What it couldn't read is `None`.
+pub struct SlipReading<'a> {
+    /// The amount transferred, and whether it is the order's total
+    pub amount: Option<(Money, bool)>,
+    /// When it was transferred, and whether that can be the order's transfer: not before the
+    /// order was placed, nor after the slip was sent
+    pub paid_at: Option<(DateTime<Utc>, bool)>,
+    /// Letters and digits only
+    pub reference: Option<&'a str>,
+}
+
 /// Whom a message on an order is from, or for (FR-ORD-13).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderParty<'a> {
@@ -5427,6 +5471,8 @@ fn line(text: &str) -> Component {
 
 /// The colour of the labels of a card's rows
 const MUTED: &str = "#888888";
+/// The colour of what doesn't match, such as a slip's amount (FR-PAY-06)
+const WARNING_COLOR: &str = CLOSED_COLOR;
 
 /// Categories on a page of "หมวดหมู่", leaving room for "ดูเพิ่มเติม" (FR-LINE-11)
 pub const CATEGORIES_PER_PAGE: usize = limits::BUBBLES_PER_CAROUSEL - 1;
@@ -6349,15 +6395,41 @@ pub fn notice(headline: &str, details: &[String], buttons: Vec<Action>) -> Messa
 
 /// The card of a [`notice`], for one whose preview isn't its headline.
 fn notice_card(headline: &str, details: &[String], buttons: Vec<Action>) -> Bubble {
+    let details: Vec<_> = details
+        .iter()
+        .map(|line| (line.clone(), Tone::Plain))
+        .collect();
+    toned_notice_card(headline, &details, buttons)
+}
+
+/// How a line of a notice's details shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tone {
+    Plain,
+    /// Red and bold, as what doesn't match is (FR-PAY-06)
+    Warning,
+    /// Grey, as an aside is
+    Muted,
+}
+
+/// The card of a [`notice`] whose details each show in their [`Tone`].
+fn toned_notice_card(headline: &str, details: &[(String, Tone)], buttons: Vec<Action>) -> Bubble {
     let headline_text = Text {
         weight: Some(Weight::Bold),
         wrap: Some(true),
         ..Text::new(headline)
     };
-    let lines = details.iter().map(|line| {
+    let lines = details.iter().map(|(line, tone)| {
+        let (color, weight) = match tone {
+            Tone::Plain => (None, None),
+            Tone::Warning => (Some(WARNING_COLOR), Some(Weight::Bold)),
+            Tone::Muted => (Some(MUTED), None),
+        };
         let text = Text {
             size: Some(Size::Sm),
             wrap: Some(true),
+            color: color.map(str::to_owned),
+            weight,
             ..Text::new(line.as_str())
         };
         text.into()
@@ -7181,8 +7253,15 @@ mod tests {
             t.ask_paid(number, Money::from_baht(230), true, Vec::new()),
             t.left_unpaid(number, Vec::new()),
             t.slip_sent(number, Vec::new()),
-            t.slip_received_notice(number, Money::from_baht(230), Some("สมชาย"), 24, Vec::new()),
-            t.slip_received_notice(number, Money::from_baht(230), None, 24, Vec::new()),
+            t.slip_received_notice(
+                number,
+                Money::from_baht(230),
+                Some("สมชาย"),
+                24,
+                None,
+                vec![],
+            ),
+            t.slip_received_notice(number, Money::from_baht(230), None, 24, None, vec![]),
             t.slip_not_received(number, Vec::new()),
             t.slip_not_received_notice(shop, number, Money::from_baht(230), Vec::new()),
             t.order_rejected_notice(shop, number, "สินค้าหมด", Vec::new()),
@@ -7197,6 +7276,11 @@ mod tests {
         ];
         for status in [Ready, Delivering, Completed] {
             notices.push(t.order_progress_notice(shop, number, status, Vec::new()));
+        }
+        for reading in slip_readings() {
+            let total = Money::from_baht(230);
+            let notice = t.slip_received_notice(number, total, None, 24, Some(&reading), vec![]);
+            notices.push(notice);
         }
         for (by_admin, refund) in [(false, false), (false, true), (true, false), (true, true)] {
             let reason = "ไม่สะดวกส่ง";
@@ -7315,6 +7399,55 @@ mod tests {
             id,
             total: Money::from_baht(230),
         }
+    }
+
+    /// 25 ต.ค. 2569 09:12 in Bangkok
+    fn transferred_at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 25, 2, 12, 0).unwrap()
+    }
+
+    /// What the AI may read from a slip of ฿230 (FR-PAY-06): all of it, matching; the wrong
+    /// amount at the wrong time; no amount
+    fn slip_readings() -> [SlipReading<'static>; 3] {
+        [
+            SlipReading {
+                amount: Some((Money::from_baht(230), true)),
+                paid_at: Some((transferred_at(), true)),
+                reference: Some("016298091203"),
+            },
+            SlipReading {
+                amount: Some((Money::from_satang(20_050), false)),
+                paid_at: Some((transferred_at(), false)),
+                reference: None,
+            },
+            SlipReading {
+                amount: None,
+                paid_at: None,
+                reference: None,
+            },
+        ]
+    }
+
+    /// The lines of a notice, each with its colour and whether it is bold.
+    fn toned_lines(message: &Message) -> Vec<(&str, Option<&str>, bool)> {
+        let Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } = &message.body
+        else {
+            panic!("not a bubble");
+        };
+        let lines = card.body.as_ref().unwrap().contents.iter();
+        lines
+            .map(|component| match component {
+                Component::Text(text) => (
+                    text.text.as_str(),
+                    text.color.as_deref(),
+                    text.weight == Some(Weight::Bold),
+                ),
+                other => panic!("not text: {other:?}"),
+            })
+            .collect()
     }
 
     /// The lines of a notice, headline first, whether it has buttons or not.
@@ -9030,7 +9163,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            notice_lines(&t.slip_received_notice(number, total, Some("สมชาย"), 24, Vec::new())),
+            notice_lines(&t.slip_received_notice(number, total, Some("สมชาย"), 24, None, vec![])),
             [
                 "ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ",
                 "ยอดออเดอร์ ฿230",
@@ -9054,6 +9187,78 @@ mod tests {
                 "ตรวจสอบการโอนอีกครั้ง หรือสอบถามร้านได้โดยตรงครับ",
             ]
         );
+    }
+
+    /// FR-PAY-06: what the AI read from a slip shows beside the order's total, what doesn't match
+    /// in red and bold, and is said to be advice; without a reading the notice is as it was.
+    #[test]
+    fn what_the_ai_read_from_a_slip_shows_beside_the_total() {
+        let t = templates(PoliteParticle::Kha);
+        let (number, total) = ("IM-20261022-0007", Money::from_baht(230));
+        let [matching, mismatching, unread] = slip_readings();
+        let warning = Some(WARNING_COLOR);
+        let advice = (
+            "ระบบอ่านจากสลิปอัตโนมัติ อาจผิดพลาดได้ ตรวจยอดในบัญชีก่อนกดตอบนะคะ",
+            Some(MUTED),
+            false,
+        );
+        let check = (
+            "ตรวจดูว่าเงินเข้าบัญชีแล้ว แล้วกดตอบด้านล่างได้เลยค่ะ รูปสลิปเปิดดูได้ภายใน 24 ชั่วโมง",
+            None,
+            false,
+        );
+        let notice = |reading| t.slip_received_notice(number, total, None, 24, reading, vec![]);
+        assert_eq!(
+            toned_lines(&notice(Some(&matching))),
+            [
+                ("ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ", None, true),
+                ("ยอดออเดอร์ ฿230", None, false),
+                ("ยอดในสลิป ฿230 ✓ ตรงกับยอดออเดอร์", None, false),
+                ("โอนเมื่อ 25 ต.ค. 2569 09:12", None, false),
+                ("เลขอ้างอิง 016298091203", Some(MUTED), false),
+                advice,
+                check,
+            ]
+        );
+        assert_eq!(
+            toned_lines(&notice(Some(&mismatching))),
+            [
+                ("ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ", None, true),
+                ("ยอดออเดอร์ ฿230", None, false),
+                ("ยอดในสลิป ฿200.50 ⚠️ ไม่ตรงกับยอดออเดอร์", warning, true),
+                (
+                    "โอนเมื่อ 25 ต.ค. 2569 09:12 ⚠️ ไม่ตรงกับช่วงเวลาของออเดอร์",
+                    warning,
+                    true,
+                ),
+                advice,
+                check,
+            ]
+        );
+        assert_eq!(
+            toned_lines(&notice(Some(&unread))),
+            [
+                ("ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ", None, true),
+                ("ยอดออเดอร์ ฿230", None, false),
+                ("⚠️ อ่านยอดในสลิปไม่ได้", warning, true),
+                advice,
+                check,
+            ]
+        );
+        // Unread, as with the AI off, the notice is as it was
+        assert_eq!(
+            toned_lines(&notice(None)),
+            [
+                ("ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ", None, true),
+                ("ยอดออเดอร์ ฿230", None, false),
+                check,
+            ]
+        );
+        // The headline is its preview
+        let Body::Flex { alt_text, .. } = &notice(Some(&mismatching)).body else {
+            panic!("not a card");
+        };
+        assert_eq!(alt_text, "ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ");
     }
 
     /// FR-PAY-07: the seller is asked whether they got the money of an order handed over
@@ -9180,6 +9385,11 @@ mod tests {
                 Money::from_baht(100_000).times(99 * 20),
                 Some(&buyer),
                 u32::MAX,
+                Some(&SlipReading {
+                    amount: Some((Money::from_satang(i64::MAX), false)),
+                    paid_at: Some((DateTime::<Utc>::MAX_UTC, false)),
+                    reference: Some(&"9".repeat(40)),
+                }),
                 vec![
                     button(&labels::MARK_PAID, "order.paid"),
                     postback(

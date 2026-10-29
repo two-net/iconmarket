@@ -104,7 +104,7 @@ impl Setup {
     async fn submits(&self, id: i64, buyer_id: i64, photo: Uuid) -> (Submitted, SlipLink) {
         let link = SlipLink::new(now(), &image_config());
         let txn = self.db.begin().await.unwrap();
-        let submitted = submit(&txn, id, buyer_id, photo, link, now())
+        let submitted = submit(&txn, id, buyer_id, photo, link, None, now())
             .await
             .unwrap();
         txn.commit().await.unwrap();
@@ -179,6 +179,11 @@ async fn a_slip_sent_awaits_the_sellers_confirmation() {
         assert_eq!(slip.access_token, link.token);
         assert_eq!(slip.token_expires_at, now() + TimeDelta::hours(24));
         assert_eq!(slip.created_at, now());
+        // Unread
+        assert_eq!(
+            (slip.ai_amount, slip.ai_paid_at, slip.ai_reference),
+            (None, None, None)
+        );
         // No longer a draft, so no sweep deletes it, and only its link shows it
         let image = s.image(photo).await.unwrap();
         assert_eq!(
@@ -187,6 +192,37 @@ async fn a_slip_sent_awaits_the_sellers_confirmation() {
         );
         assert!(!awaits_transfer(&order));
     }
+}
+
+/// FR-PAY-06: what the AI read from a slip is kept with it, and is only advice: the order awaits
+/// its seller's confirmation all the same, even when the slip reads as its total.
+#[tokio::test]
+async fn what_the_ai_read_is_kept_and_decides_nothing() {
+    let s = setup().await;
+    let buyer = s.market.buyer.id;
+    let placed = s.order(Accepted, PromptPay, Unpaid).await;
+    let photo = s.draft(buyer).await;
+    let reading = reading::Reading {
+        amount: Some(placed.total),
+        paid_at: Some(now() - TimeDelta::minutes(5)),
+        reference: Some("016298091203ABC".to_owned()),
+    };
+    let link = SlipLink::new(now(), &image_config());
+    let txn = s.db.begin().await.unwrap();
+    let submitted = submit(&txn, placed.id, buyer, photo, link, Some(&reading), now())
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
+    let Submitted::Done { order, slip } = submitted else {
+        panic!("not sent: {submitted:?}");
+    };
+    assert_eq!(order.payment_status, AwaitingConfirmation);
+    assert_eq!(slip.status, Status::Submitted);
+    assert_eq!(
+        (slip.ai_amount, slip.ai_paid_at, slip.ai_reference),
+        (reading.amount, reading.paid_at, reading.reference)
+    );
 }
 
 /// FR-PAY-05, FR-UI-13: only the buyer of an order accepted and awaiting a PromptPay transfer

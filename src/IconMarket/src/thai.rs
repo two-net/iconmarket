@@ -16,8 +16,8 @@ mod number;
 mod phone;
 
 pub use date::{
-    compact_date, format_date, format_date_time, format_day, format_short_day, local_instant,
-    parse_day,
+    BUDDHIST_ERA_OFFSET, compact_date, format_date, format_date_time, format_day, format_short_day,
+    local_instant, parse_day,
 };
 pub use label::{Label, shorten};
 pub use money::{Money, group_thousands};
