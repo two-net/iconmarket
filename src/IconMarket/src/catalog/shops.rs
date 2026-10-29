@@ -53,7 +53,7 @@ use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Location, Turn};
 use crate::line::{self, Action, Message};
 use crate::notifications::templates::{
-    self, Applicant, PromptPay, Running, ShopCard, ShopFront, labels, with_choices,
+    self, Applicant, PromptPay, Running, ShopCard, ShopFront, ShopRating, labels, with_choices,
 };
 use crate::notifications::{Kind, To};
 use crate::payments;
@@ -1280,9 +1280,13 @@ pub fn card<'a>(
     }
 }
 
-/// `shop`'s card as buyers see it, with `photo` (FR-SHOP-09): its "ดูสินค้า" lists the shop's
-/// products (#28).
-pub fn front<'a>(shop: &'a shop::Model, photo: Option<&'a Url>) -> ShopFront<'a> {
+/// `shop`'s card as buyers see it, with `photo` and its average `rating`, once it has one to
+/// show (FR-SHOP-09, FR-ORD-14): its "ดูสินค้า" lists the shop's products (#28).
+pub fn front<'a>(
+    shop: &'a shop::Model,
+    photo: Option<&'a Url>,
+    rating: Option<ShopRating>,
+) -> ShopFront<'a> {
     let products = Postback::new(browse::SHOP).with_int(browse::SHOP_ID, shop.id);
     ShopFront {
         name: &shop.name,
@@ -1294,6 +1298,7 @@ pub fn front<'a>(shop: &'a shop::Model, photo: Option<&'a Url>) -> ShopFront<'a>
         offers_delivery: shop.offers_delivery,
         delivery_fee: shop.delivery_fee,
         minimum_order: shop.minimum_order,
+        rating,
         products: products.button(labels::VIEW_PRODUCTS.clone()),
     }
 }

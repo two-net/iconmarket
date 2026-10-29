@@ -1794,6 +1794,53 @@ impl Templates {
         notice(&headline, &details, buttons)
     }
 
+    /// Asks the buyer how many stars order `number` from shop `shop` earns (FR-ORD-14): `stars`
+    /// give them, five first.
+    pub fn ask_stars(&self, number: &str, shop: &str, stars: Vec<Action>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ออเดอร์ {number} จาก{} ถูกใจแค่ไหน{kha_question} ให้คะแนน 1–5 ดาวได้เลย{kha}",
+            shop_called(shop)
+        ))
+        .with_quick_reply(QuickReply::new(stars))
+    }
+
+    /// Order `number` got `stars` (FR-ORD-14): asks for what the buyer would tell its shop, in
+    /// at most `max_chars`, which the shop sees on the order. `skip` goes without.
+    pub fn ask_rating_comment(
+        &self,
+        number: &str,
+        stars: i16,
+        max_chars: usize,
+        skip: Action,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ให้ออเดอร์ {number} {} แล้ว{kha} อยากบอกอะไรถึงร้านไหม{kha_question} พิมพ์ได้ไม่เกิน {max_chars} ตัวอักษร ร้านจะเห็นในออเดอร์นี้ ถ้าไม่มีกด \"{}\" ได้เลย{kha}",
+            stars_line(stars),
+            skip.label().as_str()
+        ))
+        .with_quick_reply(QuickReply::new([skip]))
+    }
+
+    /// Order `number`'s rating is done (FR-ORD-14). `carry_on` are where to go next.
+    pub fn rating_saved(&self, number: &str, carry_on: Vec<Action>) -> Message {
+        let kha = self.kha();
+        Message::text(format!("ขอบคุณที่ให้คะแนนออเดอร์ {number}{kha}"))
+            .with_quick_reply(QuickReply::new(carry_on))
+    }
+
+    /// Order `number` was rated `stars` already, and is rated once (FR-ORD-14). `carry_on`
+    /// are where to go next.
+    pub fn already_rated(&self, number: &str, stars: i16, carry_on: Vec<Action>) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ออเดอร์ {number} ให้คะแนนไปแล้ว ({}) ให้ได้ออเดอร์ละครั้งเดียว{kha}",
+            stars_line(stars)
+        ))
+        .with_quick_reply(QuickReply::new(carry_on))
+    }
+
     /// The seller has yet to get the money of order `number`, handed over (FR-PAY-07): it stays
     /// under "ค้างชำระ". `buttons` are "ได้รับเงินแล้ว", for when they do.
     pub fn left_unpaid(&self, number: &str, buttons: Vec<Action>) -> Message {
@@ -2091,6 +2138,9 @@ impl Templates {
             payment_status_name(order.payment_status)
         ));
         details.push(format!("สั่งเมื่อ {}", self.date_time(order.placed_at)));
+        if let Some(rating) = order.rating {
+            details.push(format!("{RATING}: {}", rating_line(rating)));
+        }
         notice(&headline, &details, buttons)
     }
 
@@ -2286,6 +2336,9 @@ impl Templates {
         };
         contents.push(row("ชำระเงิน", &paid));
         contents.extend(people);
+        if let Some(rating) = card.rating {
+            contents.push(row(RATING, &rating_line(rating)));
+        }
 
         let mut buttons = card.buttons.clone();
         if full && let Some((latitude, longitude)) = location {
@@ -2383,6 +2436,10 @@ impl Templates {
                 lines.push(format!(
                     "สินค้าที่เขียนว่า \"{}\" จะบอกวันที่ของพร้อมไว้ที่สินค้า ในตะกร้า และในออเดอร์{kha}",
                     labels::PRE_ORDER.as_str()
+                ));
+                lines.push(format!(
+                    "ได้รับของแล้ว กด \"{}\" ที่ออเดอร์ เพื่อให้ร้าน 1–5 ดาวได้ ออเดอร์ละครั้ง{kha}",
+                    labels::RATE_ORDER.as_str()
                 ));
                 if facts.assistant {
                     lines.push(format!(
@@ -4328,6 +4385,14 @@ impl Templates {
         if let Some(hours) = front.opening_hours {
             rows.push(row("เวลาเปิด", hours));
         }
+        if let Some(rating) = &front.rating {
+            let rated = format!(
+                "★ {} ({} รีวิว)",
+                rating.average(),
+                thai::group_thousands(rating.count)
+            );
+            rows.push(row(RATING, &rated));
+        }
         let details = FlexBox {
             spacing: Some(Spacing::Sm),
             ..FlexBox::vertical(rows)
@@ -4628,6 +4693,27 @@ fn ready_row(day: NaiveDate) -> Component {
     row(labels::PRE_ORDER.as_str(), &ready)
 }
 
+/// `stars` of 5, as a rating shows them (FR-ORD-14): `★★★★☆`.
+pub fn stars_line(stars: i16) -> String {
+    let stars = usize::try_from(stars.clamp(0, 5)).expect("0 to 5");
+    format!("{}{}", "★".repeat(stars), "☆".repeat(5 - stars))
+}
+
+/// The Quick Reply that gives `stars` (FR-ORD-14): `★★★★`.
+pub fn stars_label(stars: i16) -> Label {
+    let stars = usize::try_from(stars.clamp(1, 5)).expect("1 to 5");
+    Label::fit("★".repeat(stars))
+}
+
+/// What an order's `rating` shows: its stars, then what its buyer wrote, quoted, below them.
+fn rating_line(rating: OrderRating<'_>) -> String {
+    let stars = stars_line(rating.stars);
+    match rating.comment {
+        Some(comment) => format!("{stars}\n\"{comment}\""),
+        None => stars,
+    }
+}
+
 /// A product's price per unit, as its card says it: `฿20 / กล่อง` (FR-UI-07).
 pub fn price_per_unit(price: Money, unit: &str) -> String {
     format!("{price} / {unit}")
@@ -4648,6 +4734,8 @@ pub fn stock_line(stock: Option<i32>, unit: &str) -> String {
 
 /// What a closed shop and its products show (FR-SHOP-05)
 const CLOSED: &str = "ร้านปิด";
+/// The row of a rated order, and of a shop's average (FR-ORD-14)
+const RATING: &str = "คะแนน";
 /// A product in one message, for the AI to draft (FR-PROD-02, Appendix A.3)
 const LISTING_EXAMPLE: &str = "ขนมครก กล่องละ 20 มี 30 กล่อง";
 /// The colours of whether a shop is open, on its card
@@ -4656,8 +4744,7 @@ const CLOSED_COLOR: &str = "#D93025";
 /// A pre-order's ready date: neither open nor closed (FR-PROD-11)
 const PRE_ORDER_COLOR: &str = "#E37400";
 
-/// A shop's card as buyers see it (FR-SHOP-09). #45 adds its rating, once ratings are on
-/// (FR-ORD-14).
+/// A shop's card as buyers see it (FR-SHOP-09).
 pub struct ShopFront<'a> {
     pub name: &'a str,
     pub description: &'a str,
@@ -4671,8 +4758,34 @@ pub struct ShopFront<'a> {
     pub offers_delivery: bool,
     pub delivery_fee: Money,
     pub minimum_order: Option<Money>,
+    /// Its buyers' average rating, once there are enough to show (FR-ORD-14)
+    pub rating: Option<ShopRating>,
     /// "ดูสินค้า"
     pub products: Action,
+}
+
+/// The average of a shop's ratings, as its card shows it (FR-ORD-14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShopRating {
+    /// The average of their stars in tenths: 47 is 4.7
+    pub tenths: u64,
+    /// How many there are
+    pub count: u64,
+}
+
+impl ShopRating {
+    /// The average to one decimal: `4.7`.
+    pub fn average(&self) -> String {
+        format!("{}.{}", self.tenths / 10, self.tenths % 10)
+    }
+}
+
+/// A buyer's rating of an order (FR-ORD-14): its stars, 1 to 5, and what they wrote, if they
+/// did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrderRating<'a> {
+    pub stars: i16,
+    pub comment: Option<&'a str>,
 }
 
 /// A product being added, as its preview shows it (FR-PROD-01).
@@ -4951,6 +5064,8 @@ pub struct OrderCard<'a> {
     /// Whether it is handed over but not paid, on its seller's card: "ค้างชำระ" (FR-PAY-07)
     pub unpaid: bool,
     pub contact: OrderContact<'a>,
+    /// Its buyer's rating, once completed and rated (FR-ORD-14), on both parties' cards
+    pub rating: Option<OrderRating<'a>>,
     /// What the viewer can do about it now
     pub buttons: Vec<Action>,
 }
@@ -4967,6 +5082,8 @@ pub struct FoundOrder<'a> {
     pub payment: order::PaymentMethod,
     pub payment_status: order::PaymentStatus,
     pub placed_at: DateTime<Utc>,
+    /// Its buyer's rating, if they rated it (FR-ORD-14)
+    pub rating: Option<OrderRating<'a>>,
 }
 
 /// What the buyer of an order paid by PromptPay transfers, and where, once it is accepted
@@ -6575,6 +6692,8 @@ pub mod labels {
         MESSAGE_BUYER = "ส่งข้อความถึงลูกค้า",
         /// An order's card in full, from "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน" (FR-ORD-10)
         ORDER_DETAILS = "ดูรายละเอียด",
+        /// The buyer of a completed order rates it, once (FR-ORD-14)
+        RATE_ORDER = "ให้คะแนน",
         /// Opens where to deliver or pick up an order on a map (FR-ORD-11)
         SEE_MAP = "ดูแผนที่",
         // The filters of "ออเดอร์ร้าน" (FR-ORD-10)
@@ -7319,6 +7438,7 @@ mod tests {
             offers_delivery: true,
             delivery_fee: Money::from_baht(10),
             minimum_order: None,
+            rating: None,
             products: Action::postback(labels::VIEW_PRODUCTS.clone(), "browse.shop?shop=1"),
         }
     }
@@ -7349,6 +7469,48 @@ mod tests {
             texts(component, &mut out);
         }
         out
+    }
+
+    /// FR-ORD-14: a shop's card shows its average, to one decimal, and how many rated it, only
+    /// once it has one to show.
+    #[test]
+    fn a_shops_card_shows_its_average_rating() {
+        let t = templates(PoliteParticle::Kha);
+        let texts = card_texts(&t.shop_front_bubble(&shop_front()));
+        assert!(!texts.contains(&"คะแนน".to_owned()));
+        let rated = ShopFront {
+            rating: Some(ShopRating {
+                tenths: 47,
+                count: 1_234,
+            }),
+            ..shop_front()
+        };
+        let texts = card_texts(&t.shop_front_bubble(&rated));
+        let at = texts.iter().position(|text| text == "คะแนน").unwrap();
+        assert_eq!(texts[at + 1], "★ 4.7 (1,234 รีวิว)");
+        let whole = ShopRating {
+            tenths: 50,
+            count: 3,
+        };
+        assert_eq!(whole.average(), "5.0");
+    }
+
+    /// FR-ORD-14: a rating shows its stars of 5, then its comment quoted, if there is one.
+    #[test]
+    fn a_rating_shows_its_stars_and_comment() {
+        assert_eq!(stars_line(4), "★★★★☆");
+        assert_eq!(stars_line(1), "★☆☆☆☆");
+        assert_eq!(stars_label(3).as_str(), "★★★");
+        let rated = OrderRating {
+            stars: 5,
+            comment: Some("ไข่สดมากค่ะ"),
+        };
+        assert_eq!(rating_line(rated), "★★★★★\n\"ไข่สดมากค่ะ\"");
+        let silent = OrderRating {
+            stars: 2,
+            comment: None,
+        };
+        assert_eq!(rating_line(silent), "★★☆☆☆");
     }
 
     /// Appendix A.5: a shop is named as a sentence names it.
@@ -7496,6 +7658,10 @@ mod tests {
             is_open: false,
             opening_hours: Some(&hours),
             minimum_order: Some(Money::from_satang(9_999_999)),
+            rating: Some(ShopRating {
+                tenths: 50,
+                count: 1_000_000,
+            }),
             products: Action::postback(
                 labels::VIEW_PRODUCTS.clone(),
                 format!("browse.shop?shop={}", i64::MAX),
@@ -8976,6 +9142,10 @@ mod tests {
             payment: order::PaymentMethod::PromptPay,
             payment_status: order::PaymentStatus::AwaitingConfirmation,
             placed_at: Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap(),
+            rating: Some(OrderRating {
+                stars: 5,
+                comment: Some(&note),
+            }),
         };
         let reasons = [
             &labels::REASON_SOLD_OUT,
@@ -9074,6 +9244,25 @@ mod tests {
                     button(&labels::REQUEST_CANCEL, "order.request_cancel"),
                 ],
             ),
+            t.ask_stars(
+                number,
+                &shop,
+                (1..=5)
+                    .rev()
+                    .map(|stars| {
+                        let rate = format!("order.rate?order={max}&stars={stars}");
+                        postback(&stars_label(stars), rate)
+                    })
+                    .collect(),
+            ),
+            t.ask_rating_comment(
+                number,
+                5,
+                200,
+                Action::message(labels::SKIP.clone(), labels::SKIP.as_str()),
+            ),
+            t.rating_saved(number, carry_on()),
+            t.already_rated(number, 5, carry_on()),
         ] {
             limits::check(slice::from_ref(&message)).unwrap();
         }
@@ -9081,20 +9270,28 @@ mod tests {
 
     /// FR-ORD-10, FR-LINE-11: a full page of "คำสั่งซื้อของฉัน" and of "ออเดอร์ร้าน" fits, and
     /// an order in full, with the longest values their cards take: 20 lines, the longest names,
-    /// addresses and note, a location shared, and the largest IDs in their buttons.
+    /// addresses and note, a location shared, and the largest IDs in their buttons; or, once
+    /// completed and rated, the longest comment (FR-ORD-14). A page mixing both is no larger
+    /// than one of the larger kind.
     #[test]
     fn a_full_page_of_orders_fits() {
-        /// An order of 20 lines, each `name` by `unit`, with `contact` and `buttons`.
+        /// An order of 20 lines, each `name` by `unit`, with `contact` and `buttons`: on its
+        /// way, or completed if `rating`.
         fn order_card<'a>(
             name: &'a str,
             unit: &'a str,
             shop: Option<&'a str>,
             contact: OrderContact<'a>,
+            rating: Option<OrderRating<'a>>,
             buttons: Vec<Action>,
         ) -> OrderCard<'a> {
+            let status = match rating {
+                Some(_) => order::Status::Completed,
+                None => order::Status::Delivering,
+            };
             OrderCard {
                 number: "IM-20261022-9999",
-                status: order::Status::Delivering,
+                status,
                 placed_at: Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap(),
                 shop,
                 lines: (0..20)
@@ -9115,6 +9312,7 @@ mod tests {
                 payment_status: order::PaymentStatus::AwaitingConfirmation,
                 unpaid: true,
                 contact,
+                rating,
                 buttons,
             }
         }
@@ -9141,7 +9339,7 @@ mod tests {
                 button(&labels::ORDER_DETAILS, "order.view"),
             ];
             let contact = OrderContact::BuyerFull { contact, location };
-            order_card(&name, &unit, None, contact, buttons)
+            order_card(&name, &unit, None, contact, None, buttons)
         };
         let buyer_card = || {
             let contact = OrderContact::Shop {
@@ -9157,7 +9355,32 @@ mod tests {
                 button(&labels::MESSAGE_SHOP, "order.message_shop"),
                 button(&labels::ORDER_DETAILS, "order.view"),
             ];
-            order_card(&name, &unit, Some(&shop), contact, buttons)
+            order_card(&name, &unit, Some(&shop), contact, None, buttons)
+        };
+        // Completed, its contact no longer shown (FR-ORD-11), and rated
+        let rated = || {
+            Some(OrderRating {
+                stars: 5,
+                comment: Some(&note),
+            })
+        };
+        let rated_seller = || {
+            let buttons = vec![
+                button(&labels::MARK_PAID, "order.paid"),
+                button(&labels::ORDER_DETAILS, "order.view"),
+            ];
+            order_card(&name, &unit, None, OrderContact::None, rated(), buttons)
+        };
+        let rated_buyer = || {
+            let buttons = vec![button(&labels::ORDER_DETAILS, "order.view")];
+            order_card(
+                &name,
+                &unit,
+                Some(&shop),
+                OrderContact::None,
+                rated(),
+                buttons,
+            )
         };
         let more = Some(format!("shop_orders?filter=unpaid&page={max}"));
         let filters: Vec<Action> = [
@@ -9171,18 +9394,23 @@ mod tests {
         .into_iter()
         .map(|label| postback(label, "shop_orders?filter=unpaid".to_owned()))
         .collect();
-        let sellers: Vec<OrderCard<'_>> = (0..ORDERS_PER_PAGE).map(|_| seller()).collect();
-        let page = t.shop_orders(
-            &labels::FILTER_DONE,
-            &sellers,
-            more.clone(),
-            filters.clone(),
-        );
-        limits::check(&page).unwrap();
-        let buyers: Vec<OrderCard<'_>> = (0..ORDERS_PER_PAGE).map(|_| buyer_card()).collect();
-        let page = t.my_orders(&buyers, more, filters.clone());
-        limits::check(slice::from_ref(&page)).unwrap();
-        for card in [seller(), buyer_card()] {
+        let sellers: [Vec<OrderCard<'_>>; 2] = [
+            (0..ORDERS_PER_PAGE).map(|_| seller()).collect(),
+            (0..ORDERS_PER_PAGE).map(|_| rated_seller()).collect(),
+        ];
+        for sellers in &sellers {
+            let page = t.shop_orders(&labels::FILTER_DONE, sellers, more.clone(), filters.clone());
+            limits::check(&page).unwrap();
+        }
+        let buyers: [Vec<OrderCard<'_>>; 2] = [
+            (0..ORDERS_PER_PAGE).map(|_| buyer_card()).collect(),
+            (0..ORDERS_PER_PAGE).map(|_| rated_buyer()).collect(),
+        ];
+        for buyers in &buyers {
+            let page = t.my_orders(buyers, more.clone(), filters.clone());
+            limits::check(slice::from_ref(&page)).unwrap();
+        }
+        for card in [seller(), buyer_card(), rated_seller(), rated_buyer()] {
             let full = t.order_details(&card, filters.clone());
             limits::check(slice::from_ref(&full)).unwrap();
         }
@@ -9214,6 +9442,7 @@ mod tests {
             payment_status: order::PaymentStatus::Unpaid,
             unpaid: false,
             contact,
+            rating: None,
             buttons: Vec::new(),
         };
         let delivered = order::Fulfillment::Delivery;
@@ -9349,6 +9578,7 @@ mod tests {
                 payment_status: payment,
                 unpaid,
                 contact: OrderContact::None,
+                rating: None,
                 buttons: Vec::new(),
             };
             let details = t.order_details(&card, Vec::new());
@@ -9449,6 +9679,10 @@ mod tests {
                 opening_hours: Some(&hours),
                 minimum_order: Some(Money::from_baht(100_000)),
                 delivery_fee: Money::from_baht(1_000),
+                rating: Some(ShopRating {
+                    tenths: 50,
+                    count: 1_000_000,
+                }),
                 products: postback(&labels::VIEW_PRODUCTS, format!("browse.shop?shop={max}")),
                 ..shop_front()
             })

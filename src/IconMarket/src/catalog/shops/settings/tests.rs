@@ -21,8 +21,8 @@ use crate::line::testing::{self as fake, Fake};
 use crate::line::{Body, limits};
 use crate::notifications::templates::Templates;
 use crate::persistence::entity::image::{self, OwnerType};
-use crate::persistence::entity::{order, product, report, session, user};
-use crate::persistence::{orm, testing};
+use crate::persistence::entity::{order, product, rating, report, session, user};
+use crate::persistence::{orm, random_id, testing};
 use crate::thai::Money;
 use crate::users::access::Actor;
 
@@ -753,6 +753,40 @@ async fn the_shop_front_shows_what_buyers_see() {
     s.taps(s.seller, "open_close").await;
     let front = s.taps(s.seller, "shop.front").await;
     assert_eq!(card_texts(&front[1])[1], "ร้านปิด");
+}
+
+/// FR-SHOP-09, FR-ORD-14 acceptance: the card buyers see shows the shop's average rating only
+/// from its third, to one decimal, with how many there are.
+#[tokio::test]
+async fn the_shop_front_shows_its_average_from_the_third_rating() {
+    let s = setup().await;
+    let mut rated = 0;
+    let mut rate = async |stars: i16| {
+        rated += 1;
+        let number = format!("IM-20261025-{rated:04}");
+        let order = order::ActiveModel {
+            status: Set(order::Status::Completed),
+            ..testing::new_order(s.buyer, s.shop, &number, random_id())
+        };
+        let order = order.insert(&s.db).await.unwrap();
+        let rating = rating::ActiveModel {
+            order_id: Set(order.id),
+            stars: Set(stars),
+            comment: Set(None),
+            created_at: Set(t0()),
+            ..Default::default()
+        };
+        rating.insert(&s.db).await.unwrap();
+    };
+    rate(5).await;
+    rate(5).await;
+    let front = s.taps(s.seller, "shop.front").await;
+    assert!(!card_texts(&front[1]).contains(&"คะแนน".to_owned()));
+
+    rate(4).await;
+    let front = s.taps(s.seller, "shop.front").await;
+    let texts = card_texts(&front[1]);
+    assert_eq!(texts[texts.len() - 2..], ["คะแนน", "★ 4.7 (3 รีวิว)"]);
 }
 
 /// FR-SHOP-06, FR-PROD-09: a description changed to something suspicious holds the shop for

@@ -336,7 +336,7 @@ No other endpoints are exposed.
 | FR-SHOP-06 | The seller shall be able to edit shop details ("ตั้งค่าร้าน") at any time; an edited name or description is moderated (FR-PROD-09). | M |
 | FR-SHOP-07 | The seller may set an opening-hours text (e.g., *ทุกวัน 06:00–10:00*) shown on the shop card. | S |
 | FR-SHOP-08 | The seller chooses whether the shop phone is shown to buyers with an active order (default: shown). | S |
-| FR-SHOP-09 | A shop card shall show photo, name, description, open/closed, fulfillment options, delivery fee, minimum order, opening hours and rating (when FR-ORD-14 is enabled), with a "ดูสินค้า" button. | M |
+| FR-SHOP-09 | A shop card shall show photo, name, description, open/closed, fulfillment options, delivery fee, minimum order, opening hours and, once it has at least 3 ratings, its average rating (FR-ORD-14), with a "ดูสินค้า" button. | M |
 | FR-SHOP-10 | Shop statuses are `PENDING`, `APPROVED`, `REJECTED`, `HELD` (under review, FR-PROD-09), `SUSPENDED` and `CLOSED` (closed permanently by the owner or by account deletion). Only `APPROVED` shops can receive orders. A held shop is still run by its owner, but it and its products are hidden from buyers until an admin approves it again. A suspended shop's products are hidden and new orders are blocked; existing open orders continue unless an admin cancels them. | M |
 | FR-SHOP-11 | "ยอดขาย" shall show, for today, the last 7 days and the last 30 days: number of orders by status, value of completed orders, unpaid completed orders and the top 5 products. | S |
 
@@ -428,7 +428,7 @@ No other endpoints are exposed.
 | FR-ORD-11 | Contact data: for a `PENDING` order the seller sees the buyer's display name and zone; for an active order the seller also sees the phone (if given), full address/location and note, and the buyer sees the pickup location and the seller's phone (if allowed by FR-SHOP-08). Contact data is not shown for any other order. | M |
 | FR-ORD-12 | An admin may cancel any open order with a reason (dispute handling); both parties are notified. | S |
 | FR-ORD-13 | Relay messaging: during an active order, buyer and seller may send short texts to each other through the OA ("ส่งข้อความถึงร้าน" / "ส่งข้อความถึงลูกค้า", on the order's cards and notices while it is active), delivered by push and prefixed with the order number, with a button to answer back. One message per tap, at most 300 characters. Nothing is relayed for an order that is not active, or to a party who does not follow the OA; the sender is told instead. | C |
-| FR-ORD-14 | Ratings: after `COMPLETED`, the buyer may rate the order once, 1–5 stars with an optional comment (≤ 200 chars). A shop's average is shown once it has at least 3 ratings. | C |
+| FR-ORD-14 | Ratings: after `COMPLETED`, the buyer may rate the order once, 1–5 stars with an optional comment (≤ 200 chars). "ให้คะแนน" is on the buyer's completion notice and their cards of the order until it is rated; it offers the stars as Quick Replies (★★★★★ … ★), which are saved at once, then asks for the comment, with "ข้าม". A second rating of the same order is refused. The order's cards show its rating and comment to its buyer and its seller, and to an admin who finds it; nothing is pushed. A shop's average is shown once it has at least 3 ratings, to one decimal and with their count (*★ 4.7 (12 รีวิว)*). | C |
 
 ### 4.7 Payment (FR-PAY)
 

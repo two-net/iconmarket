@@ -1,6 +1,6 @@
 //! Cart & orders (SRS §2.1): cart, checkout, stock reservation and the order lifecycle.
-//! Built by #29, #32, #33, #34, #35, #41 and #44; [`periods`] counts the orders placed of late,
-//! for "สถิติ" and "ยอดขาย".
+//! Built by #29, #32, #33, #34, #35, #41, #44 and #45; [`periods`] counts the orders placed of
+//! late, for "สถิติ" and "ยอดขาย".
 
 pub mod actions;
 pub mod cart;
@@ -10,6 +10,7 @@ mod expiry;
 pub mod lifecycle;
 pub mod lists;
 pub mod periods;
+pub mod rating;
 pub mod relay;
 pub mod slip;
 
@@ -67,6 +68,11 @@ pub const SEND_SLIP: &str = "order.send_slip";
 /// active, which ask for the message to [relay](relay) to the other party (FR-ORD-13)
 pub const MESSAGE_SHOP: &str = "order.message_shop";
 pub const MESSAGE_BUYER: &str = "order.message_buyer";
+/// The buyer's "ให้คะแนน" once an order is completed, which asks how many stars, and each of
+/// those, which carries them as its `stars`, then asks what to tell the shop: the order's
+/// [rating](rating) (FR-ORD-14)
+pub const RATE: &str = "order.rate";
+pub const STARS: &str = "stars";
 
 /// "ดูรายละเอียด" on an order's card in "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน": the order in full,
 /// for its buyer, its seller or an admin (FR-ORD-10). [Lists](lists) show it, not

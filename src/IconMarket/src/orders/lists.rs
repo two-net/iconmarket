@@ -26,7 +26,7 @@ use sea_orm::{
 };
 
 use super::actions::{self, Parties};
-use super::{ORDER_ID, VIEW, cart, contact};
+use super::{ORDER_ID, VIEW, cart, contact, rating};
 use crate::dispatcher::Turn;
 use crate::dispatcher::menu::Item;
 use crate::dispatcher::postback::Postback;
@@ -35,7 +35,7 @@ use crate::notifications::templates::{ORDERS_PER_PAGE, OrderCard, labels};
 use crate::payments::UNPAID;
 use crate::persistence::entity::order::{self, PaymentStatus, Status};
 use crate::persistence::entity::order_event::ActorType;
-use crate::persistence::entity::{order_item, shop, user};
+use crate::persistence::entity::{order_item, rating as rated, shop, user};
 use crate::persistence::paging::{Page, cut, paged};
 use crate::thai::Label;
 use crate::users::access::{self, Denied, authorize};
@@ -185,7 +185,9 @@ pub async fn view(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, 
         .order_by_asc(order_item::Column::Id)
         .all(turn.db)
         .await?;
-    let card = card(&order, &items, &parties.shop, &parties.buyer, viewer);
+    let rated = rating::of_order(turn.db, id).await?;
+    let rated = rated.as_ref();
+    let card = card(&order, &items, &parties.shop, &parties.buyer, rated, viewer);
     let back = if viewer == ActorType::Seller {
         filtered(Filter::of(&order)).button(labels::SHOP_ORDERS.clone())
     } else {
@@ -362,7 +364,9 @@ async fn in_full(
         .order_by_asc(order_item::Column::Id)
         .all(turn.db)
         .await?;
-    let mut card = card(order, &items, &parties.shop, &parties.buyer, viewer);
+    let rated = rating::of_order(turn.db, order.id).await?;
+    let rated = rated.as_ref();
+    let mut card = card(order, &items, &parties.shop, &parties.buyer, rated, viewer);
     card.buttons.retain(|button| match button {
         Action::Postback { data, .. } => {
             Postback::parse(data).is_some_and(|postback| keep(postback.action()))
@@ -437,6 +441,8 @@ struct Parts {
     items: HashMap<i64, Vec<order_item::Model>>,
     shops: HashMap<i64, shop::Model>,
     buyers: HashMap<i64, user::Model>,
+    /// By order, of those rated
+    ratings: HashMap<i64, rated::Model>,
 }
 
 impl Parts {
@@ -463,6 +469,7 @@ impl Parts {
                 items: HashMap::new(),
                 shops: HashMap::new(),
                 buyers: HashMap::new(),
+                ratings: HashMap::new(),
             });
         }
         let mut items: HashMap<i64, Vec<order_item::Model>> = HashMap::new();
@@ -482,10 +489,12 @@ impl Parts {
             .filter(user::Column::Id.is_in(orders.iter().map(|order| order.buyer_id)))
             .all(db)
             .await?;
+        let ratings = rating::of_orders(db, orders.iter().map(|order| order.id)).await?;
         Ok(Self {
             items,
             shops: shops.into_iter().map(|shop| (shop.id, shop)).collect(),
             buyers: buyers.into_iter().map(|user| (user.id, user)).collect(),
+            ratings,
         })
     }
 
@@ -510,7 +519,8 @@ impl Parts {
                     .get(&order.buyer_id)
                     .ok_or_else(|| missing("buyer"))?;
                 let items = self.items.get(&order.id).map_or(&[][..], Vec::as_slice);
-                let mut card = card(order, items, shop, buyer, viewer);
+                let rated = self.ratings.get(&order.id);
+                let mut card = card(order, items, shop, buyer, rated, viewer);
                 let details = Postback::new(VIEW).with_int(ORDER_ID, order.id);
                 card.buttons
                     .push(details.button(labels::ORDER_DETAILS.clone()));
@@ -521,14 +531,21 @@ impl Parts {
 }
 
 /// The card of `order`, with `items`, at `shop` by `buyer`, as `viewer` sees it: what FR-ORD-11
-/// lets them see of how to reach the other party, and the buttons of what they can do now.
+/// lets them see of how to reach the other party, its rating once `rated` (FR-ORD-14), and the
+/// buttons of what they can do now, which no longer offer to rate it then.
 fn card<'a>(
     order: &'a order::Model,
     items: &'a [order_item::Model],
     shop: &'a shop::Model,
     buyer: &'a user::Model,
+    rated: Option<&'a rated::Model>,
     viewer: ActorType,
 ) -> OrderCard<'a> {
+    let mut buttons = actions::buttons(order, viewer);
+    if rated.is_some() {
+        let rate = rating::button(order);
+        buttons.retain(|button| *button != rate);
+    }
     OrderCard {
         number: &order.order_number,
         status: order.status,
@@ -543,6 +560,7 @@ fn card<'a>(
         payment_status: order.payment_status,
         unpaid: viewer == ActorType::Seller && unpaid(order),
         contact: contact::shown(order, shop, buyer, viewer),
-        buttons: actions::buttons(order, viewer),
+        rating: rated.map(rating::shown),
+        buttons,
     }
 }

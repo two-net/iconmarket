@@ -51,6 +51,7 @@ use crate::orders::actions::{self, ReasonFlow};
 use crate::orders::cart::{self, QuantityFlow};
 use crate::orders::checkout::{self, CheckoutFlow};
 use crate::orders::lists;
+use crate::orders::rating::{self, RatingFlow};
 use crate::orders::relay::{self, RelayFlow};
 use crate::orders::slip::{self, SlipFlow};
 use crate::persistence::entity::webhook_event;
@@ -517,7 +518,8 @@ fn step_name(step: &Step) -> &'static str {
 /// settings (#24), adding products (#25), changing them (#26), searching (#28), the quantity
 /// for the cart (#29), the reasons of the review queue and finding and suspending users (#31),
 /// checkout (#32), the reasons for rejecting or cancelling an order (#33), sending a payment
-/// slip (#41) and the messages relayed on an order (#44).
+/// slip (#41), the messages relayed on an order (#44) and what its buyer tells the shop on
+/// rating it (#45).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -604,6 +606,10 @@ async fn answer_flow(
         },
         RelayFlow::NAME => match stored.read::<RelayFlow>() {
             Some(session) => Some(relay::answer(turn, session, input).await),
+            None => None,
+        },
+        RatingFlow::NAME => match stored.read::<RatingFlow>() {
+            Some(session) => Some(rating::answer(turn, session, input).await),
             None => None,
         },
         _ => None,

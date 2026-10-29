@@ -339,7 +339,8 @@ async fn front(turn: &Turn<'_>, config: &Config, id: i64) -> Result<Vec<Message>
     let photo = images::first(turn.db, Owner::Shop(shop.id))
         .await?
         .map(|id| images::product_image_url(&config.app.base_url, id));
-    let front = shops::front(&shop, photo.as_ref());
+    let rating = orders::rating::of_shops(turn.db, &[shop.id]).await?;
+    let front = shops::front(&shop, photo.as_ref(), rating.get(&shop.id).copied());
     Ok(vec![
         turn.templates
             .shop_front(&front)
@@ -387,6 +388,7 @@ async fn shop_list(
 ) -> Result<Message, DbErr> {
     let ids: Vec<i64> = shops.iter().map(|shop| shop.id).collect();
     let photos = images::of_shops(turn.db, &ids).await?;
+    let ratings = orders::rating::of_shops(turn.db, &ids).await?;
     let base = &config.app.base_url;
     let urls: Vec<Option<Url>> = shops
         .iter()
@@ -398,7 +400,7 @@ async fn shop_list(
     let fronts: Vec<ShopFront<'_>> = shops
         .iter()
         .zip(&urls)
-        .map(|(shop, photo)| shops::front(shop, photo.as_ref()))
+        .map(|(shop, photo)| shops::front(shop, photo.as_ref(), ratings.get(&shop.id).copied()))
         .collect();
     let templates = turn.templates;
     Ok(templates.shop_list(browsed, &fronts, more, carry_on()))

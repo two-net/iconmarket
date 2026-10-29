@@ -1381,12 +1381,13 @@ async fn the_seller_answers_whether_they_got_the_money() {
     );
     assert_eq!(buttons_of(&paid[0]), []);
     assert_eq!(s.get(id).await.payment_status, PaymentStatus::Paid);
+    // The order is completed, so the buyer may rate it (FR-ORD-14)
     let told = s.templates.payment_recorded_notice(
         &s.shop.name,
         &order.order_number,
         PaymentStatus::Paid,
         false,
-        Vec::new(),
+        vec![rating::button(&order)],
     );
     assert_eq!(
         lines(&told),

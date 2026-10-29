@@ -27,7 +27,8 @@ use crate::line::{Action, Body, limits};
 use crate::notifications::templates::Templates;
 use crate::orders::cart;
 use crate::persistence::entity::{
-    ai_message, cart_item, counter, order, order_item, pending_action, product, session, shop, user,
+    ai_message, cart_item, counter, order, order_item, pending_action, product, rating, session,
+    shop, user,
 };
 use crate::persistence::testing::{self, Market};
 use crate::persistence::{orm, random_id};
@@ -634,6 +635,54 @@ async fn nothing_personal_goes_to_the_ai() {
     assert_eq!(told[0]["name"], "ร้านป้าแดง");
     assert_eq!(told[3]["shops"][0]["lines"][0]["quantity"], 2);
     assert_eq!(told[4]["orders"][0]["orderNo"], "IM-20261022-0001");
+}
+
+/// FR-ORD-14, FR-SHOP-09: the model is told a shop's average rating as its card shows it, from
+/// its third rating, and that it has none to show before.
+#[tokio::test]
+async fn the_model_is_told_a_shops_rating_as_its_card_shows_it() {
+    let s = setup().await;
+    let shop_id = s.market.shop.id;
+    let reads = || {
+        Says::Tools(vec![
+            ("get_shop", json!({ "shopId": shop_id.to_string() })),
+            ("search_shops", json!({})),
+        ])
+    };
+    for (n, stars) in [(1, 5), (2, 5), (3, 4)] {
+        let (_, sent) = s
+            .asks(s.buyer(), "ร้านป้าแดงดีไหม", [reads(), Says::Text("ค่ะ")])
+            .await;
+        let told = told(&sent[1]);
+        assert_eq!(told[0]["rating"], Value::Null, "{n}");
+        assert_eq!(told[1]["found"][0]["rating"], Value::Null, "{n}");
+
+        let order = order::ActiveModel {
+            status: Set(order::Status::Completed),
+            ..testing::new_order(
+                s.buyer(),
+                shop_id,
+                &format!("IM-20261022-{n:04}"),
+                random_id(),
+            )
+        };
+        let order = order.insert(&s.db).await.unwrap();
+        let rated = rating::ActiveModel {
+            order_id: Set(order.id),
+            stars: Set(stars),
+            comment: Set(None),
+            created_at: Set(now()),
+            ..Default::default()
+        };
+        rated.insert(&s.db).await.unwrap();
+    }
+    let (_, sent) = s
+        .asks(s.buyer(), "ร้านป้าแดงดีไหม", [reads(), Says::Text("ค่ะ")])
+        .await;
+    let told = told(&sent[1]);
+    let rating = json!({ "average": "4.7", "count": 3 });
+    assert_eq!(told[0]["rating"], rating);
+    assert_eq!(told[1]["found"][0]["rating"], rating);
 }
 
 /// FR-AI-06: what the user wrote, and what tools return of what users wrote, reach the model

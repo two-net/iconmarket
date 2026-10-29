@@ -40,6 +40,7 @@ use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{self, Action, Message};
 use crate::notifications::templates::labels;
+use crate::orders::rating;
 use crate::persistence::entity::shop;
 use crate::users::access::{self, Denied, authorize};
 
@@ -127,7 +128,8 @@ pub async fn tapped(
         (PHONE, _, Some(show @ (0 | 1))) => set_phone_shown(turn, config, shop, show == 1).await,
         (FRONT, ..) => {
             let photo = photo_url(config, images::first(turn.db, Owner::Shop(shop.id)).await?);
-            let front = front(shop, photo.as_ref());
+            let rating = rating::of_shops(turn.db, &[shop.id]).await?;
+            let front = front(shop, photo.as_ref(), rating.get(&shop.id).copied());
             let settings = Item::ShopSettings
                 .postback()
                 .button(labels::SHOP_SETTINGS.clone());

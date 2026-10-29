@@ -183,11 +183,13 @@ async fn every_answer_fits_and_keeps_the_voice() {
                     for has_shop in [false, true] {
                         for topic in Topic::for_roles(roles) {
                             let article = read(&config, roles, topic);
+                            // คะแนน, the stars of "ให้คะแนน" (FR-ORD-14), is no particle
+                            let voice = article.replace("คะแนน", "");
                             match particle {
                                 PoliteParticle::Khrap => {
                                     assert!(article.contains("ครับ"), "{topic:?}: {article}");
                                     assert!(
-                                        !article.contains("ค่ะ") && !article.contains("คะ"),
+                                        !voice.contains("ค่ะ") && !voice.contains("คะ"),
                                         "{topic:?}: {article}"
                                     );
                                 }

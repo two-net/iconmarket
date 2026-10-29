@@ -23,7 +23,7 @@ use crate::dispatcher::{Finished, Input};
 use crate::line::flex::{Bubble, Component, FlexContainer, Hero};
 use crate::line::{Body, limits};
 use crate::notifications::templates::{PRODUCTS_PER_PAGE, Templates};
-use crate::persistence::entity::{image, session, user};
+use crate::persistence::entity::{image, order, rating, session, user};
 use crate::persistence::{orm, random_id, testing};
 use crate::thai::Money;
 use crate::users::access::Actor;
@@ -959,6 +959,65 @@ async fn every_shop_is_listed_open_ones_first() {
         ]
     );
     assert_eq!(quick_replies(&shops), ["ซื้อของ", "ค้นหา", "เมนู"]);
+}
+
+/// FR-SHOP-09, FR-ORD-14: in "ร้านค้าทั้งหมด", and on "ดูร้าน", a shop's card shows its average
+/// rating once it has three; a shop with fewer shows none.
+#[tokio::test]
+async fn a_shops_card_shows_its_average_once_rated_three_times() {
+    let s = setup().await;
+    let coffee = s.shop("ร้านกาแฟ", shop::Status::Approved, true).await;
+    let rated = [
+        (s.shop, 5),
+        (s.shop, 4),
+        (s.shop, 4),
+        (coffee, 3),
+        (coffee, 3),
+    ];
+    for (n, (shop, stars)) in rated.into_iter().enumerate() {
+        let number = format!("IM-20261025-{:04}", n + 1);
+        let order = order::ActiveModel {
+            status: Set(order::Status::Completed),
+            ..testing::new_order(s.buyer, shop, &number, random_id())
+        };
+        let order = order.insert(&s.db).await.unwrap();
+        let rated = rating::ActiveModel {
+            order_id: Set(order.id),
+            stars: Set(stars),
+            comment: Set(None),
+            created_at: Set(now()),
+            ..Default::default()
+        };
+        rated.insert(&s.db).await.unwrap();
+    }
+    let rating = |card: &Bubble| {
+        let texts = texts(card);
+        let at = texts.iter().position(|text| text == "คะแนน")?;
+        Some(texts[at + 1].clone())
+    };
+    let shops = s.tap("browse.shops").await;
+    let (cards, _) = page(&shops);
+    let shown: Vec<_> = cards
+        .iter()
+        .map(|card| (texts(card)[0].clone(), rating(card)))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("ร้านกาแฟ".to_owned(), None),
+            ("ร้านป้าแดง".to_owned(), Some("★ 4.3 (3 รีวิว)".to_owned())),
+        ]
+    );
+
+    let front = s.tap(&format!("browse.front?shop={}", s.shop)).await;
+    let card = match &front.body {
+        Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } => card,
+        body => panic!("not a card: {body:?}"),
+    };
+    assert_eq!(rating(card).as_deref(), Some("★ 4.3 (3 รีวิว)"));
 }
 
 /// FR-SRCH-04, FR-SRCH-03: "ค้นหา" asks for a keyword, and a search longer than a page keeps it

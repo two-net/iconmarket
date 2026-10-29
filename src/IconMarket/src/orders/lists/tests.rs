@@ -468,8 +468,9 @@ async fn the_buyer_sees_open_orders_first_then_history() {
     );
     assert_eq!(row(card, "รวม").as_deref(), Some("฿220"));
     assert_eq!(row(card, "รับของ").as_deref(), Some("รับเองที่ร้าน"));
+    // Completed, yet to be rated (FR-ORD-14)
     let over = card_of(list, &completed.order_number);
-    assert_eq!(labels_of(over), ["ดูรายละเอียด"]);
+    assert_eq!(labels_of(over), ["ให้คะแนน", "ดูรายละเอียด"]);
     assert_eq!(
         quick_replies(list),
         [("เลือกซื้อต่อ", "buy".to_owned()), ("เมนู", "เมนู".to_owned())]

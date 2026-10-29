@@ -41,8 +41,8 @@ use url::Url;
 use super::lifecycle::{self, By, Moved};
 use super::{
     ACCEPT, ADMIN_CANCEL, CANCEL_ORDER, COMPLETE, DELIVERING, GRANT_CANCEL, KEEP, MARK_PAID,
-    MARK_REFUNDED, MESSAGE_BUYER, MESSAGE_SHOP, NOT_PAID, ORDER_ID, READY, RECEIVED, REJECT,
-    REQUEST_CANCEL, SELLER_CANCEL, SEND_SLIP, SLIP_ID, cart, contact, relay, slip,
+    MARK_REFUNDED, MESSAGE_BUYER, MESSAGE_SHOP, NOT_PAID, ORDER_ID, RATE, READY, RECEIVED, REJECT,
+    REQUEST_CANCEL, SELLER_CANCEL, SEND_SLIP, SLIP_ID, STARS, cart, contact, rating, relay, slip,
 };
 use crate::admin::audit::{self, Entry, Target};
 use crate::admin::reason::{REASON_CHARS, Refused, reason};
@@ -173,6 +173,7 @@ pub async fn tapped(
         SEND_SLIP => slip::start(turn, id).await,
         MESSAGE_SHOP => relay::start(turn, id, relay::Side::Buyer).await,
         MESSAGE_BUYER => relay::start(turn, id, relay::Side::Seller).await,
+        RATE => rating::tapped(turn, id, postback.int(STARS)).await,
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }
@@ -276,6 +277,7 @@ pub async fn found(
     order: &order::Model,
 ) -> Result<Message, DbErr> {
     let parties = Parties::of(db, order).await?;
+    let rated = rating::of_order(db, order.id).await?;
     let found = FoundOrder {
         number: &order.order_number,
         status: order.status,
@@ -285,6 +287,7 @@ pub async fn found(
         payment: order.payment_method,
         payment_status: order.payment_status,
         placed_at: order.created_at,
+        rating: rated.as_ref().map(rating::shown),
     };
     Ok(templates.order_found(&found, buttons(order, ActorType::Admin)))
 }
@@ -295,7 +298,8 @@ pub async fn found(
 /// "ยกเลิกออเดอร์", or, while the buyer asks to cancel, the answers to that, and
 /// "ส่งข้อความถึงลูกค้า" while it is active (FR-ORD-13); the buyer "ยกเลิกออเดอร์" until it is
 /// accepted, then "ส่งสลิป" while it awaits their transfer (FR-PAY-05), "ได้รับของแล้ว" once it is
-/// ready or on its way, "ขอยกเลิก", and "ส่งข้อความถึงร้าน" while it is active; an admin the
+/// ready or on its way, "ขอยกเลิก", "ส่งข้อความถึงร้าน" while it is active, and "ให้คะแนน" once
+/// it is completed (FR-ORD-14), which a card of the order drops once it is rated; an admin the
 /// payments, and "ยกเลิกออเดอร์" while it is open.
 pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
     let can = |to| lifecycle::allowed(order.status, to, viewer, order.fulfillment);
@@ -356,6 +360,9 @@ pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
             }
             if order.status.is_active() {
                 buttons.push(relay::button(order, relay::Side::Buyer));
+            }
+            if order.status == Status::Completed {
+                buttons.push(rating::button(order));
             }
         }
         ActorType::Admin => {

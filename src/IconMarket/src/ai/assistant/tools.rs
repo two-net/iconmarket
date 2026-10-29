@@ -33,12 +33,13 @@ use crate::config::Config;
 use crate::dispatcher::Turn;
 use crate::dispatcher::flow;
 use crate::line::Message;
-use crate::notifications::templates::Browsed;
+use crate::notifications::templates::{Browsed, ShopRating};
 use crate::orders;
 use crate::orders::cart::{self, AddToCart, Declined, NoRoom};
 use crate::orders::checkout;
 use crate::orders::lists::{self, ListedOrder};
 use crate::orders::periods::Orders;
+use crate::orders::rating;
 use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{category, order, product, shop};
 use crate::thai::{self, Money};
@@ -285,8 +286,8 @@ fn tool(name: Name, categories: &[category::Model], topics: &[&str]) -> Tool {
             Schema::object().optional("keywords", Schema::string().max_length(KEYWORD_CHARS)),
         ),
         Name::GetShop => (
-            "Read a shop's details: whether it is open, its hours, pickup and delivery. The user \
-             sees its card.",
+            "Read a shop's details: whether it is open, its hours, pickup and delivery, and its \
+             buyers' average rating once it has a few. The user sees its card.",
             Schema::object().property("shopId", id("shop")),
         ),
         Name::ListCategories => (
@@ -512,7 +513,13 @@ async fn search_shops(turn: &Turn<'_>, args: &Value, shown: &mut Shown) -> Resul
         Some(keywords) => listing::find_shops(turn.db, keywords, 0).await?,
         None => listing::shops(turn.db, 0).await?,
     };
-    let shops: Vec<Value> = found.items.iter().map(shop_json).collect();
+    let ids: Vec<i64> = found.items.iter().map(|shop| shop.id).collect();
+    let ratings = rating::of_shops(turn.db, &ids).await?;
+    let shops: Vec<Value> = found
+        .items
+        .iter()
+        .map(|shop| shop_json(shop, ratings.get(&shop.id)))
+        .collect();
     for shop in found.items {
         shown.shop(shop);
     }
@@ -526,7 +533,8 @@ async fn get_shop(turn: &Turn<'_>, args: &Value, shown: &mut Shown) -> Result<Va
     let Some(shop) = listing::shop(turn.db, id).await? else {
         return Ok(failed("not_found"));
     };
-    let told = shop_json(&shop);
+    let ratings = rating::of_shops(turn.db, &[shop.id]).await?;
+    let told = shop_json(&shop, ratings.get(&shop.id));
     shown.shop(shop);
     Ok(told)
 }
@@ -873,9 +881,9 @@ fn ready(told: &mut Value, ready_on: Option<NaiveDate>) {
     }
 }
 
-/// `shop`, as buyers see it on its card, without its phone, PromptPay ID or pickup address
-/// (FR-AI-08).
-fn shop_json(shop: &shop::Model) -> Value {
+/// `shop`, as buyers see it on its card, with its average `rating` once it has one to show
+/// (FR-ORD-14), without its phone, PromptPay ID or pickup address (FR-AI-08).
+fn shop_json(shop: &shop::Model, rating: Option<&ShopRating>) -> Value {
     json!({
         "id": shop.id.to_string(),
         "name": shop.name,
@@ -886,6 +894,7 @@ fn shop_json(shop: &shop::Model) -> Value {
         "delivery": shop.offers_delivery,
         "deliveryFee": shop.offers_delivery.then(|| shop.delivery_fee.to_string()),
         "minimumOrder": shop.minimum_order.map(|minimum| minimum.to_string()),
+        "rating": rating.map(|rating| json!({ "average": rating.average(), "count": rating.count })),
     })
 }
 
