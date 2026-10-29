@@ -128,6 +128,12 @@ pub async fn tapped(
     start(turn, config, &turn.actor.user, shop_id, None).await
 }
 
+/// Checks out shop `shop_id` from the first step, as "สั่งซื้อร้านนี้" does: the AI assistant's
+/// `propose_checkout` (FR-AI-03), which places nothing before "ยืนยันสั่งซื้อ".
+pub async fn begin(turn: &Turn<'_>, config: &Config, shop_id: i64) -> Result<Vec<Message>, DbErr> {
+    start(turn, config, &turn.actor.user, shop_id, None).await
+}
+
 /// Goes on with checking out shop `shop_id` once `user`, as just saved, has an address
 /// (FR-ONB-04): from the first step, or, if they changed the address to `deliver` to, from the
 /// payment method.

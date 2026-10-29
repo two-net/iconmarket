@@ -126,14 +126,94 @@ pub(super) async fn drafted(
     flow::answered(turn, Answer::Next(session, ask)).await
 }
 
+/// What [`typed`] made of a seller's message.
+#[derive(Debug)]
+pub enum Typed {
+    /// A new product or a change to one: the reply
+    Listing(Vec<Message>),
+    /// Something else, as the AI read it, so routing goes on; the call counted against their
+    /// daily limit (FR-AI-09)
+    Other,
+    /// Not read, as they can't manage a shop now, so routing goes on
+    Unread,
+}
+
+impl Typed {
+    /// The reply, if it was about listing.
+    #[cfg(test)]
+    pub fn reply(self) -> Option<Vec<Message>> {
+        match self {
+            Self::Listing(messages) => Some(messages),
+            Self::Other | Self::Unread => None,
+        }
+    }
+}
+
 /// A seller's `text` that no flow or keyword took (FR-UI-12 step 5): a new product, drafted from
-/// it, or a change to the price or stock of one of the shop's, to confirm. `None` for anything
-/// else, or for someone who can't manage a shop, so routing goes on; they aren't asked about.
+/// it, or a change to the price or stock of one of the shop's, to confirm. Anything else is left
+/// to routing, and so is the text of someone who can't manage a shop; they aren't asked about.
 pub async fn typed(
     turn: &Turn<'_>,
     config: &Config,
     ai: &ai::Gateway,
     text: &str,
+) -> Result<Typed, DbErr> {
+    if authorize(turn.db, &turn.actor, access::Action::ManageShop)
+        .await?
+        .is_err()
+    {
+        return Ok(Typed::Unread);
+    }
+    let Some(shop) = &turn.actor.shop else {
+        return Ok(Typed::Unread);
+    };
+    let categories = categories::active(turn.db).await?;
+    let products = changeable(turn, shop.id).await?;
+    let message = message(text, &categories, Some(&products), Vec::new());
+    let answer = match interpret(turn, ai, &categories, Some(&products), message).await {
+        Ok(answer) => answer,
+        Err(unavailable) => return Ok(Typed::Listing(vec![unavailable.message(turn.templates)])),
+    };
+    let intent = answer["intent"].as_str().unwrap_or(OTHER);
+    debug!(intent, "a seller's message read");
+    match intent {
+        NEW_PRODUCT => new_product(turn, config, &categories, &answer)
+            .await
+            .map(Typed::Listing),
+        UPDATE => update(turn, config, &products, &answer)
+            .await
+            .map(Typed::Listing),
+        _ => Ok(Typed::Other),
+    }
+}
+
+/// The AI assistant's `propose_create_product` (FR-AI-03): a new product drafted from `draft`,
+/// the parts [`draft_schema`] asks for, as [`typed`] drafts one, in a flow of its own, to
+/// preview and confirm. `None` for someone who can't manage a shop.
+pub async fn propose_new(
+    turn: &Turn<'_>,
+    config: &Config,
+    draft: &Value,
+) -> Result<Option<Vec<Message>>, DbErr> {
+    if authorize(turn.db, &turn.actor, access::Action::ManageShop)
+        .await?
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let categories = categories::active(turn.db).await?;
+    new_product(turn, config, &categories, draft)
+        .await
+        .map(Some)
+}
+
+/// The AI assistant's `propose_update_product` (FR-AI-03): the change `update` asks for, of the
+/// `price` or `stock` of the shop's `product`, by its ID, to confirm as [`typed`] asks it.
+/// `None` for someone who can't manage a shop.
+pub async fn propose_update(
+    turn: &Turn<'_>,
+    config: &Config,
+    update: &Value,
 ) -> Result<Option<Vec<Message>>, DbErr> {
     if authorize(turn.db, &turn.actor, access::Action::ManageShop)
         .await?
@@ -144,10 +224,23 @@ pub async fn typed(
     let Some(shop) = &turn.actor.shop else {
         return Ok(None);
     };
-    let categories = categories::active(turn.db).await?;
-    // Those "สินค้าของฉัน" can change
-    let products = product::Entity::find()
-        .filter(product::Column::ShopId.eq(shop.id))
+    let products = changeable(turn, shop.id).await?;
+    self::update(turn, config, &products, update)
+        .await
+        .map(Some)
+}
+
+/// What the AI assistant's `propose_create_product` takes: each part of the product, or null,
+/// as the seller wrote it; a category is one of `categories`, the active ones (FR-AI-12).
+pub fn draft_schema(categories: &[category::Model]) -> Schema {
+    schema(categories, None)
+}
+
+/// The products of shop `shop_id` that "สินค้าของฉัน" can change, those changed last first, as
+/// many as the AI chooses from.
+async fn changeable(turn: &Turn<'_>, shop_id: i64) -> Result<Vec<product::Model>, DbErr> {
+    product::Entity::find()
+        .filter(product::Column::ShopId.eq(shop_id))
         .filter(product::Column::Status.is_in([
             product::Status::Active,
             product::Status::Hidden,
@@ -157,21 +250,7 @@ pub async fn typed(
         .order_by_desc(product::Column::Id)
         .limit(PRODUCTS_FOR_AI)
         .all(turn.db)
-        .await?;
-    let message = message(text, &categories, Some(&products), Vec::new());
-    let answer = match interpret(turn, ai, &categories, Some(&products), message).await {
-        Ok(answer) => answer,
-        Err(unavailable) => return Ok(Some(vec![unavailable.message(turn.templates)])),
-    };
-    let intent = answer["intent"].as_str().unwrap_or(OTHER);
-    debug!(intent, "a seller's message read");
-    match intent {
-        NEW_PRODUCT => new_product(turn, config, &categories, &answer)
-            .await
-            .map(Some),
-        UPDATE => update(turn, config, &products, &answer).await.map(Some),
-        _ => Ok(None),
-    }
+        .await
 }
 
 /// A new product, drafted from `answer`, in a flow of its own; none can be listed while no

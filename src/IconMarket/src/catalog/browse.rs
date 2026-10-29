@@ -206,13 +206,45 @@ async fn products(
     listed: &[Listed],
     more: Option<Postback>,
 ) -> Result<Message, DbErr> {
-    let ids: Vec<i64> = listed.iter().map(|(product, _)| product.id).collect();
+    let offered: Vec<_> = listed
+        .iter()
+        .map(|(product, shop)| (product, shop, None))
+        .collect();
+    list(turn, config, browsed, &offered, more).await
+}
+
+/// The products the AI assistant found or proposed (FR-AI-02), as a list like any other: a
+/// card for each of `offered`, whose "ใส่ตะกร้า" is the button of the proposal made for it, if
+/// one was (FR-AI-03). What a card shows is the database's (FR-AI-04).
+pub async fn found(
+    turn: &Turn<'_>,
+    config: &Config,
+    offered: &[(product::Model, shop::Model, Option<Action>)],
+) -> Result<Message, DbErr> {
+    let offered: Vec<_> = offered
+        .iter()
+        .map(|(product, shop, proposal)| (product, shop, proposal.clone()))
+        .collect();
+    list(turn, config, Browsed::Found, &offered, None).await
+}
+
+/// A page of a product list of what was `browsed`: a card for each of `offered`, with its
+/// button putting it in the cart, if given, in place of "ใส่ตะกร้า", and "ดูเพิ่มเติม" sending
+/// `more` if more follow.
+async fn list(
+    turn: &Turn<'_>,
+    config: &Config,
+    browsed: Browsed<'_>,
+    offered: &[(&product::Model, &shop::Model, Option<Action>)],
+    more: Option<Postback>,
+) -> Result<Message, DbErr> {
+    let ids: Vec<i64> = offered.iter().map(|(product, ..)| product.id).collect();
     let photos = images::of_products(turn.db, &ids).await?;
     let base = &config.app.base_url;
     let placeholder = images::placeholder_url(base);
-    let urls: Vec<Url> = listed
+    let urls: Vec<Url> = offered
         .iter()
-        .map(|(product, _)| {
+        .map(|(product, ..)| {
             let first = photos.get(&product.id).and_then(|photos| photos.first());
             first.map_or_else(
                 || placeholder.clone(),
@@ -220,10 +252,16 @@ async fn products(
             )
         })
         .collect();
-    let cards: Vec<ProductCard<'_>> = listed
+    let cards: Vec<ProductCard<'_>> = offered
         .iter()
         .zip(&urls)
-        .map(|((product, shop), photo)| card(product, shop, photo))
+        .map(|((product, shop, proposal), photo)| {
+            let mut card = card(product, shop, photo);
+            if proposal.is_some() {
+                card.add_to_cart.clone_from(proposal);
+            }
+            card
+        })
         .collect();
     let more = more.map(|more| more.to_string());
     Ok(turn
@@ -312,33 +350,54 @@ async fn all_shops(turn: &Turn<'_>, config: &Config, page: usize) -> Result<Vec<
             turn.templates.nothing_found(Browsed::Shops, suggestions),
         ]);
     }
-    let ids: Vec<i64> = found.items.iter().map(|shop| shop.id).collect();
+    let more = found.next.map(|next| {
+        let next = i64::try_from(next).expect("a few pages");
+        Postback::new(SHOPS).with_int(PAGE, next).to_string()
+    });
+    let list = shop_list(turn, config, Browsed::Shops, &found.items, more).await?;
+    Ok(vec![list])
+}
+
+/// The shops the AI assistant found (FR-AI-02), as "ร้านค้าทั้งหมด" shows them.
+pub async fn found_shops(
+    turn: &Turn<'_>,
+    config: &Config,
+    shops: &[shop::Model],
+) -> Result<Message, DbErr> {
+    shop_list(turn, config, Browsed::Found, shops, None).await
+}
+
+/// A list of `shops` that buyers see, of what was `browsed`: a card for each, and
+/// "ดูเพิ่มเติม" sending `more` if more follow.
+async fn shop_list(
+    turn: &Turn<'_>,
+    config: &Config,
+    browsed: Browsed<'_>,
+    shops: &[shop::Model],
+    more: Option<String>,
+) -> Result<Message, DbErr> {
+    let ids: Vec<i64> = shops.iter().map(|shop| shop.id).collect();
     let photos = images::of_shops(turn.db, &ids).await?;
     let base = &config.app.base_url;
-    let urls: Vec<Option<Url>> = found
-        .items
+    let urls: Vec<Option<Url>> = shops
         .iter()
         .map(|shop| {
             let first = photos.get(&shop.id).and_then(|photos| photos.first());
             first.map(|&id| images::product_image_url(base, id))
         })
         .collect();
-    let fronts: Vec<ShopFront<'_>> = found
-        .items
+    let fronts: Vec<ShopFront<'_>> = shops
         .iter()
         .zip(&urls)
         .map(|(shop, photo)| shops::front(shop, photo.as_ref()))
         .collect();
-    let more = found.next.map(|next| {
-        let next = i64::try_from(next).expect("a few pages");
-        Postback::new(SHOPS).with_int(PAGE, next).to_string()
-    });
-    Ok(vec![turn.templates.shop_list(&fronts, more, carry_on())])
+    let templates = turn.templates;
+    Ok(templates.shop_list(browsed, &fronts, more, carry_on()))
 }
 
 /// Where else to look when what was `browsed` has nothing (FR-SRCH-08): another search, the
 /// other lists of "ซื้อของ" and the active categories, as many as fit, then the menu.
-async fn suggestions(turn: &Turn<'_>, browsed: Browsed<'_>) -> Result<Vec<Action>, DbErr> {
+pub async fn suggestions(turn: &Turn<'_>, browsed: Browsed<'_>) -> Result<Vec<Action>, DbErr> {
     let mut suggestions = vec![Item::Search.postback().button(labels::SEARCH_AGAIN.clone())];
     if browsed != Browsed::NewToday {
         suggestions.push(new_today());
@@ -373,7 +432,7 @@ fn menu_button() -> Action {
 }
 
 /// A category's Quick Reply, which lists its products.
-fn category_button(category: &category::Model) -> Action {
+pub fn category_button(category: &category::Model) -> Action {
     let browse = Postback::new(CATEGORY).with_int(CATEGORY_ID, category.id);
     browse.button(Label::fit(category.name.as_str()))
 }

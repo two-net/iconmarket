@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::{
-    Photo, ShopFlow, Step, Taken, after, card, choices, details, front, keep_photo, offered,
-    photo_lost, photo_url, prompt, subject, take_input, why,
+    Photo, ShopFlow, Step, Taken, after, card, details, front, keep_photo, offered, photo_lost,
+    photo_url, prompt, refused_answer, subject, take_input,
 };
 use crate::ai;
 use crate::catalog::images::{self, Owner};
@@ -39,7 +39,7 @@ use crate::dispatcher::menu::Item;
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{self, Action, Message};
-use crate::notifications::templates::{labels, with_choices};
+use crate::notifications::templates::labels;
 use crate::persistence::entity::shop;
 use crate::users::access::{self, Denied, authorize};
 
@@ -290,11 +290,7 @@ pub async fn answer(
             }
         }
         Err(refused) => {
-            // Why, with the step's choices; or, for nothing at all, the step's question again
-            let again = match why(turn, &draft, step, refused) {
-                Some(why) => with_choices(vec![why], choices(user, &draft, step)),
-                None => prompt(turn, config, user, &draft, step),
-            };
+            let again = refused_answer(turn, config, ai, &draft, step, input, refused).await;
             flow::answered(turn, Answer::<SettingsFlow>::Again(again)).await?
         }
     };

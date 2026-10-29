@@ -430,6 +430,102 @@ async fn a_search_finds_what_contains_the_keyword() {
     assert_eq!(s.found("\\").await, Vec::<String>::new());
 }
 
+/// FR-SRCH-05: the AI assistant's search finds what matches any of its keywords, each as a
+/// typed one would, within a category, up to a price and from shops that deliver; what it
+/// adds reads as nothing from a search kept before it could.
+#[tokio::test]
+async fn an_assistants_search_takes_other_words_and_filters() {
+    let s = setup().await;
+    let pickup_only = shop::ActiveModel {
+        name: Set("ร้านลุงชม".to_owned()),
+        offers_delivery: Set(false),
+        ..testing::new_shop(testing::new_user("U-uncle").insert(&s.db).await.unwrap().id)
+    };
+    let uncle = pickup_only.insert(&s.db).await.unwrap().id;
+    s.insert(product::ActiveModel {
+        price: Set(Money::from_baht(45)),
+        ..testing::new_product(s.shop, s.eggs, "ผักบุ้ง", Some(10))
+    })
+    .await;
+    s.insert(product::ActiveModel {
+        price: Set(Money::from_baht(60)),
+        ..testing::new_product(s.shop, s.eggs, "คะน้า สด", Some(10))
+    })
+    .await;
+    s.insert(product::ActiveModel {
+        price: Set(Money::from_baht(30)),
+        ..testing::new_product(uncle, s.eggs, "ผักกาด", Some(10))
+    })
+    .await;
+    s.insert(testing::new_product(s.shop, s.sweets, "ขนมผักกาด", Some(10)))
+        .await;
+    let found = async |search: Search| {
+        let mut names = s.names(Listing::Search(&search)).await;
+        names.sort();
+        names
+    };
+
+    // Any of the words, each matched as a typed keyword is, repeats and blanks left out
+    let greens = Search::any_of(["ผักบุ้ง", " ", "คะน้า   สด", "ผักบุ้ง"]).unwrap();
+    assert_eq!(greens.keyword(), "ผักบุ้ง");
+    assert_eq!(found(greens.clone()).await, ["คะน้า สด", "ผักบุ้ง"]);
+    assert_eq!(Search::any_of(["", " "]), Err(Refused::Empty));
+
+    let vegetables = Search::any_of(["ผัก"]).unwrap();
+    assert_eq!(
+        found(vegetables.clone()).await,
+        ["ขนมผักกาด", "ผักกาด", "ผักบุ้ง"]
+    );
+    assert_eq!(
+        found(vegetables.clone().in_category(s.eggs)).await,
+        ["ผักกาด", "ผักบุ้ง"]
+    );
+    // The price per unit, up to and including
+    let cheap = vegetables.clone().at_most(Money::from_baht(45));
+    assert_eq!(found(cheap.clone()).await, ["ผักกาด", "ผักบุ้ง"]);
+    assert_eq!(found(cheap.delivered()).await, ["ผักบุ้ง"]);
+    let greens = greens.in_category(s.eggs).at_most(Money::from_baht(50));
+    assert_eq!(found(greens.delivered()).await, ["ผักบุ้ง"]);
+
+    // A search kept before the filters still reads, as the keyword alone
+    let kept: Search = serde_json::from_value(serde_json::json!({ "keyword": "ผัก" })).unwrap();
+    assert_eq!(kept, vegetables);
+    assert_eq!(
+        serde_json::to_value(&vegetables).unwrap(),
+        serde_json::json!({ "keyword": "ผัก" })
+    );
+}
+
+/// The AI assistant's `search_shops`: the shops buyers see whose name or description holds
+/// every word, whatever the case, open ones first, and what is typed as written.
+#[tokio::test]
+async fn shops_are_found_by_their_name_or_description() {
+    let s = setup().await;
+    s.shop("ร้านลุงชม Coffee", shop::Status::Approved, false)
+        .await;
+    s.shop("ครัวคุณแม่", shop::Status::Approved, true).await;
+    s.shop("ร้านป้าแดงสาขา 2", shop::Status::Pending, true).await;
+    let found = async |keyword: &str| -> Vec<String> {
+        listing::find_shops(&s.db, keyword, 0)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|shop| shop.name)
+            .collect()
+    };
+
+    assert_eq!(found("ร้าน").await, ["ร้านป้าแดง", "ร้านลุงชม Coffee"]);
+    assert_eq!(found("coffee").await, ["ร้านลุงชม Coffee"]);
+    // Each one's description is "ไข่ไก่ ผักสวนครัว"
+    assert_eq!(
+        found("ผักสวน ครัว").await,
+        ["ครัวคุณแม่", "ร้านป้าแดง", "ร้านลุงชม Coffee"]
+    );
+    assert_eq!(found("ป้าแดง ครัว").await, ["ร้านป้าแดง"]);
+    assert_eq!(found("%").await, Vec::<String>::new());
+}
+
 /// Acceptance, FR-SRCH-02: hidden, held, removed, draft and deleted products, and the products
 /// of shops that are pending, held, suspended, rejected or closed, or whose owner is suspended
 /// (FR-ADM-04), are in no list, and their details and shops are not found. A closed-for-now

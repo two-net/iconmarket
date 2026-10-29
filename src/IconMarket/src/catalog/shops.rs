@@ -43,6 +43,7 @@ use super::{browse, products};
 use crate::admin::approvals;
 use crate::admin::audit::{self, Entry, Target};
 use crate::ai;
+use crate::ai::assistant::numbers::{self, Expect};
 use crate::config::{Config, PaymentMethod};
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::{self, Item};
@@ -534,6 +535,7 @@ async fn standing(
 pub async fn answer(
     turn: &Turn<'_>,
     config: &Config,
+    ai: &ai::Gateway,
     line: &line::Client,
     session: Session<ShopFlow>,
     input: &Input,
@@ -570,15 +572,39 @@ pub async fn answer(
             flow::answered(turn, Answer::Next(session, ask)).await?
         }
         Err(refused) => {
-            // Why, with the step's choices; or, for nothing at all, the step's question again
-            let again = match why(turn, &draft, step, refused) {
-                Some(why) => with_choices(vec![why], choices(user, &draft, step)),
-                None => prompt(turn, config, user, &draft, step),
-            };
+            let again = refused_answer(turn, config, ai, &draft, step, input, refused).await;
             flow::answered(turn, Answer::<ShopFlow>::Again(again)).await?
         }
     };
     Ok(Some(messages))
+}
+
+/// What `step` of `draft` asks when it didn't take `input`, as `refused`: why, with its choices;
+/// for a fee or minimum order typed in words, what `ai` reads it as, asked back (FR-AI-13); or,
+/// for nothing at all, the step's question again.
+async fn refused_answer(
+    turn: &Turn<'_>,
+    config: &Config,
+    ai: &ai::Gateway,
+    draft: &ShopFlow,
+    step: Step,
+    input: &Input,
+    refused: Refused,
+) -> Vec<Message> {
+    let user = &turn.actor.user;
+    if let (Refused::NotAnAmount(_), Step::DeliveryFee | Step::MinimumOrder, Input::Text(text)) =
+        (refused, step, input)
+        && let Some((asked, typed)) = numbers::ask_back(turn, ai, text, Expect::Money, None).await
+    {
+        let choices = std::iter::once(typed)
+            .chain(choices(user, draft, step))
+            .collect();
+        return with_choices(vec![asked], choices);
+    }
+    match why(turn, draft, step, refused) {
+        Some(why) => with_choices(vec![why], choices(user, draft, step)),
+        None => prompt(turn, config, user, draft, step),
+    }
 }
 
 /// What an answer that was taken did to the part asked for.
