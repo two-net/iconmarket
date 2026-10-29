@@ -1722,6 +1722,63 @@ impl Templates {
         notice(&headline, &details, buttons)
     }
 
+    /// Asks for the message to `to`, the other party of order `number`, of at most `max_chars`
+    /// characters (FR-ORD-13).
+    pub fn ask_message(&self, number: &str, to: OrderParty<'_>, max_chars: usize) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "พิมพ์ข้อความถึง{} เรื่องออเดอร์ {number} ได้เลย{kha} ไม่เกิน {max_chars} ตัวอักษร ระบบจะส่งต่อให้ทางแชตนี้{kha}",
+            to.called()
+        ))
+    }
+
+    /// Tells the other party of order `number` that `from` sent them `text` (FR-ORD-13): led by
+    /// the order's number, as is its preview in LINE's notifications and chat list, which also
+    /// shows the text. `buttons` are the answer back, then the order in full.
+    pub fn relayed_message_notice(
+        &self,
+        number: &str,
+        from: OrderParty<'_>,
+        text: &str,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let from = from.called();
+        let headline = format!("{number} · ข้อความจาก{from}");
+        let card = notice_card(&headline, &[text.to_owned()], buttons);
+        Message::flex(format!("{number} {from}: {text}"), card)
+    }
+
+    /// The message went to `to`, the other party of order `number` (FR-ORD-13). `buttons` are
+    /// what the sender can do now, another message among them.
+    pub fn message_relayed(
+        &self,
+        number: &str,
+        to: OrderParty<'_>,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("ส่งข้อความถึง{} แล้ว{kha}", to.called());
+        notice(&headline, &[format!("ออเดอร์ {number}")], buttons)
+    }
+
+    /// No message can go to `to`, the other party of order `number`, who doesn't follow the OA
+    /// (FR-NOT-02). `buttons` are what the sender can do instead.
+    pub fn message_unreachable(
+        &self,
+        number: &str,
+        to: OrderParty<'_>,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let (kha, app) = (self.kha(), &self.app_name);
+        let to = to.called();
+        let headline = format!("ส่งข้อความถึง{to}ไม่ได้{kha}");
+        let details = [
+            format!("ออเดอร์ {number}"),
+            format!("{to}ไม่ได้เป็นเพื่อนกับ {app} ในไลน์อยู่ จึงส่งข้อความต่อให้ไม่ได้{kha}"),
+        ];
+        notice(&headline, &details, buttons)
+    }
+
     /// The seller has yet to get the money of order `number`, handed over (FR-PAY-07): it stays
     /// under "ค้างชำระ". `buttons` are "ได้รับเงินแล้ว", for when they do.
     pub fn left_unpaid(&self, number: &str, buttons: Vec<Action>) -> Message {
@@ -4907,6 +4964,26 @@ pub struct PromptPayDue<'a> {
     pub total: Money,
 }
 
+/// Whom a message on an order is from, or for (FR-ORD-13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OrderParty<'a> {
+    /// Its shop, by name
+    Shop(&'a str),
+    /// Its buyer, by display name if LINE gave one
+    Buyer(Option<&'a str>),
+}
+
+impl OrderParty<'_> {
+    /// What the other party calls it: "ร้านป้าแดง", or "ลูกค้า สมชาย".
+    fn called(self) -> String {
+        match self {
+            Self::Shop(name) => shop_called(name),
+            Self::Buyer(Some(name)) => format!("ลูกค้า {name}"),
+            Self::Buyer(None) => "ลูกค้า".to_owned(),
+        }
+    }
+}
+
 /// The reason an order is cancelled for when its seller grants the buyer's request (FR-ORD-07).
 pub const BUYER_ASKED_TO_CANCEL: &str = "ลูกค้าขอยกเลิก";
 
@@ -6135,6 +6212,11 @@ pub fn topic_label(topic: Topic) -> &'static Label {
 /// button for each thing the recipient can do about it straight away, the first one primary:
 /// "ออเดอร์ใหม่ค่ะ IM-20261022-0007" with "รับออเดอร์" and "ปฏิเสธ".
 pub fn notice(headline: &str, details: &[String], buttons: Vec<Action>) -> Message {
+    Message::flex(headline, notice_card(headline, details, buttons))
+}
+
+/// The card of a [`notice`], for one whose preview isn't its headline.
+fn notice_card(headline: &str, details: &[String], buttons: Vec<Action>) -> Bubble {
     let headline_text = Text {
         weight: Some(Weight::Bold),
         wrap: Some(true),
@@ -6171,12 +6253,11 @@ pub fn notice(headline: &str, details: &[String], buttons: Vec<Action>) -> Messa
             ..FlexBox::vertical(buttons)
         }
     });
-    let card = Bubble {
+    Bubble {
         body: Some(body),
         footer,
         ..Bubble::default()
-    };
-    Message::flex(headline, card)
+    }
 }
 
 /// Page `number` (from 0) of `items` as a carousel (FR-LINE-11, FR-SRCH-03): a `card` for
@@ -6473,6 +6554,10 @@ pub mod labels {
         SEND_SLIP = "ส่งสลิป",
         /// The photo the buyer sent unasked isn't the slip (FR-UI-14); with YES
         NOT_SLIP = "ไม่ใช่",
+        /// The buyer of an active order sends its shop a message (FR-ORD-13)
+        MESSAGE_SHOP = "ส่งข้อความถึงร้าน",
+        /// The seller of an active order sends its buyer a message (FR-ORD-13)
+        MESSAGE_BUYER = "ส่งข้อความถึงลูกค้า",
         /// An order's card in full, from "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน" (FR-ORD-10)
         ORDER_DETAILS = "ดูรายละเอียด",
         /// Opens where to deliver or pick up an order on a map (FR-ORD-11)
@@ -6582,6 +6667,7 @@ mod tests {
     use super::*;
     use crate::line::Body;
     use crate::line::flex::{Component, Text};
+    use crate::orders::relay::MESSAGE_CHARS;
     use crate::thai::Label;
 
     const ERRORS: [NumberError; 4] = [
@@ -8825,6 +8911,7 @@ mod tests {
         let (name, unit, shop) = ("ข".repeat(80), "ข".repeat(20), "ข".repeat(50));
         let (zone, house_number, landmark) = ("ข".repeat(50), "ข".repeat(30), "ข".repeat(100));
         let (buyer, note, reason) = ("ข".repeat(100), "ข".repeat(200), "ข".repeat(300));
+        let message = "ข".repeat(MESSAGE_CHARS);
         let number = "IM-20261022-9999";
         let max = i64::MAX;
         let button = |label: &Label, action: &str| postback(label, format!("{action}?order={max}"));
@@ -8931,6 +9018,44 @@ mod tests {
                 ],
             ),
             t.ask_order_reason(number, order::Status::Cancelled, true, reasons.to_vec()),
+            t.relayed_message_notice(
+                number,
+                OrderParty::Shop(&shop),
+                &message,
+                vec![
+                    button(&labels::MESSAGE_SHOP, "order.message_shop"),
+                    button(&labels::ORDER_DETAILS, "order.view"),
+                ],
+            ),
+            t.relayed_message_notice(
+                number,
+                OrderParty::Buyer(Some(&buyer)),
+                &message,
+                vec![
+                    button(&labels::MESSAGE_BUYER, "order.message_buyer"),
+                    button(&labels::ORDER_DETAILS, "order.view"),
+                ],
+            ),
+            t.message_relayed(
+                number,
+                OrderParty::Buyer(Some(&buyer)),
+                vec![
+                    button(&labels::MARK_COMPLETED, "order.complete"),
+                    button(&labels::MARK_PAID, "order.paid"),
+                    button(&labels::CANCEL_ORDER, "order.grant_cancel"),
+                    button(&labels::KEEP_ORDER, "order.keep"),
+                    button(&labels::MESSAGE_BUYER, "order.message_buyer"),
+                ],
+            ),
+            t.message_unreachable(
+                number,
+                OrderParty::Shop(&shop),
+                vec![
+                    button(&labels::SEND_SLIP, "order.send_slip"),
+                    button(&labels::CONFIRM_RECEIPT, "order.received"),
+                    button(&labels::REQUEST_CANCEL, "order.request_cancel"),
+                ],
+            ),
         ] {
             limits::check(slice::from_ref(&message)).unwrap();
         }
@@ -8994,6 +9119,7 @@ mod tests {
                 button(&labels::MARK_PAID, "order.paid"),
                 button(&labels::CANCEL_ORDER, "order.grant_cancel"),
                 button(&labels::KEEP_ORDER, "order.keep"),
+                button(&labels::MESSAGE_BUYER, "order.message_buyer"),
                 button(&labels::ORDER_DETAILS, "order.view"),
             ];
             let contact = OrderContact::BuyerFull { contact, location };
@@ -9010,6 +9136,7 @@ mod tests {
                 button(&labels::SEND_SLIP, "order.send_slip"),
                 button(&labels::CONFIRM_RECEIPT, "order.received"),
                 button(&labels::REQUEST_CANCEL, "order.request_cancel"),
+                button(&labels::MESSAGE_SHOP, "order.message_shop"),
                 button(&labels::ORDER_DETAILS, "order.view"),
             ];
             order_card(&name, &unit, Some(&shop), contact, buttons)

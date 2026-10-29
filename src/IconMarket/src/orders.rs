@@ -1,6 +1,6 @@
 //! Cart & orders (SRS §2.1): cart, checkout, stock reservation and the order lifecycle.
-//! Built by #29, #32, #33, #34, #35 and #41; [`periods`] counts the orders placed of late, for
-//! "สถิติ" and "ยอดขาย".
+//! Built by #29, #32, #33, #34, #35, #41 and #44; [`periods`] counts the orders placed of late,
+//! for "สถิติ" and "ยอดขาย".
 
 pub mod actions;
 pub mod cart;
@@ -10,6 +10,7 @@ mod expiry;
 pub mod lifecycle;
 pub mod lists;
 pub mod periods;
+pub mod relay;
 pub mod slip;
 
 pub use expiry::expire;
@@ -62,6 +63,10 @@ pub const SLIP_ID: &str = "slip";
 /// The buyer's "ส่งสลิป" while an order awaits their PromptPay transfer (FR-PAY-05), which asks
 /// for the photo of the [slip](slip)
 pub const SEND_SLIP: &str = "order.send_slip";
+/// The buyer's "ส่งข้อความถึงร้าน" and the seller's "ส่งข้อความถึงลูกค้า" while an order is
+/// active, which ask for the message to [relay](relay) to the other party (FR-ORD-13)
+pub const MESSAGE_SHOP: &str = "order.message_shop";
+pub const MESSAGE_BUYER: &str = "order.message_buyer";
 
 /// "ดูรายละเอียด" on an order's card in "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน": the order in full,
 /// for its buyer, its seller or an admin (FR-ORD-10). [Lists](lists) show it, not

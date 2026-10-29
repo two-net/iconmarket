@@ -786,6 +786,10 @@ async fn hiding_the_shop_phone_removes_it_from_the_buyers_active_order_view() {
                 "ขอยกเลิก".to_owned(),
                 format!("order.request_cancel?order={}", ready.id)
             ),
+            (
+                "ส่งข้อความถึงร้าน".to_owned(),
+                format!("order.message_shop?order={}", ready.id)
+            ),
             ("ดูแผนที่".to_owned(), map.to_owned()),
         ]
     );
@@ -869,7 +873,10 @@ async fn an_order_in_full() {
     assert_eq!(row(card, "ค่าสินค้า").as_deref(), Some("฿1,100"));
     assert_eq!(row(card, "ค่าส่ง").as_deref(), Some("฿10"));
     assert_eq!(row(card, "รวม").as_deref(), Some("฿1,110"));
-    assert_eq!(labels_of(card), ["กำลังไปส่ง", "ยกเลิกออเดอร์", "ดูแผนที่"]);
+    assert_eq!(
+        labels_of(card),
+        ["กำลังไปส่ง", "ยกเลิกออเดอร์", "ส่งข้อความถึงลูกค้า", "ดูแผนที่"]
+    );
     assert_eq!(
         quick_replies(full),
         [

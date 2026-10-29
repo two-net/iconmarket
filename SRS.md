@@ -427,7 +427,7 @@ No other endpoints are exposed.
 | FR-ORD-10 | "คำสั่งซื้อของฉัน" shall list the buyer's open orders first, then history (paged). "ออเดอร์ร้าน" shall offer the filters ใหม่, กำลังดำเนินการ, ค้างชำระ and เสร็จแล้ว/ยกเลิก. | M |
 | FR-ORD-11 | Contact data: for a `PENDING` order the seller sees the buyer's display name and zone; for an active order the seller also sees the phone (if given), full address/location and note, and the buyer sees the pickup location and the seller's phone (if allowed by FR-SHOP-08). Contact data is not shown for any other order. | M |
 | FR-ORD-12 | An admin may cancel any open order with a reason (dispute handling); both parties are notified. | S |
-| FR-ORD-13 | Relay messaging: during an active order, buyer and seller may send short texts to each other through the OA ("ส่งข้อความถึงร้าน" / "ส่งข้อความถึงลูกค้า"), delivered by push and prefixed with the order number. | C |
+| FR-ORD-13 | Relay messaging: during an active order, buyer and seller may send short texts to each other through the OA ("ส่งข้อความถึงร้าน" / "ส่งข้อความถึงลูกค้า", on the order's cards and notices while it is active), delivered by push and prefixed with the order number, with a button to answer back. One message per tap, at most 300 characters. Nothing is relayed for an order that is not active, or to a party who does not follow the OA; the sender is told instead. | C |
 | FR-ORD-14 | Ratings: after `COMPLETED`, the buyer may rate the order once, 1–5 stars with an optional comment (≤ 200 chars). A shop's average is shown once it has at least 3 ratings. | C |
 
 ### 4.7 Payment (FR-PAY)
@@ -455,6 +455,7 @@ No other endpoints are exposed.
 | Order cancelled by the buyer, expired, cancellation request | Seller | always | on |
 | Payment slip received | Seller | always | on |
 | Payment slip not received ("ยังไม่ได้รับ") | Buyer | always | on |
+| Relayed message (FR-ORD-13) | The other party of an active order | always | on |
 | Shop approved/rejected/suspended, item held/removed, account suspended, account or shop suspension lifted | Affected user | always | on |
 | Shop application, item held, user report | Admins | `notification.adminAlerts` | on |
 | Daily sales summary | Seller | `notification.dailySummary` | off (C) |

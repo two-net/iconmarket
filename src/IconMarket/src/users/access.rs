@@ -83,8 +83,8 @@ pub enum Action {
     // Buyers: every user who isn't suspended
     /// The cart and checkout (FR-CART)
     Buy,
-    /// Cancelling an order, confirming its receipt or sending its slip: its buyer (FR-ORD,
-    /// FR-PAY)
+    /// Cancelling an order, confirming its receipt, sending its slip or messaging its shop: its
+    /// buyer (FR-ORD, FR-PAY)
     ActAsBuyer(i64),
     /// Reporting a product or shop (FR-HELP-02)
     Report,
@@ -99,8 +99,9 @@ pub enum Action {
     ManageShop,
     /// Editing, restocking or deleting a product: the owner of its shop, while `APPROVED`
     ManageProduct(i64),
-    /// Accepting, rejecting, progressing or cancelling an order, and confirming its payment:
-    /// the owner of its shop. A suspended shop's orders continue (FR-SHOP-10).
+    /// Accepting, rejecting, progressing or cancelling an order, confirming its payment and
+    /// messaging its buyer: the owner of its shop. A suspended shop's orders continue
+    /// (FR-SHOP-10).
     HandleOrder(i64),
 
     // Admins

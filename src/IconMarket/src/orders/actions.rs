@@ -18,6 +18,9 @@
 //! order cancelled is to be refunded, which they record with "คืนเงินแล้ว" (FR-PAY-09). An
 //! admin may record either from the order's card in "ผู้ใช้"; its buyer never can (FR-PAY-08).
 //!
+//! While an order is active, its buyer and its seller send each other messages with
+//! "ส่งข้อความถึงร้าน" and "ส่งข้อความถึงลูกค้า", which the OA [relays](super::relay) (FR-ORD-13).
+//!
 //! Every move goes through the [lifecycle](super::lifecycle), which checks it again against the
 //! order as it is now: a button of a card the order has moved on from, or tapped again, shows
 //! its status as it is, with the buttons that now apply (FR-UI-13, FR-ORD-02). Buttons carry
@@ -38,8 +41,8 @@ use url::Url;
 use super::lifecycle::{self, By, Moved};
 use super::{
     ACCEPT, ADMIN_CANCEL, CANCEL_ORDER, COMPLETE, DELIVERING, GRANT_CANCEL, KEEP, MARK_PAID,
-    MARK_REFUNDED, NOT_PAID, ORDER_ID, READY, RECEIVED, REJECT, REQUEST_CANCEL, SELLER_CANCEL,
-    SEND_SLIP, SLIP_ID, cart, contact, slip,
+    MARK_REFUNDED, MESSAGE_BUYER, MESSAGE_SHOP, NOT_PAID, ORDER_ID, READY, RECEIVED, REJECT,
+    REQUEST_CANCEL, SELLER_CANCEL, SEND_SLIP, SLIP_ID, cart, contact, relay, slip,
 };
 use crate::admin::audit::{self, Entry, Target};
 use crate::admin::reason::{REASON_CHARS, Refused, reason};
@@ -168,6 +171,8 @@ pub async fn tapped(
         MARK_REFUNDED => pays(turn, id, PaymentStatus::Refunded).await,
         NOT_PAID => not_paid(turn, id, postback.int(SLIP_ID)).await,
         SEND_SLIP => slip::start(turn, id).await,
+        MESSAGE_SHOP => relay::start(turn, id, relay::Side::Buyer).await,
+        MESSAGE_BUYER => relay::start(turn, id, relay::Side::Seller).await,
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }
@@ -287,9 +292,10 @@ pub async fn found(
 /// What `viewer` can do about `order` as it is now, as buttons: only the moves the lifecycle
 /// allows them (Table 4.6-B), and the payments they may record (FR-PAY-08). The seller gets the
 /// next step, as in Appendix A.4, "ได้รับเงินแล้ว" or "คืนเงินแล้ว", then "ปฏิเสธ" or
-/// "ยกเลิกออเดอร์", or, while the buyer asks to cancel, the answers to that; the buyer
-/// "ยกเลิกออเดอร์" until it is accepted, then "ส่งสลิป" while it awaits their transfer
-/// (FR-PAY-05), "ได้รับของแล้ว" once it is ready or on its way, and "ขอยกเลิก"; an admin the
+/// "ยกเลิกออเดอร์", or, while the buyer asks to cancel, the answers to that, and
+/// "ส่งข้อความถึงลูกค้า" while it is active (FR-ORD-13); the buyer "ยกเลิกออเดอร์" until it is
+/// accepted, then "ส่งสลิป" while it awaits their transfer (FR-PAY-05), "ได้รับของแล้ว" once it is
+/// ready or on its way, "ขอยกเลิก", and "ส่งข้อความถึงร้าน" while it is active; an admin the
 /// payments, and "ยกเลิกออเดอร์" while it is open.
 pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
     let can = |to| lifecycle::allowed(order.status, to, viewer, order.fulfillment);
@@ -331,6 +337,9 @@ pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
             } else if can(Status::Cancelled) {
                 buttons.push(acts(SELLER_CANCEL, &labels::CANCEL_ORDER));
             }
+            if order.status.is_active() {
+                buttons.push(relay::button(order, relay::Side::Seller));
+            }
         }
         ActorType::Buyer => {
             if can(Status::Cancelled) {
@@ -344,6 +353,9 @@ pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
             }
             if requestable(order) && !asked {
                 buttons.push(acts(REQUEST_CANCEL, &labels::REQUEST_CANCEL));
+            }
+            if order.status.is_active() {
+                buttons.push(relay::button(order, relay::Side::Buyer));
             }
         }
         ActorType::Admin => {
@@ -616,7 +628,7 @@ fn reply(
 
 /// `order` as it is now, for `viewer`, as what they asked of it can't be done: its status, and
 /// the buttons that now apply (FR-UI-13, FR-ORD-02).
-fn now_is(templates: &Templates, order: &order::Model, viewer: ActorType) -> Message {
+pub(super) fn now_is(templates: &Templates, order: &order::Model, viewer: ActorType) -> Message {
     let buttons = buttons(order, viewer);
     templates.order_now(&order.order_number, order.status, None, buttons)
 }

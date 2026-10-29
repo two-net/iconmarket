@@ -23,7 +23,7 @@ use crate::line::flex::{Component, FlexContainer};
 use crate::line::testing::{self as fake, Fake};
 use crate::line::{Body, limits};
 use crate::notifications::templates::Templates;
-use crate::orders::{REQUEST_CANCEL, SEND_SLIP, actions};
+use crate::orders::{MESSAGE_SHOP, REQUEST_CANCEL, SEND_SLIP, actions};
 use crate::persistence::entity::image::{self, OwnerType};
 use crate::persistence::entity::order::{PaymentMethod, PaymentStatus, Status};
 use crate::persistence::entity::{audit_log, payment_slip, push_log, session, shop, user};
@@ -402,8 +402,14 @@ async fn the_buyer_sends_the_slip_and_the_seller_gets_it() {
         ]
     );
     // Sent, it can't be sent again until the seller answers
-    let cancel = data(REQUEST_CANCEL, id);
-    assert_eq!(buttons_of(&sent[0]), [("ขอยกเลิก", cancel.as_str())]);
+    let (cancel, message) = (data(REQUEST_CANCEL, id), data(MESSAGE_SHOP, id));
+    assert_eq!(
+        buttons_of(&sent[0]),
+        [
+            ("ขอยกเลิก", cancel.as_str()),
+            ("ส่งข้อความถึงร้าน", message.as_str()),
+        ]
+    );
     assert_eq!(s.step(s.buyer).await, None);
 
     let order = s.get(id).await;

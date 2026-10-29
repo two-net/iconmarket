@@ -553,6 +553,7 @@ async fn the_seller_accepts_as_in_appendix_a4() {
         [
             ("กำลังไปส่ง", data(DELIVERING, placed.id).as_str()),
             ("ยกเลิกออเดอร์", data(SELLER_CANCEL, placed.id).as_str()),
+            ("ส่งข้อความถึงลูกค้า", data(MESSAGE_BUYER, placed.id).as_str()),
         ]
     );
     let request = Postback::new(REQUEST_CANCEL).with_int(ORDER_ID, placed.id);
@@ -560,7 +561,10 @@ async fn the_seller_accepts_as_in_appendix_a4() {
         &s.shop.name,
         &order.order_number,
         None,
-        vec![request.button(labels::REQUEST_CANCEL.clone())],
+        vec![
+            request.button(labels::REQUEST_CANCEL.clone()),
+            relay::button(&order, relay::Side::Buyer),
+        ],
     );
     assert_eq!(
         lines(&told),
@@ -606,6 +610,7 @@ async fn the_seller_moves_an_order_on_until_handed_over() {
         [
             ("พร้อมให้รับ", data(READY, id).as_str()),
             ("ยกเลิกออเดอร์", data(SELLER_CANCEL, id).as_str()),
+            ("ส่งข้อความถึงลูกค้า", data(MESSAGE_BUYER, id).as_str()),
         ]
     );
 
@@ -616,6 +621,7 @@ async fn the_seller_moves_an_order_on_until_handed_over() {
         [
             ("ส่งมอบแล้ว", data(COMPLETE, id).as_str()),
             ("ยกเลิกออเดอร์", data(SELLER_CANCEL, id).as_str()),
+            ("ส่งข้อความถึงลูกค้า", data(MESSAGE_BUYER, id).as_str()),
         ]
     );
     let pushes = s.pushes().await;
@@ -629,6 +635,7 @@ async fn the_seller_moves_an_order_on_until_handed_over() {
         [
             ("ได้รับของแล้ว", data(RECEIVED, id).as_str()),
             ("ขอยกเลิก", data(REQUEST_CANCEL, id).as_str()),
+            ("ส่งข้อความถึงร้าน", data(MESSAGE_SHOP, id).as_str()),
         ]
     );
 
@@ -831,7 +838,10 @@ async fn the_buyer_cancels_until_the_shop_accepts() {
     );
     assert_eq!(
         buttons_of(&refused[0]),
-        [("ขอยกเลิก", data(REQUEST_CANCEL, accepted.id).as_str())]
+        [
+            ("ขอยกเลิก", data(REQUEST_CANCEL, accepted.id).as_str()),
+            ("ส่งข้อความถึงร้าน", data(MESSAGE_SHOP, accepted.id).as_str()),
+        ]
     );
     assert_eq!(s.get(accepted.id).await, accepted);
 }
@@ -876,6 +886,7 @@ async fn the_buyer_asks_to_cancel_and_the_seller_decides() {
             ("กำลังไปส่ง", data(DELIVERING, id).as_str()),
             ("ยกเลิกออเดอร์", data(GRANT_CANCEL, id).as_str()),
             ("ไม่ยกเลิก", data(KEEP, id).as_str()),
+            ("ส่งข้อความถึงลูกค้า", data(MESSAGE_BUYER, id).as_str()),
         ]
     );
     // Asked once
@@ -903,7 +914,10 @@ async fn the_buyer_asks_to_cancel_and_the_seller_decides() {
     );
     assert_eq!(
         told.buttons(),
-        [("ขอยกเลิก", data(REQUEST_CANCEL, id).as_str())]
+        [
+            ("ขอยกเลิก", data(REQUEST_CANCEL, id).as_str()),
+            ("ส่งข้อความถึงร้าน", data(MESSAGE_SHOP, id).as_str()),
+        ]
     );
 
     // Asked again, and granted
@@ -988,7 +1002,10 @@ async fn the_buyer_confirms_receipt() {
     assert_eq!(s.get(accepted.id).await, accepted);
     assert_eq!(
         buttons_of(&early[0]),
-        [("ขอยกเลิก", data(REQUEST_CANCEL, accepted.id).as_str())]
+        [
+            ("ขอยกเลิก", data(REQUEST_CANCEL, accepted.id).as_str()),
+            ("ส่งข้อความถึงร้าน", data(MESSAGE_SHOP, accepted.id).as_str()),
+        ]
     );
 
     let delivering = s
@@ -1277,6 +1294,7 @@ async fn a_promptpay_order_accepted_says_what_to_transfer_where() {
         [
             ("ส่งสลิป", data(SEND_SLIP, placed.id).as_str()),
             ("ขอยกเลิก", data(REQUEST_CANCEL, placed.id).as_str()),
+            ("ส่งข้อความถึงร้าน", data(MESSAGE_SHOP, placed.id).as_str()),
         ]
     );
     let card = s.details(s.buyer.id, placed.id).await;
@@ -1405,6 +1423,7 @@ async fn a_transfer_is_recorded_before_the_hand_over() {
         [
             ("กำลังไปส่ง", data(DELIVERING, cash.id).as_str()),
             ("ยกเลิกออเดอร์", data(SELLER_CANCEL, cash.id).as_str()),
+            ("ส่งข้อความถึงลูกค้า", data(MESSAGE_BUYER, cash.id).as_str()),
         ]
     );
 
@@ -1423,6 +1442,7 @@ async fn a_transfer_is_recorded_before_the_hand_over() {
         [
             ("กำลังไปส่ง", data(DELIVERING, id).as_str()),
             ("ยกเลิกออเดอร์", data(SELLER_CANCEL, id).as_str()),
+            ("ส่งข้อความถึงลูกค้า", data(MESSAGE_BUYER, id).as_str()),
         ]
     );
     let order = s.get(id).await;

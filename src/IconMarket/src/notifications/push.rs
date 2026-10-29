@@ -74,6 +74,9 @@ pub enum Kind {
     OrderExpired,
     /// To the seller: the buyer asks to cancel an accepted order (FR-ORD-07)
     CancellationRequested,
+    /// To the other party of an active order: a message from its buyer or its seller
+    /// (FR-ORD-13)
+    OrderMessage,
     /// To the seller: a payment slip (FR-PAY-05)
     SlipReceived,
     /// To the buyer: the seller didn't get the transfer of the slip they sent (FR-PAY-05)
@@ -118,6 +121,7 @@ impl Kind {
             Self::OrderCancelled => "order.cancelled",
             Self::OrderExpired => "order.expired",
             Self::CancellationRequested => "order.cancellation_requested",
+            Self::OrderMessage => "order.message",
             Self::SlipReceived => "payment.slip",
             Self::SlipNotReceived => "payment.slip_not_received",
             Self::PaymentDetails => "payment.promptpay",
@@ -145,6 +149,7 @@ impl Kind {
             Self::OrderCancelled
             | Self::OrderExpired
             | Self::CancellationRequested
+            | Self::OrderMessage
             | Self::SlipReceived
             | Self::SlipNotReceived
             | Self::PaymentDetails
@@ -159,6 +164,12 @@ impl Kind {
             | Self::AccountUnsuspended => true,
         }
     }
+}
+
+/// Whether a push can reach `user` (FR-NOT-02), as [`Outbox::queue`] judges it: they follow the
+/// OA, and still have a LINE user ID, which deleting the account takes away (FR-ONB-07).
+pub fn reaches(user: &user::Model) -> bool {
+    user.is_following && user.line_user_id.is_some()
 }
 
 /// Who a notification is for.
