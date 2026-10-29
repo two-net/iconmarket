@@ -2,7 +2,8 @@
 //! fits, tapped or typed, and refused over 99 or over what is left, saying what is left; adding
 //! again adds to the line; a cart holds at most 20 products, and none of the user's own shop; what
 //! changed before the answer is refused; the cart shows its lines by shop, flagging and leaving
-//! out those that can't be ordered; lines are changed and removed. Each event is handled in a
+//! out those that can't be ordered; lines are changed and removed; a pre-order says when it is
+//! ready (FR-PROD-11). Each event is handled in a
 //! transaction committed once it is handled. The `async` tests each start a throwaway
 //! PostgreSQL, so they need Docker.
 
@@ -38,6 +39,11 @@ const BUYER: &str = "Ub2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
 /// 25 ต.ค. 2569 09:00 in Bangkok
 fn t0() -> DateTimeUtc {
     Utc.with_ymd_and_hms(2026, 10, 25, 2, 0, 0).unwrap()
+}
+
+/// The day of [`t0`] in Bangkok
+fn today() -> NaiveDate {
+    t0().with_timezone(&chrono_tz::Asia::Bangkok).date_naive()
 }
 
 struct Setup {
@@ -673,7 +679,7 @@ async fn a_suspended_sellers_products_cant_be_ordered() {
     };
     suspend(user::Status::Suspended).await.unwrap();
     assert_eq!(s.adds(s.eggs).await, [t.denied(Denied::NotFound)]);
-    let states: Vec<_> = lines(&s.db, s.buyer)
+    let states: Vec<_> = lines(&s.db, s.buyer, today())
         .await
         .unwrap()
         .iter()
@@ -685,7 +691,7 @@ async fn a_suspended_sellers_products_cant_be_ordered() {
     );
 
     suspend(user::Status::Active).await.unwrap();
-    let states: Vec<_> = lines(&s.db, s.buyer)
+    let states: Vec<_> = lines(&s.db, s.buyer, today())
         .await
         .unwrap()
         .iter()
@@ -744,6 +750,57 @@ async fn the_cart_shows_its_lines_by_shop() {
     );
     assert_eq!(s.shows().await, shown);
     assert_eq!(s.flow().await, None);
+}
+
+/// FR-PROD-11: a pre-order says when it is ready when asked how many, once in the cart, and on
+/// its line there.
+#[tokio::test]
+async fn a_pre_order_says_when_it_is_ready_in_the_cart() {
+    let s = setup().await;
+    let mooncakes = testing::new_product(s.shop, s.category, "ขนมไหว้พระจันทร์", None);
+    let mooncakes = product::ActiveModel {
+        ready_on: Set(NaiveDate::from_ymd_opt(2026, 11, 5)),
+        ..mooncakes
+    };
+    let mooncakes = mooncakes.insert(&s.db).await.unwrap().id;
+
+    let asked = s.adds(mooncakes).await;
+    assert_eq!(
+        text(&asked[0]),
+        "\"ขนมไหว้พระจันทร์\" (สั่งล่วงหน้า พร้อม 5 พ.ย. 2569) เอากี่แผงคะ"
+    );
+    let added = s.types("2").await;
+    assert_eq!(
+        text(&added[0]),
+        "ใส่ตะกร้าแล้วค่ะ ขนมไหว้พระจันทร์ × 2 แผง = ฿220 (สั่งล่วงหน้า พร้อม 5 พ.ย. 2569)"
+    );
+    s.put(s.buyer, s.eggs, 1, t0()).await;
+    let shown = s.shows().await;
+    let (cards, _) = page(&shown[0]);
+    assert_eq!(
+        texts(cards[0]),
+        [
+            "ร้านป้าแดง",
+            "ไข่ไก่เบอร์ 2",
+            "1 แผง × ฿110",
+            "฿110",
+            "ขนมไหว้พระจันทร์",
+            "2 แผง × ฿110",
+            "฿220",
+            "สั่งล่วงหน้า · พร้อม 5 พ.ย. 2569",
+            "รวม",
+            "฿330",
+        ]
+    );
+    let [eggs, line] = &lines(&s.db, s.buyer, today()).await.unwrap()[..] else {
+        panic!("two lines");
+    };
+    assert_eq!(eggs.ready_on, None);
+    assert_eq!(line.ready_on, NaiveDate::from_ymd_opt(2026, 11, 5));
+    // From its ready day on, it is no pre-order
+    let the_day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+    let lines = lines(&s.db, s.buyer, the_day).await.unwrap();
+    assert!(lines.iter().all(|line| line.ready_on.is_none()));
 }
 
 /// Acceptance, FR-CART-03: a line whose shop closed after it was added is flagged, as are those
@@ -825,7 +882,7 @@ async fn lines_that_cant_be_ordered_are_flagged_and_left_out() {
     assert_eq!(cards[1].footer, None);
 
     // The states #32 checks out by
-    let lines = lines(&s.db, s.buyer).await.unwrap();
+    let lines = lines(&s.db, s.buyer, today()).await.unwrap();
     let states: Vec<_> = lines.iter().map(|line| line.state).collect();
     assert_eq!(
         states,
@@ -915,7 +972,7 @@ async fn a_lines_quantity_can_be_changed() {
     assert_eq!(changed.len(), 2);
     assert_eq!(
         changed[0],
-        t.quantity_changed("ไข่ไก่เบอร์ 2", 3, "แผง", Money::from_baht(330))
+        t.quantity_changed("ไข่ไก่เบอร์ 2", 3, "แผง", Money::from_baht(330), None)
     );
     let (cards, _) = page(&changed[1]);
     assert_eq!(

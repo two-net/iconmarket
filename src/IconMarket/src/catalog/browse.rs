@@ -20,12 +20,13 @@ pub mod search;
 #[cfg(test)]
 mod tests;
 
+use chrono::NaiveDate;
 use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter};
 use url::Url;
 
 use self::listing::{Listed, Listing};
 use super::images::{self, Owner};
-use super::products::Availability;
+use super::products::{self, Availability};
 use super::{categories, shops};
 use crate::config::Config;
 use crate::dispatcher::Turn;
@@ -256,7 +257,7 @@ async fn list(
         .iter()
         .zip(&urls)
         .map(|((product, shop, proposal), photo)| {
-            let mut card = card(product, shop, photo);
+            let mut card = card(product, shop, photo, turn.today());
             if proposal.is_some() {
                 card.add_to_cart.clone_from(proposal);
             }
@@ -269,8 +270,14 @@ async fn list(
         .product_list(browsed, &cards, more, carry_on()))
 }
 
-/// What `product` of `shop`'s card shows, with its first photo, or the placeholder, at `photo`.
-fn card<'a>(product: &'a product::Model, shop: &'a shop::Model, photo: &'a Url) -> ProductCard<'a> {
+/// What `product` of `shop`'s card shows on `today`, with its first photo, or the placeholder,
+/// at `photo`.
+fn card<'a>(
+    product: &'a product::Model,
+    shop: &'a shop::Model,
+    photo: &'a Url,
+    today: NaiveDate,
+) -> ProductCard<'a> {
     let availability = Availability::of(product, shop);
     let details = Postback::new(PRODUCT).with_int(PRODUCT_ID, product.id);
     ProductCard {
@@ -279,6 +286,7 @@ fn card<'a>(product: &'a product::Model, shop: &'a shop::Model, photo: &'a Url) 
         unit: &product.unit,
         shop: &shop.name,
         availability,
+        ready_on: products::ready_on(product, today),
         photo,
         add_to_cart: availability.orderable().then(|| add_to_cart(product.id)),
         view_shop: view_shop(shop.id),
@@ -316,6 +324,7 @@ async fn details(turn: &Turn<'_>, config: &Config, id: i64) -> Result<Vec<Messag
         description: product.description.as_deref(),
         shop: &shop.name,
         availability,
+        ready_on: products::ready_on(&product, turn.today()),
         photos: &photos,
         buttons,
     };

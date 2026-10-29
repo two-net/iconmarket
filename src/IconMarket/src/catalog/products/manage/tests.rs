@@ -2,8 +2,8 @@
 //! sold-out product restocked with a tap and the quantity; each part changed alone and saved
 //! once answered, leaving orders as they were (FR-PROD-08) and stock taken meanwhile alone;
 //! photos added or replaced; hiding and showing at a tap; deleting confirmed, and soft (DR-04);
-//! changed text and new photos moderated (FR-PROD-09); and only the owner of an approved shop
-//! doing any of it. Each event is handled in a
+//! changed text and new photos moderated (FR-PROD-09); a pre-order's ready date set and cleared
+//! (FR-PROD-11); and only the owner of an approved shop doing any of it. Each event is handled in a
 //! transaction committed once it is handled. The `async` tests each start a throwaway
 //! PostgreSQL, so they need Docker.
 
@@ -624,6 +624,65 @@ async fn the_stock_is_what_is_left_for_new_orders() {
     assert_eq!(s.get(eggs).await.stock, Some(12));
 }
 
+/// FR-PROD-11: "สั่งล่วงหน้า" sets, keeps or clears the ready date alone, unmoderated; the card
+/// shows it while it is still to come, and one passed already is none.
+#[tokio::test]
+async fn a_ready_date_is_set_and_cleared_alone() {
+    let s = setup().await;
+    let t = &s.templates;
+    let mooncakes = s.product("ขนมไหว้พระจันทร์", Some(30)).await;
+    let not_shown = |card: &Bubble| !texts(card).iter().any(|text| text == "สั่งล่วงหน้า");
+
+    let ask = s.changes(mooncakes, "ready").await;
+    assert_eq!(ask[0], t.editing_product("ขนมไหว้พระจันทร์"));
+    let latest = NaiveDate::from_ymd_opt(2027, 1, 23).unwrap();
+    assert_eq!(text(&ask[1]), text(&t.ask_product_ready_on(latest, None)));
+    assert_eq!(quick_replies(&ask[1])[..2], ["พรุ่งนี้", "อ. 27 ต.ค."]);
+    assert_eq!(quick_replies(&ask[1])[10..], ["ไม่สั่งล่วงหน้า", "ยกเลิก"]);
+    let set = s.types("15 พ.ย.").await;
+    assert_eq!(set[0], t.product_saved());
+    assert_eq!(row(card(&set[1]), "สั่งล่วงหน้า"), "พร้อม 15 พ.ย. 2569");
+    let product = s.get(mooncakes).await;
+    assert_eq!(product.ready_on, NaiveDate::from_ymd_opt(2026, 11, 15));
+    assert_eq!(product.updated_at, t0());
+    assert_eq!(
+        (product.stock, product.status),
+        (Some(30), product::Status::Active)
+    );
+
+    let ask = s.changes(mooncakes, "ready").await;
+    assert!(
+        text(&ask[1]).ends_with("(ตอนนี้: 15 พ.ย. 2569)"),
+        "{}",
+        text(&ask[1])
+    );
+    let kept = s.types("ใช้ของเดิม").await;
+    assert_eq!(kept[0], t.product_unchanged());
+    s.changes(mooncakes, "ready").await;
+    let unknown = s.types("พรุ่งนี้นะ").await;
+    assert_eq!(text(&unknown[0]), text(&t.ready_day_unknown()));
+    let cleared = s.types("ไม่สั่งล่วงหน้า").await;
+    assert_eq!(cleared[0], t.product_saved());
+    assert!(not_shown(card(&cleared[1])));
+    assert_eq!(s.get(mooncakes).await.ready_on, None);
+
+    // A ready date passed already is none: not shown, nor offered to keep
+    product::Entity::update_many()
+        .col_expr(
+            product::Column::ReadyOn,
+            Expr::value(NaiveDate::from_ymd_opt(2026, 10, 25)),
+        )
+        .filter(product::Column::Id.eq(mooncakes))
+        .exec(&s.db)
+        .await
+        .unwrap();
+    let ask = s.changes(mooncakes, "ready").await;
+    assert_eq!(text(&ask[1]), text(&t.ask_product_ready_on(latest, None)));
+    assert!(!quick_replies(&ask[1]).contains(&"ใช้ของเดิม"));
+    let set = s.types("พรุ่งนี้").await;
+    assert_eq!(row(card(&set[1]), "สั่งล่วงหน้า"), "พร้อม 26 ต.ค. 2569");
+}
+
 /// FR-PROD-05, FR-SRCH-03: the shop's products but the deleted ones, ten to a page with
 /// "ดูเพิ่มเติม", sold-out ones first, then the newest; each card with its photo, rows and
 /// buttons.
@@ -745,7 +804,8 @@ async fn the_details_are_changed_a_part_at_a_time() {
             "หน่วย",
             "หมวดหมู่",
             "จำนวน",
-            "รายละเอียด"
+            "รายละเอียด",
+            "สั่งล่วงหน้า"
         ]
     );
     assert_eq!(

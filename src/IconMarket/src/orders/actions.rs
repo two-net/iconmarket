@@ -411,6 +411,7 @@ pub(super) fn order_line(item: &order_item::Model) -> OrderLine<'_> {
         price: item.unit_price,
         quantity: item.quantity,
         total: item.line_total,
+        ready_on: item.ready_on,
     }
 }
 

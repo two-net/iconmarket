@@ -1,11 +1,11 @@
 //! "ซื้อของ" and "ค้นหา" (FR-SRCH): what buyers see of the products and shops, in what order and
-//! how paged; the cards and details of products; searches that page through what they keep; and
-//! what an empty list says. Each event is handled in a transaction committed once it is handled.
+//! how paged; the cards and details of products, a pre-order's ready date (FR-PROD-11); searches
+//! that page through what they keep; and what an empty list says. Each event is handled in a transaction committed once it is handled.
 //! The `async` tests each start a throwaway PostgreSQL, so they need Docker.
 
 use std::slice;
 
-use chrono::TimeDelta;
+use chrono::{NaiveDate, TimeDelta};
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::{
@@ -851,6 +851,42 @@ async fn a_card_shows_what_buyers_need_to_choose() {
         [("ดูสินค้า".to_owned(), format!("browse.shop?shop={}", s.shop))]
     );
     assert_eq!(quick_replies(&front), ["ซื้อของ", "ค้นหา", "เมนู"]);
+}
+
+/// FR-PROD-11: a pre-order's card and details say when it is ready, until that day comes; from
+/// then on, it is an ordinary product.
+#[tokio::test]
+async fn a_pre_order_says_when_it_is_ready_until_it_is() {
+    let s = setup().await;
+    // now() is 25 ต.ค. 2569
+    let mooncakes = s
+        .insert(product::ActiveModel {
+            ready_on: Set(NaiveDate::from_ymd_opt(2026, 11, 5)),
+            ..testing::new_product(s.shop, s.sweets, "ขนมไหว้พระจันทร์", Some(20))
+        })
+        .await;
+    let ready = "สั่งล่วงหน้า · พร้อม 5 พ.ย. 2569";
+    let category = format!("browse?category={}", s.sweets);
+    let list = s.tap(&category).await;
+    let (listed, _) = page(&list);
+    assert_eq!(
+        texts(listed[0]),
+        ["ขนมไหว้พระจันทร์", "฿110 / แผง", "ร้านป้าแดง", "เหลือ 20", ready]
+    );
+    assert_eq!(labels_of(listed[0]), ["ใส่ตะกร้า", "ดูร้าน"]);
+    let details = s.tap(&format!("browse.product?product={mooncakes}")).await;
+    assert_eq!(
+        texts(cards(&details)[0])[..4],
+        ["ขนมไหว้พระจันทร์", "฿110 / แผง", "เหลือ 20", ready]
+    );
+
+    let the_day = testing::at() + TimeDelta::days(14);
+    let list = s.taps_at(s.buyer, &category, the_day).await;
+    let (listed, _) = page(&list[0]);
+    assert_eq!(
+        texts(listed[0]),
+        ["ขนมไหว้พระจันทร์", "฿110 / แผง", "ร้านป้าแดง", "เหลือ 20"]
+    );
 }
 
 /// FR-SRCH-07: a product's details show every photo, its description and its shop, with

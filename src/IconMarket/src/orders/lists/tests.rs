@@ -1,10 +1,12 @@
 //! "คำสั่งซื้อของฉัน" and "ออเดอร์ร้าน" (FR-ORD-10), an order in full, and what each shows of
-//! how to reach the other party (FR-ORD-11, FR-SHOP-08, NFR-PRIV-04). The tests each start a
+//! how to reach the other party (FR-ORD-11, FR-SHOP-08, NFR-PRIV-04); a pre-ordered line's ready
+//! date (FR-PROD-11). The tests each start a
 //! throwaway PostgreSQL, so they need Docker.
 
-use chrono::{TimeDelta, TimeZone, Utc};
+use chrono::{NaiveDate, TimeDelta, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::DateTimeUtc;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, TransactionTrait};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
@@ -883,6 +885,33 @@ async fn an_order_in_full() {
             ("เมนู", "เมนู".to_owned())
         ]
     );
+}
+
+/// FR-PROD-11, DR-03: a line ordered in advance says when it is ready, on the buyer's list and
+/// the order in full, as it was ordered: its product is no pre-order now.
+#[tokio::test]
+async fn a_pre_ordered_line_says_when_it_is_ready() {
+    let s = setup().await;
+    let pickup = order::Fulfillment::Pickup;
+    let placed = s.order(Status::Accepted, pickup).await;
+    order_item::Entity::update_many()
+        .col_expr(
+            order_item::Column::ReadyOn,
+            Expr::value(NaiveDate::from_ymd_opt(2026, 11, 5)),
+        )
+        .filter(order_item::Column::OrderId.eq(placed.id))
+        .exec(&s.db)
+        .await
+        .unwrap();
+    assert_eq!(s.eggs.ready_on, None);
+    let ready = "สั่งล่วงหน้า · พร้อม 5 พ.ย. 2569".to_owned();
+
+    let list = s.taps(s.buyer.id, "my_orders").await;
+    let listed = texts(card_of(&list[0], &placed.order_number));
+    let at = listed.iter().position(|text| text == "฿220").unwrap();
+    assert_eq!(listed[at + 1], ready);
+    let full = s.taps(s.seller.id, &details(placed.id)).await;
+    assert!(texts(card(&full[0])).contains(&ready));
 }
 
 /// NFR-SEC-02, FR-ADM-04: only an order's buyer, its seller or an admin sees it in full; an

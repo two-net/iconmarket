@@ -469,6 +469,32 @@ async fn a_proposal_is_a_button_on_the_database_card() {
     assert_eq!((cart, orders), (0, 0));
 }
 
+/// FR-PROD-11: the model is told when a pre-order is ready, as its card says, and of nothing
+/// else that it is one.
+#[tokio::test]
+async fn the_model_is_told_when_a_pre_order_is_ready() {
+    let s = setup().await;
+    // now() is 22 ต.ค. 2569
+    let mooncakes = product::ActiveModel {
+        ready_on: Set(chrono::NaiveDate::from_ymd_opt(2026, 11, 5)),
+        ..testing::new_product(
+            s.market.shop.id,
+            s.market.category.id,
+            "ขนมไหว้พระจันทร์",
+            Some(20),
+        )
+    };
+    let mooncakes = mooncakes.insert(&s.db).await.unwrap().id.to_string();
+    let says = [
+        calls("get_product", json!({ "productId": mooncakes })),
+        calls("get_product", json!({ "productId": s.eggs() })),
+        Says::Text("ขนมไหว้พระจันทร์เป็นสินค้าสั่งล่วงหน้าค่ะ ดูวันพร้อมที่การ์ดได้เลยค่ะ"),
+    ];
+    let (_, requests) = s.asks(s.buyer(), "ขนมไหว้พระจันทร์ได้เมื่อไร", says).await;
+    assert_eq!(told(&requests[1])[0]["readyOn"], "5 พ.ย. 2569");
+    assert_eq!(told(&requests[2])[0].get("readyOn"), None);
+}
+
 /// NFR-SEC-02, FR-AI-06: whatever the model asks for, each tool runs as the user: a product
 /// buyers don't see, another shop's product, another buyer's order or another shop's are not
 /// found, and nothing is proposed.

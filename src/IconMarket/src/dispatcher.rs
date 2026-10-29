@@ -42,7 +42,7 @@ mod worker;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use chrono::TimeDelta;
+use chrono::{NaiveDate, TimeDelta};
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseTransaction, DbErr, EntityTrait, QueryFilter};
 
@@ -132,6 +132,14 @@ impl<'a> Turn<'a> {
             unlinked: Mutex::new(Vec::new()),
             essential: AtomicBool::new(false),
         })
+    }
+
+    /// The day it is [`now`](Self::now) in the business time zone (`app.timeZone`): what a
+    /// pre-order's ready date is judged by (FR-PROD-11).
+    pub fn today(&self) -> NaiveDate {
+        self.now
+            .with_timezone(&self.templates.time_zone())
+            .date_naive()
     }
 
     /// Ends the flow in progress as if it had expired, for one this release can't continue: a

@@ -313,7 +313,7 @@ async fn basket(
     if turn.actor.shop.as_ref().map(|own| own.id) == Some(shop.id) {
         return Ok(Err(Refusal::OwnShop));
     }
-    let lines: Vec<cart::Line> = cart::lines(db, turn.actor.user.id)
+    let lines: Vec<cart::Line> = cart::lines(db, turn.actor.user.id, turn.today())
         .await?
         .into_iter()
         .filter(|line| line.shop.id == shop.id && line.state.orderable())

@@ -1,7 +1,7 @@
 //! Adding a product (FR-PROD-01, FR-PROD-03): the flow's steps and what each refuses, the
 //! photos kept as drafts until the product is listed, nothing listed before "ยืนยันลงขาย",
-//! correcting a part, the categories paged, a seller's photo offered for listing, and only the
-//! owner of an approved shop listing; a listing moderation finds suspicious held for review
+//! correcting a part, a pre-order's ready date (FR-PROD-11), the categories paged, a seller's
+//! photo offered for listing, and only the owner of an approved shop listing; a listing moderation finds suspicious held for review
 //! (FR-PROD-09); the statuses a product goes through (FR-PROD-07); and whether it can be ordered
 //! (FR-SRCH-07). Each event is handled in a transaction committed once it is handled. The `async`
 //! tests each start a throwaway PostgreSQL, so they need Docker.
@@ -266,6 +266,7 @@ fn product_of(stock: Option<i32>) -> product::Model {
         updated_at: t0(),
         restocked_at: None,
         deleted_at: None,
+        ready_on: None,
     }
 }
 
@@ -1100,6 +1101,76 @@ async fn photos_are_taken_at_any_step_up_to_the_most_a_product_has() {
     assert_eq!(images[0], (OwnerType::Product, product, new));
 }
 
+/// FR-PROD-11: from the preview, a product becomes a pre-order, ready on a day tapped from the
+/// next 10 or typed, from tomorrow to 90 days ahead; "ไม่สั่งล่วงหน้า" makes it none again.
+/// Listed, it keeps its ready date.
+#[tokio::test]
+async fn a_pre_order_is_listed_with_its_ready_date() {
+    let s = setup().await;
+    let (a, t) = (s.seller, &s.templates);
+    s.fill(a).await;
+    // 90 days from Sunday 25 ต.ค. 2569
+    let latest = NaiveDate::from_ymd_opt(2027, 1, 23).unwrap();
+    let ask = s.corrects(a, Step::ReadyOn).await;
+    assert_eq!(text(&ask[0]), text(&t.ask_product_ready_on(latest, None)));
+    assert_eq!(
+        quick_replies(&ask[0]),
+        [
+            "พรุ่งนี้",
+            "อ. 27 ต.ค.",
+            "พ. 28 ต.ค.",
+            "พฤ. 29 ต.ค.",
+            "ศ. 30 ต.ค.",
+            "ส. 31 ต.ค.",
+            "อา. 1 พ.ย.",
+            "จ. 2 พ.ย.",
+            "อ. 3 พ.ย.",
+            "พ. 4 พ.ย.",
+            "ไม่สั่งล่วงหน้า",
+            "ยกเลิก"
+        ]
+    );
+    let preview = s.types(a, "ศ. 30 ต.ค.").await;
+    assert_eq!(row(&preview[1], "สั่งล่วงหน้า"), "พร้อม 30 ต.ค. 2569");
+    assert_eq!(row(&preview[1], "จำนวน"), "30 แผง");
+
+    // Correcting it shows what it is, and room is left for "ใช้ของเดิม"
+    let ask = s.corrects(a, Step::ReadyOn).await;
+    assert!(
+        text(&ask[0]).ends_with("(ตอนนี้: 30 ต.ค. 2569)"),
+        "{}",
+        text(&ask[0])
+    );
+    let replies = quick_replies(&ask[0]);
+    assert_eq!(replies.len(), limits::QUICK_REPLY_ITEMS);
+    assert_eq!(replies[10..], ["ไม่สั่งล่วงหน้า", "ใช้ของเดิม", "ยกเลิก"]);
+    for (typed, why) in [
+        ("25 ต.ค.", t.ready_day_too_soon()),
+        ("1 ต.ค. 2569", t.ready_day_too_soon()),
+        ("24 ม.ค.", t.ready_day_too_late(latest)),
+        ("เร็วๆ นี้", t.ready_day_unknown()),
+    ] {
+        let refused = s.types(a, typed).await;
+        assert_eq!(text(&refused[0]), text(&why), "{typed}");
+        assert_eq!(quick_replies(&refused[0]).len(), limits::QUICK_REPLY_ITEMS);
+        assert_eq!(s.step(a).await, Step::ReadyOn);
+    }
+    let preview = s.types(a, "ไม่สั่งล่วงหน้า").await;
+    assert!(!card_texts(&preview[1]).contains(&"สั่งล่วงหน้า".to_owned()));
+
+    s.corrects(a, Step::ReadyOn).await;
+    let preview = s.types(a, "๒๓/๑/๒๕๗๐").await;
+    assert_eq!(row(&preview[1], "สั่งล่วงหน้า"), "พร้อม 23 ม.ค. 2570");
+    s.taps_latest(a, SUBMIT).await;
+    let [product] = &s.products().await[..] else {
+        panic!("one product");
+    };
+    assert_eq!(product.ready_on, Some(latest));
+    assert_eq!(ready_on(product, latest.pred_opt().unwrap()), Some(latest));
+    // From its ready day on, an ordinary product
+    assert_eq!(ready_on(product, latest), None);
+}
+
 /// Correcting from the preview: each part shows what it is now, with "ใช้ของเดิม", and leads
 /// back to the preview, which lists the product as corrected.
 #[tokio::test]
@@ -1118,6 +1189,7 @@ async fn correcting_a_part_returns_to_the_preview() {
             "หมวดหมู่",
             "จำนวน",
             "รายละเอียด",
+            "สั่งล่วงหน้า",
             "ยกเลิก"
         ]
     );

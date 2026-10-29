@@ -2193,7 +2193,9 @@ async fn a_buyer_puts_a_product_in_the_cart_end_to_end() {
     let ask_address = templates::with_cancel(t.ask_zone(true, false, None));
     assert_eq!(reply("a5"), json!([ask_address]));
 
-    let lines = cart::lines(&s.db, alice).await.unwrap();
+    let lines = cart::lines(&s.db, alice, Utc::now().date_naive())
+        .await
+        .unwrap();
     let lines: Vec<_> = lines
         .iter()
         .map(|line| (line.product.id, line.item.quantity))
@@ -2753,7 +2755,7 @@ fn bubble_of<'a>(messages: &'a Value, name: &str) -> &'a Value {
 }
 
 async fn cart_of(s: &Setup, user_id: i64) -> Vec<(i64, i32)> {
-    cart::lines(&s.db, user_id)
+    cart::lines(&s.db, user_id, Utc::now().date_naive())
         .await
         .unwrap()
         .iter()

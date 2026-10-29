@@ -2,11 +2,11 @@
 //! those with one choice skipped; the address asked for first, changed or shared; the note; the
 //! summary and the order it places, numbered by the day in Bangkok, with its stock reserved, its
 //! lines copied and its cart lines removed; a repeated tap; what changed since the summary,
-//! a changed price among it (AC-12); refusals; and checkouts of the last units at the same
+//! a changed price among it (AC-12), or a pre-order's ready date (FR-PROD-11); refusals; and checkouts of the last units at the same
 //! moment (AC-03, NFR-MNT-07). Each event is handled in a transaction committed once it is
 //! handled. The `async` tests each start a throwaway PostgreSQL, so they need Docker.
 
-use chrono::{TimeDelta, TimeZone, Utc};
+use chrono::{NaiveDate, TimeDelta, TimeZone, Utc};
 use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::Expr;
 use sea_orm::{
@@ -20,7 +20,9 @@ use crate::dispatcher::{Finished, pending};
 use crate::line::flex::{Bubble, Component, FlexContainer};
 use crate::line::{Body, limits};
 use crate::notifications::templates::Templates;
-use crate::persistence::entity::{cart_item, order, order_event, order_item, product, session};
+use crate::persistence::entity::{
+    cart_item, order, order_event, order_item, pending_action, product, session,
+};
 use crate::persistence::{orm, testing};
 use crate::users::access::Actor;
 use crate::users::address::AddressFlow;
@@ -947,6 +949,73 @@ async fn a_price_changed_since_the_summary_is_shown_first() {
     let order = s.orders().await.remove(0);
     assert_eq!(order.total, Money::from_baht(250));
     assert_eq!(s.items(order.id).await[0].unit_price, Money::from_baht(120));
+}
+
+/// FR-PROD-11, FR-CART-05, DR-03: a pre-order's ready date changed since the summary places no
+/// order, and the summary is shown again with the new one, which then places it, the order's
+/// line and card keeping it.
+#[tokio::test]
+async fn a_pre_order_is_placed_with_the_ready_date_shown() {
+    let s = setup().await;
+    let ready_on = |day: u32| NaiveDate::from_ymd_opt(2026, 11, day);
+    let ready =
+        |day: u32| s.update_product(s.eggs, product::Column::ReadyOn, Expr::value(ready_on(day)));
+    ready(5).await;
+    s.put(s.buyer, s.eggs, 2).await;
+    let confirm = s.summary(s.buyer).await;
+    ready(7).await;
+
+    let (changed, _) = s.confirms(s.buyer, &confirm).await;
+    assert!(s.orders().await.is_empty());
+    assert_eq!(
+        text(&changed[0]),
+        "ขอโทษค่ะ ข้อมูลเปลี่ยนไประหว่างสั่งซื้อ จึงยังไม่ได้สั่งซื้อ\n\
+         • \"ไข่ไก่เบอร์ 2\" เปลี่ยนวันพร้อมเป็น 7 พ.ย. 2569\n\
+         ตรวจสรุปใหม่ด้านล่าง แล้วกด \"ยืนยันสั่งซื้อ\" อีกครั้งนะคะ"
+    );
+    let ready_line = "สั่งล่วงหน้า · พร้อม 7 พ.ย. 2569".to_owned();
+    let (_, summary) = card(&changed[1]);
+    let shown = texts(summary);
+    let at = shown.iter().position(|text| *text == "฿220").unwrap();
+    assert_eq!(shown[at + 1], ready_line);
+
+    let (placed, _) = s.confirms(s.buyer, &confirm_of(&changed)).await;
+    let order = s.orders().await.remove(0);
+    assert_eq!(s.items(order.id).await[0].ready_on, ready_on(7));
+    let (_, card) = card(&placed[0]);
+    assert!(texts(card).contains(&ready_line), "{:?}", texts(card));
+    // The order keeps it, whatever becomes of the product's
+    ready(9).await;
+    assert_eq!(s.items(order.id).await[0].ready_on, ready_on(7));
+}
+
+/// A summary shown before ready dates were kept with it, as the release before them stored it,
+/// still places its order (FR-UI-13).
+#[tokio::test]
+async fn a_summary_from_before_ready_dates_still_places_its_order() {
+    let s = setup().await;
+    s.put(s.buyer, s.eggs, 2).await;
+    let confirm = s.summary(s.buyer).await;
+    let id = pending_id(&confirm);
+    let stored = pending_action::Entity::find_by_id(id)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut payload = stored.payload.clone();
+    for line in payload["lines"].as_array_mut().unwrap() {
+        assert!(line.as_object_mut().unwrap().remove("ready_on").is_some());
+    }
+    pending_action::ActiveModel {
+        payload: Set(payload),
+        ..stored.into_active_model()
+    }
+    .update(&s.db)
+    .await
+    .unwrap();
+
+    s.confirms(s.buyer, &confirm).await;
+    assert_eq!(s.orders().await.len(), 1);
 }
 
 /// FR-CART-05, FR-UI-13: anything changed since the summary places no order, and says what

@@ -10,7 +10,7 @@
     reason = "the flows that send these messages are built by later issues"
 )]
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 use url::Url;
 
@@ -1054,17 +1054,26 @@ impl Templates {
     }
 
     /// "ใส่ตะกร้า" (FR-CART-01), or "แก้จำนวน" on its line if `change`: how many of product
-    /// `name`, sold by `unit`, as in Appendix A.2; `in_cart` is what its line holds now. The
-    /// quantities that fit follow as Quick Replies, then "ระบุเอง" and the cancel button.
-    pub fn ask_cart_quantity(&self, name: &str, unit: &str, in_cart: i32, change: bool) -> Message {
+    /// `name`, sold by `unit`, as in Appendix A.2, with its ready date if it is a pre-order
+    /// (FR-PROD-11); `in_cart` is what its line holds now. The quantities that fit follow as
+    /// Quick Replies, then "ระบุเอง" and the cancel button.
+    pub fn ask_cart_quantity(
+        &self,
+        name: &str,
+        unit: &str,
+        ready_on: Option<NaiveDate>,
+        in_cart: i32,
+        change: bool,
+    ) -> Message {
         let kha_question = self.kha_question();
+        let name = format!("\"{name}\"{}", ready_note(ready_on));
         Message::text(match (change, in_cart) {
             (true, _) => {
-                format!("\"{name}\" ในตะกร้ามี {in_cart} {unit} เปลี่ยนเป็นกี่{unit}{kha_question}")
+                format!("{name} ในตะกร้ามี {in_cart} {unit} เปลี่ยนเป็นกี่{unit}{kha_question}")
             }
-            (false, 0) => format!("\"{name}\" เอากี่{unit}{kha_question}"),
+            (false, 0) => format!("{name} เอากี่{unit}{kha_question}"),
             (false, _) => {
-                format!("\"{name}\" อยู่ในตะกร้าแล้ว {in_cart} {unit} เอาเพิ่มอีกกี่{unit}{kha_question}")
+                format!("{name} อยู่ในตะกร้าแล้ว {in_cart} {unit} เอาเพิ่มอีกกี่{unit}{kha_question}")
             }
         })
     }
@@ -1154,17 +1163,18 @@ impl Templates {
     }
 
     /// Product `name` is in the cart (FR-CART-01): its line holds `quantity` of `unit`, `total`
-    /// in all, as in Appendix A.2; `more` if it was there already and now holds more. Where to
-    /// carry on follows as Quick Replies.
+    /// in all, as in Appendix A.2, ready on `ready_on` if a pre-order (FR-PROD-11); `more` if it
+    /// was there already and now holds more. Where to carry on follows as Quick Replies.
     pub fn added_to_cart(
         &self,
         name: &str,
         quantity: i32,
         unit: &str,
         total: Money,
+        ready_on: Option<NaiveDate>,
         more: bool,
     ) -> Message {
-        let (kha, line) = (self.kha(), cart_line(name, quantity, unit, total));
+        let (kha, line) = (self.kha(), cart_line(name, quantity, unit, total, ready_on));
         Message::text(if more {
             format!("ใส่เพิ่มแล้ว{kha} ตอนนี้ในตะกร้ามี {line}")
         } else {
@@ -1216,10 +1226,17 @@ impl Templates {
         ))
     }
 
-    /// The line of product `name` now holds `quantity` of `unit`, `total` in all (FR-CART-03).
-    /// The cart follows.
-    pub fn quantity_changed(&self, name: &str, quantity: i32, unit: &str, total: Money) -> Message {
-        let line = cart_line(name, quantity, unit, total);
+    /// The line of product `name` now holds `quantity` of `unit`, `total` in all (FR-CART-03),
+    /// ready on `ready_on` if a pre-order (FR-PROD-11). The cart follows.
+    pub fn quantity_changed(
+        &self,
+        name: &str,
+        quantity: i32,
+        unit: &str,
+        total: Money,
+        ready_on: Option<NaiveDate>,
+    ) -> Message {
+        let line = cart_line(name, quantity, unit, total, ready_on);
         Message::text(format!("แก้จำนวนแล้ว{} {line}", self.kha()))
     }
 
@@ -1401,6 +1418,14 @@ impl Templates {
             CheckoutChange::DeliveryFee { from, to } => {
                 format!("• ค่าส่งเปลี่ยนจาก {from} เป็น {to}")
             }
+            CheckoutChange::ReadyOn {
+                name,
+                ready_on: Some(day),
+            } => format!("• \"{name}\" เปลี่ยนวันพร้อมเป็น {}", thai::format_day(day)),
+            CheckoutChange::ReadyOn {
+                name,
+                ready_on: None,
+            } => format!("• \"{name}\" ไม่ต้อง{}แล้ว", labels::PRE_ORDER.as_str()),
         }));
         lines.push(if again {
             format!(
@@ -1439,8 +1464,12 @@ impl Templates {
             .iter()
             .map(|line| {
                 format!(
-                    "{} × {} {} = {}",
-                    line.name, line.quantity, line.unit, line.total
+                    "{} × {} {} = {}{}",
+                    line.name,
+                    line.quantity,
+                    line.unit,
+                    line.total,
+                    ready_note(line.ready_on)
                 )
             })
             .collect();
@@ -2083,7 +2112,14 @@ impl Templates {
             card.lines.len().min(ORDER_LINES_ON_CARD)
         };
         for line in &card.lines[..shown] {
-            let amounts = line_amounts(line.name, line.quantity, line.unit, line.price, line.total);
+            let amounts = line_amounts(
+                line.name,
+                line.quantity,
+                line.unit,
+                line.price,
+                line.total,
+                line.ready_on,
+            );
             let line = FlexBox {
                 spacing: Some(Spacing::Sm),
                 ..FlexBox::vertical(amounts)
@@ -2272,6 +2308,10 @@ impl Templates {
                 lines.push(format!(
                     "จากนั้นรอร้านรับออเดอร์ {told}ดูออเดอร์ทั้งหมดได้ที่ {my_orders} และยกเลิกเองได้ก่อนร้านรับออเดอร์{kha}"
                 ));
+                lines.push(format!(
+                    "สินค้าที่เขียนว่า \"{}\" จะบอกวันที่ของพร้อมไว้ที่สินค้า ในตะกร้า และในออเดอร์{kha}",
+                    labels::PRE_ORDER.as_str()
+                ));
                 if facts.assistant {
                     lines.push(format!(
                         "จะพิมพ์บอกสิ่งที่อยากได้ก็ได้{kha} เช่น \"อยากได้ไข่ไก่ 2 แผง\" ผู้ช่วยจะหาให้ แต่จะใส่ตะกร้าหรือสั่งซื้อก็ต่อเมื่อคุณกดยืนยันเอง{kha}"
@@ -2296,6 +2336,11 @@ impl Templates {
                 lines.push(format!(
                     "- {}: แก้ราคา เติมจำนวน ซ่อน หรือลบสินค้า",
                     quoted(&labels::MY_PRODUCTS)
+                ));
+                lines.push(format!(
+                    "- รับสั่งล่วงหน้า: กด {} แล้วเลือก {} เพื่อบอกวันที่ของพร้อม ผู้ซื้อจะเห็นวันนี้ที่สินค้าและในออเดอร์",
+                    quoted(&labels::EDIT),
+                    quoted(&labels::PRE_ORDER)
                 ));
                 lines.push(format!(
                     "- {}: ปิดร้านชั่วคราวได้ ออเดอร์ที่มีอยู่ยังดำเนินต่อ",
@@ -3710,6 +3755,44 @@ impl Templates {
         ))
     }
 
+    /// Asks for the day a pre-order is ready (FR-PROD-11), from tomorrow to `latest`, or that it
+    /// is no pre-order.
+    pub fn ask_product_ready_on(&self, latest: NaiveDate, current: Option<&str>) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ถ้ารับสั่งล่วงหน้า ของจะพร้อมวันไหน{kha_question} กดเลือกวัน หรือพิมพ์วันที่ เช่น 15 พ.ย. ได้ตั้งแต่พรุ่งนี้ถึง {} ผู้ซื้อจะเห็นวันนี้ที่สินค้า ถ้าไม่ได้สั่งล่วงหน้า กด \"{}\" ได้เลย{kha}{}",
+            thai::format_day(latest),
+            labels::NOT_PRE_ORDER.as_str(),
+            now(current)
+        ))
+    }
+
+    /// A ready date that couldn't be read as a day (FR-PROD-11).
+    pub fn ready_day_unknown(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ไม่เข้าใจวันที่ พิมพ์แบบ 15 พ.ย. หรือ 15/11 หรือกดเลือกวันได้เลย{kha}"
+        ))
+    }
+
+    /// A ready date that isn't after today: a pre-order is ready from tomorrow on (FR-PROD-11).
+    pub fn ready_day_too_soon(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} วันพร้อมต้องเป็นพรุ่งนี้หรือหลังจากนั้น กดเลือกวันหรือพิมพ์ใหม่ได้เลย{kha} ถ้าพร้อมขายแล้ว กด \"{}\" ได้เลย{kha}",
+            labels::NOT_PRE_ORDER.as_str()
+        ))
+    }
+
+    /// A ready date after `latest`, the last one a pre-order may have (FR-PROD-11).
+    pub fn ready_day_too_late(&self, latest: NaiveDate) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ตั้งวันพร้อมได้ไม่เกิน {} กดเลือกวันหรือพิมพ์ใหม่ได้เลย{kha}",
+            thai::format_day(latest)
+        ))
+    }
+
     /// The product before it is listed (FR-PROD-01): `preview`, whose buttons list it or correct
     /// a part.
     pub fn product_preview(&self, preview: &ProductPreview<'_>) -> Vec<Message> {
@@ -3998,13 +4081,15 @@ impl Templates {
             0 => NONE.to_owned(),
             count => format!("{count} รูป"),
         };
+        let mut rows = vec![
+            row("หมวดหมู่", preview.category),
+            row("จำนวน", &stock_line(preview.stock, preview.unit)),
+        ];
+        rows.extend(preview.ready_on.map(ready_row));
+        rows.push(row("รูปสินค้า", &photos));
         let details = FlexBox {
             spacing: Some(Spacing::Sm),
-            ..FlexBox::vertical([
-                row("หมวดหมู่", preview.category),
-                row("จำนวน", &stock_line(preview.stock, preview.unit)),
-                row("รูปสินค้า", &photos),
-            ])
+            ..FlexBox::vertical(rows)
         };
         let body = FlexBox {
             spacing: Some(Spacing::Md),
@@ -4441,6 +4526,36 @@ pub fn availability(availability: Availability) -> String {
     }
 }
 
+/// What a pre-order's card, and each line of a cart or order holding one, says of it
+/// (FR-PROD-11): `สั่งล่วงหน้า · พร้อม 5 พ.ย. 2569`.
+pub fn ready_line(day: NaiveDate) -> String {
+    format!(
+        "{} · พร้อม {}",
+        labels::PRE_ORDER.as_str(),
+        thai::format_day(day)
+    )
+}
+
+/// The same, within a sentence: ` (สั่งล่วงหน้า พร้อม 5 พ.ย. 2569)` after what is ordered, or
+/// nothing for what is no pre-order.
+fn ready_note(ready_on: Option<NaiveDate>) -> String {
+    ready_on
+        .map(|day| {
+            format!(
+                " ({} พร้อม {})",
+                labels::PRE_ORDER.as_str(),
+                thai::format_day(day)
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// The row of a seller's card saying a product is a pre-order, ready on `day`.
+fn ready_row(day: NaiveDate) -> Component {
+    let ready = format!("พร้อม {}", thai::format_day(day));
+    row(labels::PRE_ORDER.as_str(), &ready)
+}
+
 /// A product's price per unit, as its card says it: `฿20 / กล่อง` (FR-UI-07).
 pub fn price_per_unit(price: Money, unit: &str) -> String {
     format!("{price} / {unit}")
@@ -4466,6 +4581,8 @@ const LISTING_EXAMPLE: &str = "ขนมครก กล่องละ 20 ม�
 /// The colours of whether a shop is open, on its card
 const OPEN_COLOR: &str = "#06C755";
 const CLOSED_COLOR: &str = "#D93025";
+/// A pre-order's ready date: neither open nor closed (FR-PROD-11)
+const PRE_ORDER_COLOR: &str = "#E37400";
 
 /// A shop's card as buyers see it (FR-SHOP-09). #45 adds its rating, once ratings are on
 /// (FR-ORD-14).
@@ -4495,6 +4612,8 @@ pub struct ProductPreview<'a> {
     /// `None`: unlimited or made to order
     pub stock: Option<i32>,
     pub description: Option<&'a str>,
+    /// The day it is ready, if it is a pre-order (FR-PROD-11)
+    pub ready_on: Option<NaiveDate>,
     /// Its first photo's `/img/p` link
     pub photo: Option<&'a Url>,
     /// How many photos it has
@@ -4523,6 +4642,8 @@ pub struct MyProductCard<'a> {
     /// What is left for new orders: `None` is unlimited or made to order, and 0 sold out
     /// (FR-PROD-06)
     pub stock: Option<i32>,
+    /// The day it is ready, while it is a pre-order (FR-PROD-11)
+    pub ready_on: Option<NaiveDate>,
     /// Whether buyers see it (FR-PROD-07)
     pub status: product::Status,
     /// Its first photo's `/img/p` link
@@ -4561,6 +4682,8 @@ pub struct ProductCard<'a> {
     /// Its shop's name
     pub shop: &'a str,
     pub availability: Availability,
+    /// The day it is ready, while it is a pre-order (FR-PROD-11)
+    pub ready_on: Option<NaiveDate>,
     /// Its first photo's `/img/p` link, or the placeholder's
     pub photo: &'a Url,
     /// "ใส่ตะกร้า", while it can be ordered (FR-PROD-06)
@@ -4580,6 +4703,8 @@ pub struct ProductDetails<'a> {
     /// Its shop's name
     pub shop: &'a str,
     pub availability: Availability,
+    /// The day it is ready, while it is a pre-order (FR-PROD-11)
+    pub ready_on: Option<NaiveDate>,
     /// Its photos' `/img/p` links, in order, or the placeholder's alone
     pub photos: &'a [Url],
     /// "ใส่ตะกร้า" first while it can be ordered, then "ดูร้าน" and "แจ้งปัญหา"
@@ -4606,6 +4731,8 @@ pub struct CartLine<'a> {
     pub price: Money,
     pub quantity: i32,
     pub total: Money,
+    /// The day it is ready, while its product is a pre-order (FR-PROD-11)
+    pub ready_on: Option<NaiveDate>,
     /// Whether it can be ordered, and why not
     pub state: cart::State,
     /// "แก้จำนวน" while its product can be ordered, then "ลบออก"
@@ -4636,6 +4763,8 @@ pub struct OrderLine<'a> {
     pub price: Money,
     pub quantity: i32,
     pub total: Money,
+    /// The day it is ready, if it was ordered in advance (FR-PROD-11)
+    pub ready_on: Option<NaiveDate>,
 }
 
 /// What changed since checkout's summary, so its confirmation placed no order (FR-CART-05).
@@ -4668,6 +4797,11 @@ pub enum CheckoutChange<'a> {
     DeliveryFee {
         from: Money,
         to: Money,
+    },
+    /// A pre-order's ready date changed, or it is no pre-order any more (FR-PROD-11)
+    ReadyOn {
+        name: &'a str,
+        ready_on: Option<NaiveDate>,
     },
 }
 
@@ -5186,14 +5320,16 @@ fn product_card(card: &ProductCard<'_>) -> Bubble {
         max_lines: Some(1),
         ..Text::new(card.shop)
     };
+    let mut contents = vec![
+        name.into(),
+        price.into(),
+        shop.into(),
+        availability_line(card.availability),
+    ];
+    contents.extend(card.ready_on.map(|day| ready_text(day, true)));
     let body = FlexBox {
         spacing: Some(Spacing::Sm),
-        ..FlexBox::vertical([
-            name.into(),
-            price.into(),
-            shop.into(),
-            availability_line(card.availability),
-        ])
+        ..FlexBox::vertical(contents)
     };
     let buttons: Vec<Action> = card
         .add_to_cart
@@ -5230,6 +5366,7 @@ fn product_details_card(details: &ProductDetails<'_>, first: &Url) -> Bubble {
         price.into(),
         availability_line(details.availability),
     ];
+    top.extend(details.ready_on.map(|day| ready_text(day, true)));
     if let Some(description) = details.description {
         let description = Text {
             size: Some(Size::Sm),
@@ -5290,13 +5427,34 @@ fn availability_line(of: Availability) -> Component {
     text.into()
 }
 
+/// That a pre-order is ready on `day` (FR-PROD-11), under its availability on its card, wrapped
+/// to fit a narrow one if `wrap`, or under its amounts on a line of a cart or order, whose wider
+/// card has room for it, and when full, none to spare (FR-LINE-11).
+fn ready_text(day: NaiveDate, wrap: bool) -> Component {
+    let text = Text {
+        size: Some(Size::Sm),
+        color: Some(PRE_ORDER_COLOR.to_owned()),
+        wrap: wrap.then_some(true),
+        ..Text::new(ready_line(day))
+    };
+    text.into()
+}
+
 /// Shops on a page of "ตะกร้า", leaving room for "ดูเพิ่มเติม". A cart holds few enough lines
 /// that a page of them fits LINE's 50 KB (FR-LINE-11).
 pub const CART_SHOPS_PER_PAGE: usize = 10;
 
-/// A line of the cart in a sentence: `ไข่ไก่เบอร์ 2 × 2 แผง = ฿220`, as in Appendix A.2.
-fn cart_line(name: &str, quantity: i32, unit: &str, total: Money) -> String {
-    format!("{name} × {quantity} {unit} = {total}")
+/// A line of the cart in a sentence: `ไข่ไก่เบอร์ 2 × 2 แผง = ฿220`, as in Appendix A.2, then
+/// when a pre-order is ready (FR-PROD-11).
+fn cart_line(
+    name: &str,
+    quantity: i32,
+    unit: &str,
+    total: Money,
+    ready_on: Option<NaiveDate>,
+) -> String {
+    let ready = ready_note(ready_on);
+    format!("{name} × {quantity} {unit} = {total}{ready}")
 }
 
 /// Why a line of the cart, of a product sold by `unit`, can't be ordered, as its card flags it
@@ -5363,13 +5521,14 @@ fn cart_shop_card(card: &CartShop<'_>) -> Bubble {
 /// A line on its shop's card in the cart: its name, quantity and unit price, and total, why it
 /// can't be ordered if it can't, and its buttons side by side.
 fn cart_line_box(line: &CartLine<'_>) -> Component {
-    let mut contents = Vec::from(line_amounts(
+    let mut contents = line_amounts(
         line.name,
         line.quantity,
         line.unit,
         line.price,
         line.total,
-    ));
+        line.ready_on,
+    );
     if let Some(problem) = cart_problem(line.state, line.unit) {
         let problem = Text {
             size: Some(Size::Sm),
@@ -5401,14 +5560,15 @@ fn cart_line_box(line: &CartLine<'_>) -> Component {
 }
 
 /// A line of the cart or of an order: the product's name, then its quantity and unit price,
-/// and its total.
+/// and its total, then when it is ready if it is a pre-order (FR-PROD-11).
 fn line_amounts(
     name: &str,
     quantity: i32,
     unit: &str,
     price: Money,
     total: Money,
-) -> [Component; 2] {
+    ready_on: Option<NaiveDate>,
+) -> Vec<Component> {
     let name = Text {
         size: Some(Size::Sm),
         weight: Some(Weight::Bold),
@@ -5429,10 +5589,12 @@ fn line_amounts(
         flex: Some(2),
         ..Text::new(total.to_string())
     };
-    [
+    let mut contents = vec![
         name.into(),
         FlexBox::baseline([each.into(), total.into()]).into(),
-    ]
+    ];
+    contents.extend(ready_on.map(|day| ready_text(day, false)));
+    contents
 }
 
 /// Checkout's summary or an order's card (FR-CART-04, FR-CART-08): the `headline`, the order's
@@ -5463,7 +5625,14 @@ fn order_card(
     };
     contents.push(shop.into());
     for line in &order.lines {
-        let amounts = line_amounts(line.name, line.quantity, line.unit, line.price, line.total);
+        let amounts = line_amounts(
+            line.name,
+            line.quantity,
+            line.unit,
+            line.price,
+            line.total,
+            line.ready_on,
+        );
         let line = FlexBox {
             spacing: Some(Spacing::Sm),
             ..FlexBox::vertical(amounts)
@@ -5607,13 +5776,12 @@ fn my_product_card(card: &MyProductCard<'_>) -> Bubble {
         0 => NONE.to_owned(),
         count => format!("{count} รูป"),
     };
+    let mut rows = vec![row("จำนวน", &stock_line(card.stock, card.unit))];
+    rows.extend(card.ready_on.map(ready_row));
+    rows.extend([row("หมวดหมู่", card.category), row("รูปสินค้า", &photos)]);
     let details = FlexBox {
         spacing: Some(Spacing::Sm),
-        ..FlexBox::vertical([
-            row("จำนวน", &stock_line(card.stock, card.unit)),
-            row("หมวดหมู่", card.category),
-            row("รูปสินค้า", &photos),
-        ])
+        ..FlexBox::vertical(rows)
     };
     let body = FlexBox {
         spacing: Some(Spacing::Md),
@@ -6344,6 +6512,12 @@ pub mod labels {
         UNIT = "หน่วย",
         STOCK = "จำนวน",
         PRODUCT_DESCRIPTION = "รายละเอียด",
+        /// Its ready date, which makes it a pre-order (FR-PROD-11)
+        PRE_ORDER = "สั่งล่วงหน้า",
+        /// Not a pre-order: ready to sell now
+        NOT_PRE_ORDER = "ไม่สั่งล่วงหน้า",
+        /// The first ready date offered
+        TOMORROW = "พรุ่งนี้",
 
         // "สินค้าของฉัน" (FR-PROD-05, FR-PROD-06), with EDIT and DELETE
         /// Asks for the stock of a sold-out product, to sell it again
@@ -6451,6 +6625,23 @@ mod tests {
             to: Money::from_baht(20),
         },
     ];
+
+    /// A pre-order's ready date changed, and another is no pre-order any more (FR-PROD-11)
+    const READY_CHANGES: [CheckoutChange<'static>; 2] = [
+        CheckoutChange::ReadyOn {
+            name: "ขนมเปี๊ยะ",
+            ready_on: NaiveDate::from_ymd_opt(2026, 11, 7),
+        },
+        CheckoutChange::ReadyOn {
+            name: "ขนมไหว้พระจันทร์",
+            ready_on: None,
+        },
+    ];
+
+    /// The ready date of a pre-order in the tests, as long as a day is written: `31 ธ.ค. 2569`
+    fn ready_day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()
+    }
 
     const REJECTIONS: [Rejected; 5] = [
         Rejected::TooLarge { max_mb: 10 },
@@ -6653,6 +6844,11 @@ mod tests {
             text(&t.stock_too_large(99_999)).to_owned(),
             text(&t.ask_product_description(500, &labels::SKIP, None)).to_owned(),
             text(&t.ask_product_description(500, &labels::REMOVE, Some("ไข่สด"))).to_owned(),
+            text(&t.ask_product_ready_on(ready_day(), None)).to_owned(),
+            text(&t.ask_product_ready_on(ready_day(), Some("5 พ.ย. 2569"))).to_owned(),
+            text(&t.ready_day_unknown()).to_owned(),
+            text(&t.ready_day_too_soon()).to_owned(),
+            text(&t.ready_day_too_late(ready_day())).to_owned(),
             text(&t.product_preview(&product_preview())[0]).to_owned(),
             text(
                 &t.product_preview(&ProductPreview {
@@ -6679,9 +6875,10 @@ mod tests {
             text(&t.quick_update_not_found(my_products())).to_owned(),
             text(&t.product_deleted("ไข่ไก่เบอร์ 2", true)).to_owned(),
             text(&t.product_deleted("ไข่ไก่เบอร์ 2", false)).to_owned(),
-            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 0, false)).to_owned(),
-            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 2, false)).to_owned(),
-            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 2, true)).to_owned(),
+            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", None, 0, false)).to_owned(),
+            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", None, 2, false)).to_owned(),
+            text(&t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", None, 2, true)).to_owned(),
+            text(&t.ask_cart_quantity("ขนมเปี๊ยะ", "กล่อง", Some(ready_day()), 0, false)).to_owned(),
             text(&t.ask_typed_quantity(8, "แผง")).to_owned(),
             text(&t.ask_typed_quantity(1, "แผง")).to_owned(),
             text(&t.quantity_too_many("ไข่ไก่เบอร์ 2", "แผง", Some(8), 99, 0)).to_owned(),
@@ -6693,9 +6890,21 @@ mod tests {
             text(&t.not_orderable("ไข่ไก่เบอร์ 2", "ร้านป้าแดง", Availability::SoldOut)).to_owned(),
             text(&t.not_orderable("ไข่ไก่เบอร์ 2", "ร้านป้าแดง", Availability::ShopClosed)).to_owned(),
             text(&t.cart_full(20)).to_owned(),
-            text(&t.added_to_cart("ไข่ไก่เบอร์ 2", 2, "แผง", Money::from_baht(220), false)).to_owned(),
-            text(&t.added_to_cart("ไข่ไก่เบอร์ 2", 5, "แผง", Money::from_baht(550), true)).to_owned(),
-            text(&t.quantity_changed("ไข่ไก่เบอร์ 2", 3, "แผง", Money::from_baht(330))).to_owned(),
+            text(&t.added_to_cart("ไข่ไก่เบอร์ 2", 2, "แผง", Money::from_baht(220), None, false))
+                .to_owned(),
+            text(&t.added_to_cart("ไข่ไก่เบอร์ 2", 5, "แผง", Money::from_baht(550), None, true))
+                .to_owned(),
+            text(&t.added_to_cart(
+                "ขนมเปี๊ยะ",
+                2,
+                "กล่อง",
+                Money::from_baht(100),
+                Some(ready_day()),
+                false,
+            ))
+            .to_owned(),
+            text(&t.quantity_changed("ไข่ไก่เบอร์ 2", 3, "แผง", Money::from_baht(330), None))
+                .to_owned(),
             text(&t.removed_from_cart("ไข่ไก่เบอร์ 2")).to_owned(),
             text(&t.empty_cart(Vec::new())).to_owned(),
             text(&t.ask_pickup_or_delivery()).to_owned(),
@@ -6713,6 +6922,7 @@ mod tests {
             text(&t.checkout_changed(&CHANGES, true)).to_owned(),
             text(&t.checkout_changed(&CHANGES, false)).to_owned(),
             text(&t.checkout_changed(&[], true)).to_owned(),
+            text(&t.checkout_changed(&READY_CHANGES, true)).to_owned(),
             text(&t.checkout_gone()).to_owned(),
         ];
         for (visible, changed) in [(true, true), (true, false), (false, true), (false, false)] {
@@ -6846,6 +7056,7 @@ mod tests {
                     price: Money::from_baht(110),
                     quantity: 2,
                     total: Money::from_baht(220),
+                    ready_on: None,
                 },
                 OrderLine {
                     name: "ขนมครก",
@@ -6853,6 +7064,7 @@ mod tests {
                     price: Money::from_baht(20),
                     quantity: 1,
                     total: Money::from_baht(20),
+                    ready_on: None,
                 },
             ],
             delivery_fee: Money::from_baht(10),
@@ -6984,6 +7196,7 @@ mod tests {
             category: "ไข่/นม",
             stock: Some(30),
             description: None,
+            ready_on: None,
             photo: None,
             photos: 0,
             drafted: false,
@@ -7238,6 +7451,7 @@ mod tests {
             category: "ขนม/ของหวาน",
             stock: Some(99_999),
             description: Some(&description),
+            ready_on: Some(ready_day()),
             photo: Some(&photo),
             photos: 3,
             drafted: true,
@@ -7927,6 +8141,7 @@ mod tests {
             unit: "แผง",
             category: "ไข่/นม",
             stock: Some(30),
+            ready_on: None,
             status: product::Status::Active,
             photo,
             photos: 1,
@@ -7951,6 +8166,7 @@ mod tests {
                 category: &category,
                 price: Money::from_baht(100_000),
                 stock: Some(99_999),
+                ready_on: Some(ready_day()),
                 photos: 3,
                 ..eggs(&name, Some(&photo))
             })
@@ -8002,6 +8218,7 @@ mod tests {
                 unit: &unit,
                 shop: &shop,
                 availability: Availability::Left(99_999),
+                ready_on: Some(ready_day()),
                 photo: &photo,
                 add_to_cart: Some(postback(
                     &labels::ADD_TO_CART,
@@ -8039,7 +8256,8 @@ mod tests {
                 name.clone(),
                 format!("฿100,000 / {unit}"),
                 shop.clone(),
-                "เหลือ 99999".to_owned()
+                "เหลือ 99999".to_owned(),
+                "สั่งล่วงหน้า · พร้อม 31 ธ.ค. 2569".to_owned()
             ]
         );
     }
@@ -8049,11 +8267,11 @@ mod tests {
     #[test]
     fn the_cart_speaks_as_in_appendix_a2() {
         let t = templates(PoliteParticle::Kha);
-        let ask = t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", 0, false);
+        let ask = t.ask_cart_quantity("ไข่ไก่เบอร์ 2", "แผง", None, 0, false);
         assert_eq!(text(&ask), "\"ไข่ไก่เบอร์ 2\" เอากี่แผงคะ");
-        let added = t.added_to_cart("ไข่ไก่เบอร์ 2", 2, "แผง", Money::from_baht(220), false);
+        let added = t.added_to_cart("ไข่ไก่เบอร์ 2", 2, "แผง", Money::from_baht(220), None, false);
         assert_eq!(text(&added), "ใส่ตะกร้าแล้วค่ะ ไข่ไก่เบอร์ 2 × 2 แผง = ฿220");
-        let more = t.added_to_cart("ไข่ไก่เบอร์ 2", 5, "แผง", Money::from_baht(550), true);
+        let more = t.added_to_cart("ไข่ไก่เบอร์ 2", 5, "แผง", Money::from_baht(550), None, true);
         assert_eq!(
             text(&more),
             "ใส่เพิ่มแล้วค่ะ ตอนนี้ในตะกร้ามี ไข่ไก่เบอร์ 2 × 5 แผง = ฿550"
@@ -8122,6 +8340,7 @@ mod tests {
             price: Money::from_baht(100_000),
             quantity: 99,
             total: Money::from_baht(100_000).times(99),
+            ready_on: Some(ready_day()),
             state,
             buttons: vec![
                 postback(
@@ -8163,7 +8382,8 @@ mod tests {
         assert_eq!(texts[1], name);
         assert_eq!(texts[2], format!("99 {unit} × ฿100,000"));
         assert_eq!(texts[3], "฿9,900,000");
-        assert_eq!(texts[4], format!("เหลือแค่ 98 {unit}"));
+        assert_eq!(texts[4], "สั่งล่วงหน้า · พร้อม 31 ธ.ค. 2569");
+        assert_eq!(texts[5], format!("เหลือแค่ 98 {unit}"));
 
         let one = [shop_of(20)];
         limits::check(&[t.cart(&one, 0, more, next)]).unwrap();
@@ -8179,6 +8399,7 @@ mod tests {
                 price: Money::from_baht(110),
                 quantity: 2,
                 total: Money::from_baht(220),
+                ready_on: None,
             }],
             subtotal: Money::from_baht(220),
             delivery_fee: Money::from_baht(10),
@@ -8276,6 +8497,79 @@ mod tests {
         );
     }
 
+    /// FR-PROD-11: a pre-order says when it is ready wherever it is ordered: asking how many,
+    /// in the cart, at checkout and on the order, and the seller is told too; a change of its
+    /// ready date since checkout's summary is said.
+    #[test]
+    fn pre_orders_say_when_they_are_ready() {
+        let t = templates(PoliteParticle::Kha);
+        let ready = NaiveDate::from_ymd_opt(2026, 11, 5);
+        let ask = t.ask_cart_quantity("ขนมเปี๊ยะ", "กล่อง", ready, 0, false);
+        assert_eq!(
+            text(&ask),
+            "\"ขนมเปี๊ยะ\" (สั่งล่วงหน้า พร้อม 5 พ.ย. 2569) เอากี่กล่องคะ"
+        );
+        let added = t.added_to_cart("ขนมเปี๊ยะ", 2, "กล่อง", Money::from_baht(100), ready, false);
+        assert_eq!(
+            text(&added),
+            "ใส่ตะกร้าแล้วค่ะ ขนมเปี๊ยะ × 2 กล่อง = ฿100 (สั่งล่วงหน้า พร้อม 5 พ.ย. 2569)"
+        );
+        let changed = t.quantity_changed("ขนมเปี๊ยะ", 3, "กล่อง", Money::from_baht(150), ready);
+        assert_eq!(
+            text(&changed),
+            "แก้จำนวนแล้วค่ะ ขนมเปี๊ยะ × 3 กล่อง = ฿150 (สั่งล่วงหน้า พร้อม 5 พ.ย. 2569)"
+        );
+
+        let mut order = egg_order();
+        order.lines[0].ready_on = ready;
+        let summary = t.checkout_summary(&order, &[]);
+        let Body::Flex {
+            contents: FlexContainer::Bubble(card),
+            ..
+        } = &summary.body
+        else {
+            panic!("not a card");
+        };
+        let texts = card_texts(card);
+        let at = texts.iter().position(|text| text == "฿220").unwrap();
+        assert_eq!(texts[at + 1], "สั่งล่วงหน้า · พร้อม 5 พ.ย. 2569");
+
+        let mut new = new_order(order::Fulfillment::Pickup);
+        new.lines[1].ready_on = ready;
+        let notice = t.new_order_notice("IM-20261022-0007", &new, Vec::new());
+        let lines = notice_lines(&notice);
+        assert_eq!(lines[1], "ไข่ไก่เบอร์ 2 × 2 แผง = ฿220");
+        assert_eq!(
+            lines[2],
+            "ขนมครก × 1 กล่อง = ฿20 (สั่งล่วงหน้า พร้อม 5 พ.ย. 2569)"
+        );
+
+        assert_eq!(
+            text(&t.checkout_changed(&READY_CHANGES, true)),
+            "ขอโทษค่ะ ข้อมูลเปลี่ยนไประหว่างสั่งซื้อ จึงยังไม่ได้สั่งซื้อ\n\
+             • \"ขนมเปี๊ยะ\" เปลี่ยนวันพร้อมเป็น 7 พ.ย. 2569\n\
+             • \"ขนมไหว้พระจันทร์\" ไม่ต้องสั่งล่วงหน้าแล้ว\n\
+             ตรวจสรุปใหม่ด้านล่าง แล้วกด \"ยืนยันสั่งซื้อ\" อีกครั้งนะคะ"
+        );
+    }
+
+    /// FR-PROD-11: the seller is asked for the ready date with the range it may be in, and told
+    /// why one isn't taken.
+    #[test]
+    fn ready_dates_are_asked_for() {
+        let t = templates(PoliteParticle::Kha);
+        let latest = NaiveDate::from_ymd_opt(2027, 1, 23).unwrap();
+        assert_eq!(
+            text(&t.ask_product_ready_on(latest, Some("5 พ.ย. 2569"))),
+            "ถ้ารับสั่งล่วงหน้า ของจะพร้อมวันไหนคะ กดเลือกวัน หรือพิมพ์วันที่ เช่น 15 พ.ย. ได้ตั้งแต่พรุ่งนี้ถึง 23 ม.ค. 2570 ผู้ซื้อจะเห็นวันนี้ที่สินค้า ถ้าไม่ได้สั่งล่วงหน้า กด \"ไม่สั่งล่วงหน้า\" ได้เลยค่ะ (ตอนนี้: 5 พ.ย. 2569)"
+        );
+        assert_eq!(
+            text(&t.ready_day_too_late(latest)),
+            "ขอโทษค่ะ ตั้งวันพร้อมได้ไม่เกิน 23 ม.ค. 2570 กดเลือกวันหรือพิมพ์ใหม่ได้เลยค่ะ"
+        );
+        assert_eq!(ready_line(latest), "สั่งล่วงหน้า · พร้อม 23 ม.ค. 2570");
+    }
+
     /// Table 4.6-A, FR-PAY-02: an order's status, payment method and fulfillment as the buyer
     /// reads them.
     #[test]
@@ -8329,6 +8623,7 @@ mod tests {
                     price: Money::from_baht(100_000),
                     quantity: 99,
                     total: Money::from_baht(100_000).times(99),
+                    ready_on: Some(ready_day()),
                 })
                 .collect(),
             subtotal: Money::from_baht(100_000).times(99 * 20),
@@ -8541,6 +8836,7 @@ mod tests {
                     price: Money::from_baht(100_000),
                     quantity: 99,
                     total: Money::from_baht(100_000).times(99),
+                    ready_on: Some(ready_day()),
                 })
                 .collect(),
             delivery_fee: Money::from_baht(10_000),
@@ -8665,6 +8961,7 @@ mod tests {
                         price: Money::from_baht(100_000),
                         quantity: 99,
                         total: Money::from_baht(100_000).times(99),
+                        ready_on: Some(ready_day()),
                     })
                     .collect(),
                 subtotal: Money::from_baht(100_000).times(99 * 20),
@@ -8762,6 +9059,7 @@ mod tests {
                 price: Money::from_baht(110),
                 quantity: 2,
                 total: Money::from_baht(220),
+                ready_on: None,
             }],
             subtotal: Money::from_baht(220),
             delivery_fee: Money::from_baht(10),
@@ -8944,6 +9242,7 @@ mod tests {
             description: Some(&description),
             shop: &shop,
             availability: Availability::Orderable,
+            ready_on: Some(ready_day()),
             photos,
             buttons: vec![
                 postback(&labels::ADD_TO_CART, format!("cart.add?product={max}")),
@@ -8964,11 +9263,12 @@ mod tests {
         };
         assert_eq!(carousel.contents.len(), limits::BUBBLES_PER_CAROUSEL);
         assert_eq!(
-            card_texts(&carousel.contents[0])[..4],
+            card_texts(&carousel.contents[0])[..5],
             [
                 name.clone(),
                 format!("฿100,000 / {unit}"),
                 "สั่งได้".to_owned(),
+                "สั่งล่วงหน้า · พร้อม 31 ธ.ค. 2569".to_owned(),
                 description.clone()
             ]
         );

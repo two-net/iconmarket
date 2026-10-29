@@ -27,6 +27,7 @@ mod tests;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
+use chrono::NaiveDate;
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::OnConflict;
@@ -40,7 +41,7 @@ use tracing::info;
 use crate::ai::Gateway;
 use crate::ai::assistant::numbers::{self, Expect};
 use crate::catalog::browse::listing;
-use crate::catalog::products::Availability;
+use crate::catalog::products::{Availability, ready_on};
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::Item;
 use crate::dispatcher::pending::{self, Applied, Proposal, Stale, Why};
@@ -81,6 +82,8 @@ pub struct Line {
     pub product: product::Model,
     pub shop: shop::Model,
     pub state: State,
+    /// The day its product is ready, while it is a pre-order (FR-PROD-11)
+    pub ready_on: Option<NaiveDate>,
 }
 
 impl Line {
@@ -132,7 +135,11 @@ impl State {
 
 /// User `user_id`'s cart, its lines grouped by shop: the shop added to last first, then each
 /// shop's lines in the order they were added.
-pub async fn lines(db: &impl ConnectionTrait, user_id: i64) -> Result<Vec<Line>, DbErr> {
+pub async fn lines(
+    db: &impl ConnectionTrait,
+    user_id: i64,
+    today: NaiveDate,
+) -> Result<Vec<Line>, DbErr> {
     let items = items(db, user_id).await?;
     if items.is_empty() {
         return Ok(Vec::new());
@@ -167,11 +174,13 @@ pub async fn lines(db: &impl ConnectionTrait, user_id: i64) -> Result<Vec<Line>,
                 _ if suspended.contains(&shop.owner_id) => State::ShopClosed,
                 state => state,
             };
+            let ready_on = ready_on(&product, today);
             Some(Line {
                 item,
                 product,
                 shop,
                 state,
+                ready_on,
             })
         })
         .collect();
@@ -567,9 +576,14 @@ async fn ask(turn: &Turn<'_>, id: i64, change: bool) -> Result<Vec<Message>, DbE
 /// The question how many, with the quantities that fit as Quick Replies.
 fn question(turn: &Turn<'_>, room: &Room) -> Vec<Message> {
     let product = &room.product;
-    let ask =
-        turn.templates
-            .ask_cart_quantity(&product.name, &product.unit, room.in_cart, room.change);
+    let ready_on = ready_on(product, turn.today());
+    let ask = turn.templates.ask_cart_quantity(
+        &product.name,
+        &product.unit,
+        ready_on,
+        room.in_cart,
+        room.change,
+    );
     with_choices(vec![ask], quantities(room.most()))
 }
 
@@ -700,11 +714,13 @@ async fn put(
         .await?;
     let t = turn.templates;
     let total = product.price.times(held);
+    let ready_on = ready_on(product, turn.today());
     if room.change {
-        let changed = t.quantity_changed(&product.name, held, &product.unit, total);
+        let changed = t.quantity_changed(&product.name, held, &product.unit, total, ready_on);
         return Ok(vec![changed, cart(turn, 0).await?]);
     }
-    let added = t.added_to_cart(&product.name, held, &product.unit, total, room.in_cart > 0);
+    let more = room.in_cart > 0;
+    let added = t.added_to_cart(&product.name, held, &product.unit, total, ready_on, more);
     let actions = [
         checkout(product.shop_id, &labels::ORDER_NOW),
         view_cart(),
@@ -748,7 +764,7 @@ async fn remove(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr> {
 /// or that it is empty. A page past the last, from a button sent before lines were removed,
 /// starts over.
 async fn cart(turn: &Turn<'_>, page: usize) -> Result<Message, DbErr> {
-    let lines = lines(turn.db, turn.actor.user.id).await?;
+    let lines = lines(turn.db, turn.actor.user.id, turn.today()).await?;
     if lines.is_empty() {
         return Ok(turn.templates.empty_cart(next_actions()));
     }
@@ -796,6 +812,7 @@ fn line_card(line: &Line) -> CartLine<'_> {
         price: line.product.price,
         quantity: line.item.quantity,
         total: line.total(),
+        ready_on: line.ready_on,
         state: line.state,
         buttons,
     }

@@ -3,6 +3,7 @@
 
 use std::fmt::Debug;
 
+use chrono::NaiveDate;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{
@@ -371,6 +372,7 @@ async fn every_attribute_can_be_stored() {
             updated_at: at,
             restocked_at: Some(at),
             deleted_at: Some(at),
+            ready_on: NaiveDate::from_ymd_opt(2026, 11, 5),
         },
     )
     .await;
@@ -446,6 +448,7 @@ async fn every_attribute_can_be_stored() {
             unit_price: Money::from_baht(110),
             quantity: 2,
             line_total: Money::from_baht(220),
+            ready_on: NaiveDate::from_ymd_opt(2026, 11, 5),
         },
     )
     .await;

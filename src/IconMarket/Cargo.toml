@@ -9,8 +9,9 @@ axum = "0.8.9"
 # Decodes webhook signatures (FR-LINE-02); the version reqwest already uses
 base64 = "0.23.1"
 # SeaORM's chrono support turns on `clock`; its `Local` reads TZ and /etc/localtime, so clippy.toml
-# forbids it: config comes only from the file (CFG-02)
-chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+# forbids it: config comes only from the file (CFG-02). `serde` keeps a pre-order's ready date in
+# flow drafts and pending actions (FR-PROD-11)
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"] }
 # Compiles the tz database in, so `app.timeZone` is checked without reading zoneinfo files
 chrono-tz = "0.10.4"
 # Random IDs of 128 bits for images and pending actions (NFR-SEC-04)

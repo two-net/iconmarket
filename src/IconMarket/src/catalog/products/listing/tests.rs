@@ -326,7 +326,8 @@ impl Setup {
     /// `product`'s card in "สินค้าของฉัน", as it is now.
     async fn card(&self, id: i64) -> Message {
         let product = self.product(id).await;
-        manage::card(&self.db, &self.templates, &self.config, &product)
+        let today = t0().with_timezone(&chrono_tz::Asia::Bangkok).date_naive();
+        manage::card(&self.db, &self.templates, &self.config, &product, today)
             .await
             .unwrap()
     }

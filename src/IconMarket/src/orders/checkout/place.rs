@@ -3,8 +3,9 @@
 //! The summary's "ยืนยันสั่งซื้อ" confirms a [`Checkout`], the pending action that keeps what the
 //! summary showed. Confirming it applies it once, in one transaction (FR-UI-13): what it orders
 //! is found again and compared with what was shown, the stock is reserved, the order is stored
-//! with a copy of each line (DR-03), and its lines leave the cart. If anything changed since the
-//! summary, nothing is stored, and the buyer is shown what changed and the summary as it is now.
+//! with a copy of each line (DR-03), a pre-order's ready date too (FR-PROD-11), and its lines
+//! leave the cart. If anything changed since the summary, nothing is stored, and the buyer is
+//! shown what changed and the summary as it is now.
 //!
 //! The products are locked first, in ID order, so checkouts of the same products wait for one
 //! another rather than deadlock, and stock is taken by a conditional decrement: of checkouts of
@@ -15,6 +16,7 @@
 //! The order's card is the reply, pushed if its reply token has expired (FR-LINE-07), and the
 //! seller is told of it with "รับออเดอร์" and "ปฏิเสธ" (FR-ORD-03).
 
+use chrono::NaiveDate;
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::Uuid;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
@@ -59,6 +61,10 @@ struct Shown {
     product_id: i64,
     quantity: i32,
     price: Money,
+    /// The day it is ready, if a pre-order (FR-PROD-11); missing from checkouts proposed before
+    /// it was added, as if none
+    #[serde(default)]
+    ready_on: Option<NaiveDate>,
 }
 
 impl Checkout {
@@ -76,6 +82,7 @@ impl Checkout {
                 product_id: line.product.id,
                 quantity: line.item.quantity,
                 price: line.product.price,
+                ready_on: line.ready_on,
             })
             .collect();
         lines.sort_by_key(|line| line.product_id);
@@ -119,6 +126,7 @@ impl Checkout {
                     price: line.product.price,
                     quantity: line.item.quantity,
                     total: line.total(),
+                    ready_on: line.ready_on,
                 })
                 .collect(),
             subtotal,
@@ -151,7 +159,8 @@ impl Checkout {
     }
 
     /// What changed of what the summary showed, as `lines`, the shop's in the cart, now show
-    /// it: each line that can't be ordered now, or whose price changed, and the delivery fee.
+    /// it: each line that can't be ordered now, or whose price or ready date changed, and the
+    /// delivery fee.
     fn changes<'a>(&self, lines: &'a [cart::Line]) -> Vec<CheckoutChange<'a>> {
         let mut changes = Vec::new();
         for shown in &self.lines {
@@ -175,6 +184,12 @@ impl Checkout {
                         unit,
                         from: shown.price,
                         to: line.product.price,
+                    }
+                }
+                cart::State::Orderable if line.ready_on != shown.ready_on => {
+                    CheckoutChange::ReadyOn {
+                        name,
+                        ready_on: line.ready_on,
                     }
                 }
                 cart::State::Orderable => continue,
@@ -244,6 +259,7 @@ impl Checkout {
             unit_price: Set(line.product.price),
             quantity: Set(line.item.quantity),
             line_total: Set(line.total()),
+            ready_on: Set(line.ready_on),
             ..Default::default()
         });
         let mut items = order_item::Entity::insert_many(lines)
@@ -353,7 +369,7 @@ impl Checkout {
     /// What changed since the summary, and what the buyer can do now.
     async fn changed(&self, turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
         let (t, user) = (turn.templates, &turn.actor.user);
-        let lines: Vec<cart::Line> = cart::lines(turn.db, user.id)
+        let lines: Vec<cart::Line> = cart::lines(turn.db, user.id, turn.today())
             .await?
             .into_iter()
             .filter(|line| line.shop.id == self.shop_id)
@@ -456,16 +472,7 @@ fn order_card(
     let address = contact::delivery_address(placed);
     let order = OrderDetails {
         shop,
-        lines: items
-            .iter()
-            .map(|item| OrderLine {
-                name: &item.name,
-                unit: &item.unit,
-                price: item.unit_price,
-                quantity: item.quantity,
-                total: item.line_total,
-            })
-            .collect(),
+        lines: items.iter().map(actions::order_line).collect(),
         subtotal: placed.subtotal,
         delivery_fee: placed.delivery_fee,
         total: placed.total,

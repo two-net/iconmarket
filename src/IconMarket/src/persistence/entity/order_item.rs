@@ -1,5 +1,5 @@
-//! A line of an order. Name, unit and unit price are snapshots taken at checkout, so later
-//! product edits never change the order (DR-03).
+//! A line of an order. Name, unit, unit price and ready date are snapshots taken at checkout, so
+//! later product edits never change the order (DR-03).
 
 use sea_orm::entity::prelude::*;
 
@@ -18,6 +18,8 @@ pub struct Model {
     pub unit_price: Money,
     pub quantity: i32,
     pub line_total: Money,
+    /// The day it was to be ready, had it been ordered in advance (FR-PROD-11)
+    pub ready_on: Option<Date>,
 }
 
 #[derive(Clone, Copy, Debug, EnumIter, DeriveRelation)]

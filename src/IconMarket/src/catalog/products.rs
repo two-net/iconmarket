@@ -17,6 +17,10 @@
 //! its parts (FR-PROD-02). Each is taken as if typed at its step, the flow asks for any still
 //! missing, and the preview says the product was drafted, to be checked before it is listed.
 //!
+//! The preview can also make it a pre-order ("สั่งล่วงหน้า", FR-PROD-11): a part no step asks
+//! for, its ready date, which buyers see wherever they see the product, and its orders keep. It
+//! is a pre-order only while that day is still to come ([`ready_on`]).
+//!
 //! A listed product is `ACTIVE`, or `HELD` for review if [moderation] finds it suspicious, so that
 //! buyers don't see it until an admin lists it (#31); [`may_become`] says which status it can go
 //! to from there (FR-PROD-07). Its price and stock are what new checkouts see: an order keeps the
@@ -31,6 +35,7 @@ pub mod manage;
 #[cfg(test)]
 mod tests;
 
+use chrono::{Days, NaiveDate};
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::Uuid;
 use sea_orm::{
@@ -76,6 +81,10 @@ pub const DESCRIPTION_CHARS: usize = 500;
 pub const MIN_PRICE: Money = Money::from_satang(1);
 pub const MAX_PRICE: Money = Money::from_baht(100_000);
 pub const MAX_STOCK: u32 = 99_999;
+/// How many days ahead a pre-order may be ready, at most (FR-PROD-11)
+pub const MAX_READY_DAYS: u64 = 90;
+/// How many days from tomorrow on the ready date's Quick Replies offer
+const READY_CHOICES: u64 = 10;
 
 /// A product being added (FR-PROD-01). A part left `None` once its step is past means "none":
 /// no description.
@@ -89,6 +98,10 @@ pub struct ProductFlow {
     category_id: Option<i64>,
     stock: Option<Stock>,
     description: Option<String>,
+    /// The day it is ready, if it is a pre-order (FR-PROD-11); missing from drafts saved before
+    /// it was added
+    #[serde(default)]
+    ready_on: Option<NaiveDate>,
     /// Whether every part has been given, so that each answer leads back to the preview
     editing: bool,
     /// How many answers were taken, so that a preview's buttons act only on what it showed
@@ -160,6 +173,8 @@ pub enum Step {
     Category,
     Stock,
     Description,
+    /// Its ready date, if a pre-order (FR-PROD-11): asked only to correct it, from the preview
+    ReadyOn,
     /// The preview, with "ยืนยันลงขาย"
     Summary,
 }
@@ -171,7 +186,7 @@ impl Flow for ProductFlow {
 
 impl Step {
     /// The parts, in the order the preview offers them.
-    const PARTS: [Self; 7] = [
+    const PARTS: [Self; 8] = [
         Self::Photos,
         Self::Name,
         Self::Price,
@@ -179,6 +194,7 @@ impl Step {
         Self::Category,
         Self::Stock,
         Self::Description,
+        Self::ReadyOn,
     ];
 
     /// Its name in the postback correcting it.
@@ -191,6 +207,7 @@ impl Step {
             Self::Category => "category",
             Self::Stock => "stock",
             Self::Description => "description",
+            Self::ReadyOn => "ready",
             Self::Summary => "summary",
         }
     }
@@ -204,6 +221,7 @@ impl Step {
             Self::Category => &labels::CATEGORIES,
             Self::Stock => &labels::STOCK,
             Self::Description => &labels::PRODUCT_DESCRIPTION,
+            Self::ReadyOn => &labels::PRE_ORDER,
             Self::Summary => &labels::EDIT,
         }
     }
@@ -224,6 +242,7 @@ impl ProductFlow {
             category_id: None,
             stock: None,
             description: None,
+            ready_on: None,
             editing: false,
             revision: 0,
             product_id: None,
@@ -251,8 +270,8 @@ impl ProductFlow {
     }
 
     /// What listed `product` has, its photos `photos` in order, to change a part of it in
-    /// "สินค้าของฉัน".
-    fn from_product(product: &product::Model, photos: Vec<Uuid>) -> Self {
+    /// "สินค้าของฉัน" on `today`: a ready date passed already is none.
+    fn from_product(product: &product::Model, photos: Vec<Uuid>, today: NaiveDate) -> Self {
         Self {
             photos,
             name: Some(product.name.clone()),
@@ -261,6 +280,7 @@ impl ProductFlow {
             category_id: Some(product.category_id),
             stock: Some(Stock::of(product.stock)),
             description: product.description.clone(),
+            ready_on: ready_on(product, today),
             editing: true,
             revision: 0,
             product_id: Some(product.id),
@@ -296,6 +316,7 @@ impl ProductFlow {
             Step::Category => self.category_id.is_some(),
             Step::Stock => self.stock.is_some(),
             Step::Description => self.description.is_some(),
+            Step::ReadyOn => self.ready_on.is_some(),
             Step::Summary => false,
         }
     }
@@ -314,7 +335,7 @@ fn after(draft: &ProductFlow, step: Step) -> Step {
             Step::Unit => Step::Category,
             Step::Category => Step::Stock,
             Step::Stock => Step::Description,
-            Step::Description | Step::Summary => Step::Summary,
+            Step::Description | Step::ReadyOn | Step::Summary => Step::Summary,
         }
     };
     match next {
@@ -564,6 +585,12 @@ enum Refused {
     InactiveCategory,
     /// Text where photos were asked for
     NotAPhoto,
+    /// Text where a day was asked for that names none
+    NotADay,
+    /// A ready date not after today
+    TooSoon,
+    /// A ready date after the last one it may be
+    TooLate(NaiveDate),
 }
 
 /// Takes the photo the user sent in `message_id` at `step` as one more of the product's, if it
@@ -681,6 +708,11 @@ async fn take(
         }
         Step::Description => bounded(text, DESCRIPTION_CHARS)
             .map(|description| draft.description = Some(description.to_owned())),
+        Step::ReadyOn if is(&labels::NOT_PRE_ORDER) => {
+            draft.ready_on = None;
+            Ok(())
+        }
+        Step::ReadyOn => ready_day(text, turn.today()).map(|day| draft.ready_on = Some(day)),
         Step::Summary => Err(Refused::NotAChoice),
     };
     Ok(taken.map(|()| Taken::Changed))
@@ -771,6 +803,35 @@ fn stock(text: &str, unit: Option<&str>) -> Result<Stock, Refused> {
     }
 }
 
+/// `text`, typed on `today`, as a pre-order's ready date: a day from tomorrow to
+/// [`latest_ready_day`] (FR-PROD-11).
+fn ready_day(text: &str, today: NaiveDate) -> Result<NaiveDate, Refused> {
+    if text.is_empty() {
+        return Err(Refused::Empty);
+    }
+    let latest = latest_ready_day(today);
+    match thai::parse_day(text, today) {
+        None => Err(Refused::NotADay),
+        Some(day) if day <= today => Err(Refused::TooSoon),
+        Some(day) if day > latest => Err(Refused::TooLate(latest)),
+        Some(day) => Ok(day),
+    }
+}
+
+/// The last day a pre-order set on `today` may be ready.
+pub fn latest_ready_day(today: NaiveDate) -> NaiveDate {
+    today
+        .checked_add_days(Days::new(MAX_READY_DAYS))
+        .unwrap_or(NaiveDate::MAX)
+}
+
+/// The day `product` is ready, as buyers are told on `today`, the business time zone's: while it
+/// is a pre-order, its ready date still to come; from that day on, an ordinary product
+/// (FR-PROD-11).
+pub fn ready_on(product: &product::Model, today: NaiveDate) -> Option<NaiveDate> {
+    product.ready_on.filter(|&day| day > today)
+}
+
 /// Whether `step` offers "ใช้ของเดิม": while correcting a part that has a value. The photos
 /// step has "ถัดไป" instead.
 fn keeps(draft: &ProductFlow, step: Step) -> bool {
@@ -852,6 +913,9 @@ fn why(turn: &Turn<'_>, draft: &ProductFlow, refused: Refused) -> Option<Message
         Refused::TooMany(max) => templates.stock_too_large(max),
         Refused::InactiveCategory => templates.category_inactive(),
         Refused::NotAPhoto => templates.photo_expected(photos_done_label(draft)),
+        Refused::NotADay => templates.ready_day_unknown(),
+        Refused::TooSoon => templates.ready_day_too_soon(),
+        Refused::TooLate(latest) => templates.ready_day_too_late(latest),
         Refused::Empty | Refused::NotAChoice => return None,
     })
 }
@@ -899,6 +963,10 @@ async fn prompt(
             DESCRIPTION_CHARS,
             none_label(draft),
             current(draft.description.clone()).as_deref(),
+        ),
+        Step::ReadyOn => templates.ask_product_ready_on(
+            latest_ready_day(turn.today()),
+            current(draft.ready_on.map(thai::format_day)).as_deref(),
         ),
         Step::Summary => return summary(turn, config, draft).await,
     };
@@ -970,6 +1038,19 @@ async fn choices(
         Step::Category => category_choices(turn, draft, page).await?,
         Step::Stock => vec![message(&labels::UNLIMITED_STOCK)],
         Step::Description => vec![message(none_label(draft))],
+        Step::ReadyOn => {
+            let today = turn.today();
+            let days = (1..=READY_CHOICES).filter_map(|ahead| {
+                let day = today.checked_add_days(Days::new(ahead))?;
+                let label = if ahead == 1 {
+                    labels::TOMORROW.clone()
+                } else {
+                    Label::fit(thai::format_short_day(day))
+                };
+                Some(message(&label))
+            });
+            days.chain([message(&labels::NOT_PRE_ORDER)]).collect()
+        }
     };
     if keep {
         choices.push(message(&labels::KEEP));
@@ -1033,6 +1114,7 @@ async fn summary(
         category: category.as_ref().map_or("", |category| &category.name),
         stock: draft.stock.and_then(Stock::column),
         description: draft.description.as_deref(),
+        ready_on: draft.ready_on,
         photo: photo.as_ref(),
         photos: draft.photos.len(),
         drafted: draft.ai == Drafting::Drafted,
@@ -1105,6 +1187,7 @@ async fn submit(
         created_at: Set(turn.now),
         updated_at: Set(turn.now),
         deleted_at: Set(None),
+        ready_on: Set(draft.ready_on),
         ..Default::default()
     }
     .insert(&txn)

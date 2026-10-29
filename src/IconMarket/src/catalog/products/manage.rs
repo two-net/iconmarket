@@ -30,6 +30,7 @@ mod tests;
 
 use std::collections::HashMap;
 
+use chrono::NaiveDate;
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::Uuid;
 use sea_orm::{
@@ -336,7 +337,7 @@ pub async fn tapped(
     if action == Item::MyProducts.action() {
         let page = page(postback);
         return Ok(vec![
-            list(turn.db, turn.templates, config, shop.id, page).await?,
+            list(turn.db, turn.templates, config, shop.id, page, turn.today()).await?,
         ]);
     }
     if action == CATEGORIES {
@@ -371,7 +372,9 @@ pub async fn tapped(
             ])
         }
         // A part no longer offered, as the product was removed meanwhile: its card as it is now
-        (PART | EDIT, ..) => Ok(vec![card(turn.db, turn.templates, config, &product).await?]),
+        (PART | EDIT, ..) => Ok(vec![
+            card(turn.db, turn.templates, config, &product, turn.today()).await?,
+        ]),
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }
@@ -431,7 +434,7 @@ async fn start(
     part: Step,
 ) -> Result<Vec<Message>, DbErr> {
     let photos = images::all(turn.db, Owner::Product(product.id)).await?;
-    let draft = ProductFlow::from_product(product, photos);
+    let draft = ProductFlow::from_product(product, photos, turn.today());
     let mut ask = vec![turn.templates.editing_product(&product.name)];
     ask.extend(prompt(turn, config, &draft, part).await?);
     let session = Session {
@@ -456,7 +459,7 @@ async fn categories(
     }) = session
     else {
         return Ok(vec![
-            list(turn.db, turn.templates, config, shop_id, 0).await?,
+            list(turn.db, turn.templates, config, shop_id, 0, turn.today()).await?,
         ]);
     };
     let ask = if step == Step::Category {
@@ -506,7 +509,7 @@ pub async fn answer(
             let done = match listed(turn.db, id).await? {
                 Some(product) => vec![
                     turn.templates.product_unchanged(),
-                    card(turn.db, turn.templates, config, &product).await?,
+                    card(turn.db, turn.templates, config, &product, turn.today()).await?,
                 ],
                 None => vec![turn.templates.denied(Denied::NotFound)],
             };
@@ -644,7 +647,7 @@ async fn save(
     if change.is_none() && !photos_changed {
         txn.rollback().await?;
         let unchanged = turn.templates.product_unchanged();
-        let card = card(turn.db, turn.templates, config, &product).await?;
+        let card = card(turn.db, turn.templates, config, &product, turn.today()).await?;
         return flow::answered(turn, Answer::<EditFlow>::Done(vec![unchanged, card])).await;
     }
     let mut update = product::ActiveModel {
@@ -696,7 +699,7 @@ async fn save(
         Step::Stock => templates.product_stock_saved(saved.stock, &saved.unit, sold_out(&product)),
         _ => templates.product_saved(),
     };
-    let card = card(turn.db, templates, config, &saved).await?;
+    let card = card(turn.db, templates, config, &saved, turn.today()).await?;
     flow::answered(turn, Answer::<EditFlow>::Done(vec![done, card])).await
 }
 
@@ -810,6 +813,10 @@ fn changed(
                 ..change
             })
         }
+        Step::ReadyOn => (draft.ready_on != product.ready_on).then_some(product::ActiveModel {
+            ready_on: Set(draft.ready_on),
+            ..change
+        }),
         Step::Photos | Step::Summary => None,
     }
 }
@@ -863,7 +870,7 @@ async fn set_visible(
             .product_visibility(&product.name, visible, was_changed);
         messages.push(done);
     }
-    messages.push(card(turn.db, turn.templates, config, &product).await?);
+    messages.push(card(turn.db, turn.templates, config, &product, turn.today()).await?);
     Ok(messages)
 }
 
@@ -871,18 +878,19 @@ async fn set_visible(
 async fn not_found(turn: &Turn<'_>, config: &Config, shop_id: i64) -> Result<Vec<Message>, DbErr> {
     Ok(vec![
         turn.templates.denied(Denied::NotFound),
-        list(turn.db, turn.templates, config, shop_id, 0).await?,
+        list(turn.db, turn.templates, config, shop_id, 0, turn.today()).await?,
     ])
 }
 
-/// "สินค้าของฉัน" of shop `shop_id` at page `page`: its products but the deleted ones, sold-out
-/// ones first, to restock (FR-PROD-06), then the newest.
+/// "สินค้าของฉัน" of shop `shop_id` at page `page`, as it is on `today`: its products but the
+/// deleted ones, sold-out ones first, to restock (FR-PROD-06), then the newest.
 pub(crate) async fn list(
     db: &impl ConnectionTrait,
     templates: &Templates,
     config: &Config,
     shop_id: i64,
     page: usize,
+    today: NaiveDate,
 ) -> Result<Message, DbErr> {
     let mut products = product::Entity::find()
         .filter(product::Column::ShopId.eq(shop_id))
@@ -918,7 +926,7 @@ pub(crate) async fn list(
         .map(|(product, url)| {
             let category = names.get(&product.category_id).map_or("", String::as_str);
             let photos = photos.get(&product.id).map_or(0, Vec::len);
-            my_card(product, category, url.as_ref(), photos)
+            my_card(product, category, url.as_ref(), photos, today)
         })
         .collect();
     // A page past the last, from a button sent before products were deleted, starts over
@@ -934,12 +942,13 @@ pub(crate) async fn list(
     Ok(templates.my_products(&cards, page, more, add))
 }
 
-/// `product`'s card as it is now, with its buttons.
+/// `product`'s card as it is now, on `today`, with its buttons.
 pub(super) async fn card(
     db: &impl ConnectionTrait,
     templates: &Templates,
     config: &Config,
     product: &product::Model,
+    today: NaiveDate,
 ) -> Result<Message, DbErr> {
     let photos = images::all(db, Owner::Product(product.id)).await?;
     let category = category::Entity::find_by_id(product.category_id)
@@ -949,7 +958,7 @@ pub(super) async fn card(
         .first()
         .map(|&id| images::product_image_url(&config.app.base_url, id));
     let category = category.as_ref().map_or("", |category| &category.name);
-    let card = my_card(product, category, photo.as_ref(), photos.len());
+    let card = my_card(product, category, photo.as_ref(), photos.len(), today);
     Ok(templates.my_product(&card))
 }
 
@@ -961,6 +970,7 @@ fn my_card<'a>(
     category: &'a str,
     photo: Option<&'a Url>,
     photos: usize,
+    today: NaiveDate,
 ) -> MyProductCard<'a> {
     let acts = |action| Postback::new(action).with_int(PRODUCT, product.id);
     let mut buttons = Vec::new();
@@ -1007,6 +1017,7 @@ fn my_card<'a>(
         unit: &product.unit,
         category,
         stock: product.stock,
+        ready_on: super::ready_on(product, today),
         status: product.status,
         photo,
         photos,

@@ -354,7 +354,7 @@ No other endpoints are exposed.
 | FR-PROD-08 | Price and stock changes apply to new checkouts only; existing orders keep their snapshots (DR-03). | M |
 | FR-PROD-09 | Moderation: new or edited product and shop text shall be checked against `catalog.prohibitedKeywords`, and also by the AI when `ai.features.moderation` is on (images too, if the model accepts images). Suspicious items become `HELD`, the seller is told the item is under review, and admins are alerted. Content is never deleted automatically. | M |
 | FR-PROD-10 | Quick text updates for sellers (e.g., *ขนมครก เหลือ 10*, *ไข่ไก่ ราคา 115*) are interpreted by the AI and applied only after the seller taps confirm. | S |
-| FR-PROD-11 | Pre-order products ("สั่งล่วงหน้า") with a ready date shown to buyers. | C |
+| FR-PROD-11 | Pre-order products ("สั่งล่วงหน้า") with a ready date shown to buyers. The seller sets the ready date as an optional part of the product, from the add-product preview or "สินค้าของฉัน" ("แก้ไข" → "สั่งล่วงหน้า"), by tapping one of the next 10 days or typing a date (e.g., `15 พ.ย.`, `15/11`); it must be from tomorrow to 90 days ahead, and "ไม่สั่งล่วงหน้า" clears it. While the ready date is still to come, the product card and details, the cart, checkout's summary and the order (both parties' cards and the seller's new-order notice) show *สั่งล่วงหน้า · พร้อม 5 พ.ย. 2569*; from that day on, it is an ordinary product. Stock still applies. Each order line keeps the ready date it was ordered with (DR-03). | C |
 
 ### 4.4 Browse and Search (FR-SRCH)
 
@@ -366,7 +366,7 @@ No other endpoints are exposed.
 | FR-SRCH-04 | Keyword search shall match case-insensitive substrings of product name, description, category name and shop name. Substring matching is required because Thai is written without spaces between words. | M |
 | FR-SRCH-05 | With the AI assistant on, free-text requests (*มีอะไรกินตอนเช้าบ้าง*, *อยากได้ผักสดส่งถึงบ้าน ไม่เกิน 50 บาท*) shall be turned into structured filters (keywords and synonyms, category, delivery only, maximum price) and run against the database. Results always come from the database. | S |
 | FR-SRCH-06 | "ร้านค้าทั้งหมด" shall list approved shops, open shops first, as shop cards. | M |
-| FR-SRCH-07 | A product card shall show photo (or a placeholder), name, price per unit, shop name, availability (*เหลือ 5*, *สั่งได้*, *หมด*, *ร้านปิด*) and the buttons "ใส่ตะกร้า" and "ดูร้าน". Tapping the card shows full details (all photos, description, shop). | M |
+| FR-SRCH-07 | A product card shall show photo (or a placeholder), name, price per unit, shop name, availability (*เหลือ 5*, *สั่งได้*, *หมด*, *ร้านปิด*), the ready date of a pre-order (FR-PROD-11) and the buttons "ใส่ตะกร้า" and "ดูร้าน". Tapping the card shows full details (all photos, description, shop). | M |
 | FR-SRCH-08 | When nothing matches, the system shall say so and suggest categories or related items. | M |
 | FR-SRCH-09 | "ของใหม่วันนี้" shall list products created or restocked in the last 24 hours. | S |
 | FR-SRCH-10 | Visual search (`ai.features.visualSearch`): a buyer sends a photo (*มีแบบนี้ไหม*) and the AI turns it into search filters. | C |
@@ -379,7 +379,7 @@ No other endpoints are exposed.
 | FR-CART-02 | The cart shall be stored in the database per user and kept until checkout or removal. | M |
 | FR-CART-03 | "ตะกร้า" shall show items grouped by shop — name, quantity, unit price, line total, shop subtotal — with buttons to change quantity, remove an item and "สั่งซื้อร้านนี้". Unavailable items (hidden, sold out, shop closed) are flagged and excluded from checkout. | M |
 | FR-CART-04 | Checkout is per shop and creates exactly one order. Steps: (1) pickup or delivery — only the options the shop offers, skipped if there is only one; (2) for delivery, confirm the saved address, change it or share a location; (3) payment method — those allowed by `payment.methods` and by the shop (PromptPay only if the shop has a PromptPay ID); (4) optional note ≤ 200 chars; (5) summary of items, subtotal, delivery fee and total → "ยืนยันสั่งซื้อ". | M |
-| FR-CART-05 | On confirmation the system shall, in one database transaction: re-validate shop status, product availability and prices; enforce the shop's minimum order amount on the subtotal; reserve stock by decrementing it; create the order with item snapshots; remove those cart items. If any price or availability changed, nothing is committed and an updated summary is shown for re-confirmation. | M |
+| FR-CART-05 | On confirmation the system shall, in one database transaction: re-validate shop status, product availability, prices and pre-order ready dates; enforce the shop's minimum order amount on the subtotal; reserve stock by decrementing it; create the order with item snapshots; remove those cart items. If any price, availability or ready date changed, nothing is committed and an updated summary is shown for re-confirmation. | M |
 | FR-CART-06 | Concurrent checkouts for the last units shall never oversell: exactly one succeeds and the others receive "สินค้าหมดแล้ว". | M |
 | FR-CART-07 | An order may contain at most 20 distinct products. A seller cannot order from their own shop. | M |
 | FR-CART-08 | After placing the order the buyer receives an order card: order number, items, total, fulfillment, payment method, status "รอร้านยืนยัน" and the button "ยกเลิกออเดอร์". | M |
@@ -560,11 +560,11 @@ Entity names and physical types are the implementer's choice; the information be
 | User | Anyone who followed the OA | id, LINE user ID (unique), display name, picture URL, roles, following flag, status (active / suspended / deleted), consent version and time, zone, house number, landmark note, phone, location, timestamps |
 | Shop | A seller's shop | id, owner (unique), name, description, photo, status, open flag, opening hours, pickup and delivery flags, delivery fee, minimum order, PromptPay ID, phone, show-phone flag, pickup address/location, timestamps |
 | Category | Product grouping | id, name (unique), sort order, active flag |
-| Product | Item for sale | id, shop, category, name, description, price, unit, stock (null = unlimited), status, timestamps, deleted-at |
+| Product | Item for sale | id, shop, category, name, description, price, unit, stock (null = unlimited), status, ready date (pre-order, FR-PROD-11), timestamps, deleted-at |
 | Image | Stored image | id (random), owner type (product / shop / slip / payment QR), owner id, order, content type, width, height, size, binary data, created-at |
 | CartItem | A line in a buyer's cart | user, product (unique together), quantity, added-at |
 | Order | One checkout at one shop | id, order number (unique), checkout key (unique — the pending action that created it), buyer, shop, status, fulfillment, delivery address snapshot, note, subtotal, delivery fee, total, payment method, payment status, status timestamps, cancel reason |
-| OrderItem | A line of an order | order, product, name snapshot, unit snapshot, unit-price snapshot, quantity, line total |
+| OrderItem | A line of an order | order, product, name snapshot, unit snapshot, unit-price snapshot, ready-date snapshot, quantity, line total |
 | OrderEvent | Status history | order, from status, to status, actor type and id, reason, time |
 | PaymentSlip | Transfer evidence | order, image, access token, token expiry, AI-extracted amount / time / reference, status |
 | Rating | Order rating (C) | order (unique), stars, comment |
@@ -584,7 +584,7 @@ Entity names and physical types are the implementer's choice; the information be
 | --- | --- | --- |
 | DR-01 | Money is stored as an exact decimal with 2 decimal places, never as floating point; the currency is THB. | M |
 | DR-02 | Timestamps are stored with time zone (UTC) and converted to `Asia/Bangkok` for display and for day boundaries. | M |
-| DR-03 | Order items snapshot product name, unit and unit price at checkout; later product edits never change existing orders. | M |
+| DR-03 | Order items snapshot product name, unit, unit price and pre-order ready date at checkout; later product edits never change existing orders. | M |
 | DR-04 | Shops and products are soft-deleted. Orders are never deleted, only anonymized (FR-ONB-07). | M |
 | DR-05 | Unique: user LINE user ID; shop owner; order number; order checkout key; webhook event id; cart item (user, product); rating per order; counter key. | M |
 | DR-06 | Foreign keys enforce referential integrity. Indexes support the main queries: products by shop / category / status, orders by buyer / shop / status / date, inbox by status. | M |

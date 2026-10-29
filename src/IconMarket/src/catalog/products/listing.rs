@@ -304,16 +304,16 @@ async fn update(
     let (new_price, new_stock) = match (new_price, new_stock) {
         (Ok(new_price), Ok(new_stock)) => (new_price, new_stock),
         (Err(refused), _) | (_, Err(refused)) => {
-            let draft = ProductFlow::from_product(product, Vec::new());
+            let draft = ProductFlow::from_product(product, Vec::new(), turn.today());
             let why = why(turn, &draft, refused).unwrap_or_else(|| templates.product_unchanged());
-            let card = manage::card(turn.db, templates, config, product).await?;
+            let card = manage::card(turn.db, templates, config, product, turn.today()).await?;
             return Ok(vec![why, card]);
         }
     };
     match UpdateProduct::of(product, new_price, new_stock) {
         Some(update) => Ok(vec![update.propose(turn, product).await?]),
         None => {
-            let card = manage::card(turn.db, templates, config, product).await?;
+            let card = manage::card(turn.db, templates, config, product, turn.today()).await?;
             Ok(vec![templates.product_unchanged(), card])
         }
     }

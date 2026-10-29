@@ -15,6 +15,7 @@
 //! card. Admins get only read tools (FR-AI-17): `get_admin_overview`, the figures of "สถิติ" and
 //! its card.
 
+use chrono::NaiveDate;
 use sea_orm::{ActiveEnum, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde_json::{Value, json};
 use tracing::debug;
@@ -26,7 +27,7 @@ use crate::catalog::browse;
 use crate::catalog::browse::listing::{self, Listing};
 use crate::catalog::browse::search::{KEYWORD_CHARS, Search};
 use crate::catalog::categories;
-use crate::catalog::products::{Availability, listing as drafting, manage};
+use crate::catalog::products::{self, Availability, listing as drafting, manage};
 use crate::catalog::shops::{sales, settings};
 use crate::config::Config;
 use crate::dispatcher::Turn;
@@ -40,7 +41,7 @@ use crate::orders::lists::{self, ListedOrder};
 use crate::orders::periods::Orders;
 use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{category, order, product, shop};
-use crate::thai::Money;
+use crate::thai::{self, Money};
 use crate::users::access::{self, authorize};
 use crate::users::help::{self, Topic};
 use crate::users::roles::Roles;
@@ -482,7 +483,7 @@ async fn search_products(
     let products: Vec<Value> = found
         .items
         .iter()
-        .map(|(product, shop)| product_json(toolbox, product, shop))
+        .map(|(product, shop)| product_json(turn, toolbox, product, shop))
         .collect();
     for (product, shop) in found.items {
         shown.product(product, shop);
@@ -502,7 +503,7 @@ async fn get_product(
     let Some((product, shop)) = listing::product(turn.db, id).await? else {
         return Ok(failed("not_found"));
     };
-    let mut told = product_json(toolbox, &product, &shop);
+    let mut told = product_json(turn, toolbox, &product, &shop);
     told["description"] = json!(product.description);
     shown.product(product, shop);
     Ok(told)
@@ -565,7 +566,7 @@ fn get_help(
 }
 
 async fn get_cart(turn: &Turn<'_>, shown: &mut Shown) -> Result<Value, DbErr> {
-    let lines = cart::lines(turn.db, turn.actor.user.id).await?;
+    let lines = cart::lines(turn.db, turn.actor.user.id, turn.today()).await?;
     let shops: Vec<Value> = lines
         .chunk_by(|a, b| a.shop.id == b.shop.id)
         .map(|lines| {
@@ -573,14 +574,16 @@ async fn get_cart(turn: &Turn<'_>, shown: &mut Shown) -> Result<Value, DbErr> {
             let lines: Vec<Value> = lines
                 .iter()
                 .map(|line| {
-                    json!({
+                    let mut told = json!({
                         "productId": line.product.id.to_string(),
                         "name": line.product.name,
                         "quantity": line.item.quantity,
                         "unit": line.product.unit,
                         "total": line.total().to_string(),
                         "orderable": line.state.orderable(),
-                    })
+                    });
+                    ready(&mut told, line.ready_on);
+                    told
                 })
                 .collect();
             json!({ "shop": { "id": shop.id.to_string(), "name": shop.name }, "lines": lines })
@@ -622,7 +625,7 @@ async fn propose_add_to_cart(
         .unwrap_or(0);
     let declined = match AddToCart::offer(turn, id, quantity).await? {
         Ok(offer) => {
-            let told = product_json(toolbox, &offer.product, &offer.shop);
+            let told = product_json(turn, toolbox, &offer.product, &offer.shop);
             shown.proposal(offer.product, offer.shop, offer.confirm);
             return Ok(json!({ "proposed": true, "quantity": quantity, "product": told }));
         }
@@ -650,7 +653,7 @@ async fn propose_checkout(
     let Some(id) = id(args, "shopId") else {
         return Ok(failed("not_found"));
     };
-    let lines = cart::lines(turn.db, turn.actor.user.id).await?;
+    let lines = cart::lines(turn.db, turn.actor.user.id, turn.today()).await?;
     if !lines
         .iter()
         .any(|line| line.shop.id == id && line.state.orderable())
@@ -717,20 +720,23 @@ async fn get_my_products(
     let told: Vec<Value> = mine
         .iter()
         .map(|product| {
-            json!({
+            let mut told = json!({
                 "id": product.id.to_string(),
                 "name": product.name,
                 "unit": product.unit,
                 "price": product.price.to_string(),
                 "stock": product.stock,
                 "status": product.status.to_value().to_lowercase(),
-            })
+            });
+            ready(&mut told, products::ready_on(product, turn.today()));
+            told
         })
         .collect();
     for product in &mine {
         shown.remember(json!({ "product": product.id.to_string(), "name": product.name }));
     }
-    shown.messages([manage::list(turn.db, turn.templates, config, shop.id, 0).await?]);
+    shown
+        .messages([manage::list(turn.db, turn.templates, config, shop.id, 0, turn.today()).await?]);
     Ok(json!({ "products": told }))
 }
 
@@ -837,14 +843,19 @@ fn remember_orders(shown: &mut Shown, orders: &[ListedOrder]) {
 }
 
 /// `product` of `shop`, as the model is told of it: no more than its card shows.
-fn product_json(toolbox: &Toolbox, product: &product::Model, shop: &shop::Model) -> Value {
+fn product_json(
+    turn: &Turn<'_>,
+    toolbox: &Toolbox,
+    product: &product::Model,
+    shop: &shop::Model,
+) -> Value {
     let availability = match Availability::of(product, shop) {
         Availability::Left(left) => json!({ "left": left }),
         Availability::Orderable => json!("available"),
         Availability::SoldOut => json!("sold_out"),
         Availability::ShopClosed => json!("shop_closed"),
     };
-    json!({
+    let mut told = json!({
         "id": product.id.to_string(),
         "name": product.name,
         "unit": product.unit,
@@ -852,7 +863,16 @@ fn product_json(toolbox: &Toolbox, product: &product::Model, shop: &shop::Model)
         "availability": availability,
         "category": toolbox.category_of(product),
         "shop": { "id": shop.id.to_string(), "name": shop.name, "delivers": shop.offers_delivery },
-    })
+    });
+    ready(&mut told, products::ready_on(product, turn.today()));
+    told
+}
+
+/// Tells the model, in `told`, the day something is ready if it is a pre-order (FR-PROD-11).
+fn ready(told: &mut Value, ready_on: Option<NaiveDate>) {
+    if let Some(day) = ready_on {
+        told["readyOn"] = json!(thai::format_day(day));
+    }
 }
 
 /// `shop`, as buyers see it on its card, without its phone, PromptPay ID or pickup address
@@ -878,7 +898,12 @@ fn order_json(turn: &Turn<'_>, listed: &ListedOrder, as_buyer: bool) -> Value {
     let items: Vec<Value> = listed
         .items
         .iter()
-        .map(|item| json!({ "name": item.name, "quantity": item.quantity, "unit": item.unit }))
+        .map(|item| {
+            let mut told =
+                json!({ "name": item.name, "quantity": item.quantity, "unit": item.unit });
+            ready(&mut told, item.ready_on);
+            told
+        })
         .collect();
     json!({
         "orderNo": order.order_number,

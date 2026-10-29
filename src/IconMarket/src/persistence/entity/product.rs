@@ -30,6 +30,9 @@ pub struct Model {
     pub restocked_at: Option<DateTimeUtc>,
     /// Set together with `DELETED`; products are never removed (DR-04)
     pub deleted_at: Option<DateTimeUtc>,
+    /// The day a pre-order ("สั่งล่วงหน้า") is ready, in the business time zone (FR-PROD-11).
+    /// It is a pre-order only while that day is still to come; from then on, an ordinary product.
+    pub ready_on: Option<Date>,
 }
 
 /// FR-PROD-07. Sold out is derived from the stock, not a status.
