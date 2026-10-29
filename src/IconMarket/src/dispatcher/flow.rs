@@ -84,6 +84,15 @@ pub(super) async fn find(
     })
 }
 
+/// The name of the flow the user is in as handling their event left it so far, if any: whether
+/// what handling it called started one.
+pub async fn current(turn: &Turn<'_>) -> Result<Option<String>, DbErr> {
+    Ok(match find(turn.db, turn.actor.user.id, turn.now).await? {
+        Found::Active(stored) => Some(stored.flow().to_owned()),
+        Found::None | Found::Expired => None,
+    })
+}
+
 /// What a step made of the user's answer.
 pub enum Answer<F: Flow> {
     /// On to the step `ask` asks for

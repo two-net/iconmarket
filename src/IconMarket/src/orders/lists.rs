@@ -195,32 +195,86 @@ pub async fn view(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, 
     Ok(vec![templates.order_details(&card, back)])
 }
 
+/// Orders as a list shows them: their cards, and each order with its lines and its shop's
+/// name, for the AI assistant to be told about (FR-AI-02).
+pub struct Listed {
+    pub messages: Vec<Message>,
+    pub orders: Vec<ListedOrder>,
+}
+
+pub struct ListedOrder {
+    pub order: order::Model,
+    /// In the order they were put in it
+    pub items: Vec<order_item::Model>,
+    pub shop: String,
+}
+
+/// The AI assistant's `get_my_orders` (FR-AI-02): the first page of "คำสั่งซื้อของฉัน", or of
+/// only those orders that are `open`, or only those over.
+pub async fn mine_for_assistant(turn: &Turn<'_>, open: Option<bool>) -> Result<Listed, DbErr> {
+    mine_listed(turn, 0, open).await
+}
+
+/// The AI assistant's `get_shop_orders` (FR-AI-02): the first page of "ออเดอร์ร้าน" with the
+/// filter `key` names, "ใหม่" by default.
+pub async fn shop_for_assistant(turn: &Turn<'_>, key: Option<&str>) -> Result<Listed, DbErr> {
+    let filter = key.and_then(Filter::from_key).unwrap_or(Filter::New);
+    shop_listed(turn, filter, 0).await
+}
+
+/// The keys of the filters of "ออเดอร์ร้าน", as the AI assistant's `get_shop_orders` takes them.
+pub fn filter_keys() -> impl Iterator<Item = &'static str> {
+    Filter::ALL.into_iter().map(Filter::key)
+}
+
 /// Page `page` of the actor's orders as their buyer, open ones first.
 async fn mine_page(turn: &Turn<'_>, page: usize) -> Result<Vec<Message>, DbErr> {
-    let finals = Status::iter().filter(|status| status.is_final());
-    let select = order::Entity::find()
-        .filter(order::Column::BuyerId.eq(turn.actor.user.id))
+    Ok(mine_listed(turn, page, None).await?.messages)
+}
+
+/// Page `page` of the actor's orders as their buyer, open ones first, or only those that are
+/// `open`, or only those over. Only the whole list pages on.
+async fn mine_listed(turn: &Turn<'_>, page: usize, open: Option<bool>) -> Result<Listed, DbErr> {
+    let finals = || Status::iter().filter(|status| status.is_final());
+    let select = order::Entity::find().filter(order::Column::BuyerId.eq(turn.actor.user.id));
+    let select = match open {
+        None => select,
+        Some(true) => select.filter(order::Column::Status.is_not_in(finals())),
+        Some(false) => select.filter(order::Column::Status.is_in(finals())),
+    };
+    let select = select
         // Those not over first, as `false` sorts before `true`
-        .order_by(order::Column::Status.is_in(finals), Order::Asc)
+        .order_by(order::Column::Status.is_in(finals()), Order::Asc)
         .order_by_desc(order::Column::CreatedAt)
         .order_by_desc(order::Column::Id);
     let found = page_of(turn.db, select, page).await?;
     let parts = Parts::of(turn.db, &found.items).await?;
     let cards = parts.cards(&found.items, ActorType::Buyer)?;
-    let more = found.next.map(|next| more(Item::MyOrders.postback(), next));
+    let more = found
+        .next
+        .filter(|_| open.is_none())
+        .map(|next| more(Item::MyOrders.postback(), next));
     let mut carry_on = vec![cart::continue_shopping()];
     if runs_shop(turn) {
         carry_on.push(filtered(Filter::New).button(labels::SHOP_ORDERS.clone()));
     }
     carry_on.push(cart::menu_button());
-    Ok(vec![turn.templates.my_orders(&cards, more, carry_on)])
+    let messages = vec![turn.templates.my_orders(&cards, more, carry_on)];
+    Ok(parts.listed(found.items, messages))
 }
 
 /// Page `page` of the orders of the actor's shop that `filter` picks. Any shop they own: a
 /// suspended one's orders continue (FR-SHOP-10).
 async fn shop_page(turn: &Turn<'_>, filter: Filter, page: usize) -> Result<Vec<Message>, DbErr> {
+    Ok(shop_listed(turn, filter, page).await?.messages)
+}
+
+async fn shop_listed(turn: &Turn<'_>, filter: Filter, page: usize) -> Result<Listed, DbErr> {
     let Some(shop) = &turn.actor.shop else {
-        return Ok(vec![turn.denied(Denied::NotAllowed)]);
+        return Ok(Listed {
+            messages: vec![turn.denied(Denied::NotAllowed)],
+            orders: Vec::new(),
+        });
     };
     let select = order::Entity::find()
         .filter(order::Column::ShopId.eq(shop.id))
@@ -245,7 +299,84 @@ async fn shop_page(turn: &Turn<'_>, filter: Filter, page: usize) -> Result<Vec<M
     filters.push(Item::MyOrders.postback().button(labels::MY_ORDERS.clone()));
     filters.push(cart::menu_button());
     let templates = turn.templates;
-    Ok(templates.shop_orders(filter.label(), &cards, more, filters))
+    let messages = templates.shop_orders(filter.label(), &cards, more, filters);
+    Ok(parts.listed(found.items, messages))
+}
+
+/// The order numbered `number`, however it is typed, if the actor is its party as `party`
+/// says: its buyer, or its seller as the owner of its shop. The AI assistant's proposals take
+/// an order by its number (FR-AI-02), as users know it.
+pub async fn numbered(
+    turn: &Turn<'_>,
+    number: &str,
+    party: ActorType,
+) -> Result<Option<order::Model>, DbErr> {
+    let number: String = number
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_uppercase();
+    let select = order::Entity::find().filter(order::Column::OrderNumber.eq(number));
+    let select = match (party, &turn.actor.shop) {
+        (ActorType::Buyer, _) => select.filter(order::Column::BuyerId.eq(turn.actor.user.id)),
+        (ActorType::Seller, Some(shop)) => select.filter(order::Column::ShopId.eq(shop.id)),
+        _ => return Ok(None),
+    };
+    select.one(turn.db).await
+}
+
+/// `order` in full as `viewer` sees it, with only those of its buttons whose action `keep`
+/// keeps: the AI assistant's proposal of what to do about it (FR-AI-03), the order's status
+/// confirming the tap as for any of its buttons (FR-UI-13). `None` if it keeps none of them, as
+/// none of those can be done now.
+pub async fn proposal_card(
+    turn: &Turn<'_>,
+    order: &order::Model,
+    viewer: ActorType,
+    keep: impl Fn(&str) -> bool,
+) -> Result<Option<Message>, DbErr> {
+    let (card, kept) = in_full(turn, order, viewer, keep).await?;
+    Ok((kept > 0).then_some(card))
+}
+
+/// `order` in full as `viewer` sees it, with the buttons of everything they can do about it now.
+pub async fn full_card(
+    turn: &Turn<'_>,
+    order: &order::Model,
+    viewer: ActorType,
+) -> Result<Message, DbErr> {
+    Ok(in_full(turn, order, viewer, |_| true).await?.0)
+}
+
+/// `order` in full as `viewer` sees it, with those of its buttons whose action `keep` keeps,
+/// and how many it kept.
+async fn in_full(
+    turn: &Turn<'_>,
+    order: &order::Model,
+    viewer: ActorType,
+    keep: impl Fn(&str) -> bool,
+) -> Result<(Message, usize), DbErr> {
+    let parties = Parties::of(turn.db, order).await?;
+    let items = order_item::Entity::find()
+        .filter(order_item::Column::OrderId.eq(order.id))
+        .order_by_asc(order_item::Column::Id)
+        .all(turn.db)
+        .await?;
+    let mut card = card(order, &items, &parties.shop, &parties.buyer, viewer);
+    card.buttons.retain(|button| match button {
+        Action::Postback { data, .. } => {
+            Postback::parse(data).is_some_and(|postback| keep(postback.action()))
+        }
+        _ => false,
+    });
+    let kept = card.buttons.len();
+    let back = if viewer == ActorType::Seller {
+        filtered(Filter::of(order)).button(labels::SHOP_ORDERS.clone())
+    } else {
+        Item::MyOrders.postback().button(labels::MY_ORDERS.clone())
+    };
+    let back = vec![back, cart::menu_button()];
+    Ok((turn.templates.order_details(&card, back), kept))
 }
 
 /// Whether the actor runs a shop with orders to handle: one approved, held for review, or
@@ -304,6 +435,23 @@ struct Parts {
 }
 
 impl Parts {
+    /// `orders`, each with its lines and its shop's name, after their `messages`.
+    fn listed(mut self, orders: Vec<order::Model>, messages: Vec<Message>) -> Listed {
+        let orders = orders
+            .into_iter()
+            .map(|order| ListedOrder {
+                items: self.items.remove(&order.id).unwrap_or_default(),
+                shop: self
+                    .shops
+                    .get(&order.shop_id)
+                    .map(|shop| shop.name.clone())
+                    .unwrap_or_default(),
+                order,
+            })
+            .collect();
+        Listed { messages, orders }
+    }
+
     async fn of(db: &impl ConnectionTrait, orders: &[order::Model]) -> Result<Self, DbErr> {
         if orders.is_empty() {
             return Ok(Self {

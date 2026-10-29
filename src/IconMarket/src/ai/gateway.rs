@@ -181,6 +181,18 @@ impl Gateway {
     /// (FR-AI-10). An invalid answer is tried again once with a hint naming its problems
     /// (FR-AI-05). Every try is logged (FR-AI-16).
     pub async fn complete(&self, call: Call) -> Result<Answer, Unavailable> {
+        self.ask(call, true).await
+    }
+
+    /// Asks the model again for a use already counted, as [`Gateway::complete`] does but
+    /// without counting against the daily limits: the assistant's rounds after its tools ran,
+    /// so that a user's message counts once however many rounds it takes (FR-AI-09). Still
+    /// logged, try by try (FR-AI-16).
+    pub async fn follow_up(&self, call: Call) -> Result<Answer, Unavailable> {
+        self.ask(call, false).await
+    }
+
+    async fn ask(&self, call: Call, counted: bool) -> Result<Answer, Unavailable> {
         let inner = &*self.inner;
         let Call {
             feature,
@@ -194,25 +206,27 @@ impl Gateway {
             _ => return Err(Unavailable::Disabled),
         };
 
-        let keys = limits::keys(Utc::now(), inner.time_zone, user_id);
-        let reserved = limits::reserve(
-            &inner.db,
-            keys,
-            inner.global_daily_calls,
-            inner.per_user_daily_calls,
-        );
-        match reserved.await {
-            Ok(true) => {}
-            Ok(false) => {
-                info!(
-                    feature = feature.name(),
-                    "AI daily limit reached, the assistant is resting"
-                );
-                return Err(Unavailable::Resting);
-            }
-            Err(e) => {
-                warn!(error = %e, feature = feature.name(), "cannot count the AI call");
-                return Err(Unavailable::Failed);
+        if counted {
+            let keys = limits::keys(Utc::now(), inner.time_zone, user_id);
+            let reserved = limits::reserve(
+                &inner.db,
+                keys,
+                inner.global_daily_calls,
+                inner.per_user_daily_calls,
+            );
+            match reserved.await {
+                Ok(true) => {}
+                Ok(false) => {
+                    info!(
+                        feature = feature.name(),
+                        "AI daily limit reached, the assistant is resting"
+                    );
+                    return Err(Unavailable::Resting);
+                }
+                Err(e) => {
+                    warn!(error = %e, feature = feature.name(), "cannot count the AI call");
+                    return Err(Unavailable::Failed);
+                }
             }
         }
 

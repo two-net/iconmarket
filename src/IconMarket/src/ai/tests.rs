@@ -375,6 +375,31 @@ async fn retries_count_once_against_the_limits() {
     );
 }
 
+/// FR-AI-09: the assistant's further rounds of one message, after its tools ran, don't count
+/// against the limits, but are logged (FR-AI-16); at the limit the next message still rests.
+#[tokio::test]
+async fn follow_ups_are_not_counted_but_logged() {
+    let (_postgres, db) = testing::migrated().await;
+    let somchai = new_user(&db, SOMCHAI).await;
+    let mock = Mock::scripted([
+        tool_call("search_products", json!({ "keywords": "ไข่ไก่" })),
+        reply("เจอแล้วค่ะ"),
+        reply("ได้เลยค่ะ"),
+    ]);
+    let gateway = gateway(&db, &mock, &config(1, 2000));
+
+    assert!(gateway.complete(ask(Some(somchai))).await.is_ok());
+    for _ in 0..2 {
+        assert!(gateway.follow_up(ask(Some(somchai))).await.is_ok());
+    }
+    assert_eq!(
+        gateway.complete(ask(Some(somchai))).await,
+        Err(Unavailable::Resting)
+    );
+    assert_eq!(mock.requests().len(), 3);
+    assert_eq!(outcomes(&db).await, ["ok", "ok", "ok"]);
+}
+
 /// AC (FR-AI-10): a request that timed out is not retried.
 #[tokio::test]
 async fn a_timed_out_request_is_not_retried() {

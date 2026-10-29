@@ -4,7 +4,8 @@
 //!
 //! 1. a postback, to the module owning its action;
 //! 2. onboarding, until it is complete; only `#myid` and `ช่วยเหลือ` work besides;
-//! 3. the user's guided flow, which takes the input as an answer (`ยกเลิก` always cancels);
+//! 3. the user's guided flow, which takes the input as an answer (`ยกเลิก` always cancels, and
+//!    `เริ่มใหม่` starts over);
 //! 4. the global keywords;
 //! 5. the AI: for a seller, the listing assistant, if enabled; then the assistant, if enabled;
 //! 6. a short help text and the main menu.
@@ -34,11 +35,12 @@ use crate::admin::accounts;
 use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::admin::review;
-use crate::ai::Feature;
+use crate::ai::{Feature, assistant};
 use crate::catalog::browse;
 use crate::catalog::browse::search::{self, SearchFlow};
+use crate::catalog::products::listing::{self, Typed};
 use crate::catalog::products::manage::{self, EditFlow};
-use crate::catalog::products::{self, ProductFlow, listing};
+use crate::catalog::products::{self, ProductFlow};
 use crate::catalog::shops::settings::{self, SettingsFlow};
 use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
@@ -382,9 +384,13 @@ fn decide(input: &Input, state: State) -> Step {
             Some(keyword @ (Keyword::MyId | Keyword::Help)) => Step::Keyword(keyword),
             _ => Step::Onboarding,
         },
-        // 3. The flow takes any text but `ยกเลิก` as its answer, and photos and locations if
-        // its step expects them
-        Input::Text(_) if state.in_flow && keyword != Some(Keyword::Cancel) => Step::Flow,
+        // 3. The flow takes any text but `ยกเลิก` and `เริ่มใหม่` as its answer, and photos and
+        // locations if its step expects them
+        Input::Text(_)
+            if state.in_flow && !matches!(keyword, Some(Keyword::Cancel | Keyword::Restart)) =>
+        {
+            Step::Flow
+        }
         Input::Image { .. } | Input::Location(_) if state.in_flow => Step::Flow,
         // 4. – 6.
         Input::Text(_) => match keyword {
@@ -428,11 +434,18 @@ async fn route(
             },
         );
     }
+    if matches!(step, Step::Listing | Step::Assistant) {
+        assistant::loading(turn, config, &context.line).await;
+    }
+    // Whether the AI read the message already, so it counts no more (FR-AI-09)
+    let mut counted = false;
     if step == Step::Listing {
-        if let Input::Text(text) = &input
-            && let Some(messages) = listing::typed(turn, config, &context.ai, text).await?
-        {
-            return Ok(messages);
+        if let Input::Text(text) = &input {
+            match listing::typed(turn, config, &context.ai, text).await? {
+                Typed::Listing(messages) => return Ok(messages),
+                Typed::Other => counted = true,
+                Typed::Unread => {}
+            }
         }
         // Not about listing: on as for anyone else
         step = decide(
@@ -460,7 +473,12 @@ async fn route(
         Step::Flow => unreachable!("decided again without the flow"),
         Step::Listing => unreachable!("decided again without listing"),
         Step::Keyword(keyword) => return typed(turn, keyword).await,
-        Step::Assistant => not_built("the AI assistant", 37, fallback(turn)),
+        Step::Assistant => match &input {
+            Input::Text(text) => {
+                return assistant::answer(turn, config, &context.ai, text, counted).await;
+            }
+            _ => unreachable!("only text goes to the assistant"),
+        },
         Step::Fallback => fallback(turn),
         Step::Image => return image(context, turn, &input).await,
         Step::Location => vec![templates.location_not_expected()],
@@ -523,7 +541,10 @@ async fn answer_flow(
             None => None,
         },
         ShopFlow::NAME => match stored.read::<ShopFlow>() {
-            Some(session) => Some(shops::answer(turn, config, &context.line, session, input).await),
+            Some(session) => {
+                let (ai, line) = (&context.ai, &context.line);
+                Some(shops::answer(turn, config, ai, line, session, input).await)
+            }
             None => None,
         },
         RejectionFlow::NAME => match stored.read::<RejectionFlow>() {
@@ -562,7 +583,7 @@ async fn answer_flow(
             None => None,
         },
         QuantityFlow::NAME => match stored.read::<QuantityFlow>() {
-            Some(session) => Some(cart::answer(turn, session, input).await),
+            Some(session) => Some(cart::answer(turn, &context.ai, session, input).await),
             None => None,
         },
         CheckoutFlow::NAME => match stored.read::<CheckoutFlow>() {
@@ -693,8 +714,11 @@ async fn typed(turn: &Turn<'_>, keyword: Keyword) -> Result<Vec<Message>, DbErr>
     Ok(match keyword {
         Keyword::Menu => vec![menu::main_menu(&turn.actor)],
         Keyword::Cancel => return flow::cancel(turn).await,
-        // The AI assistant (#37) also clears the user's AI context here (FR-AI-11)
-        Keyword::Restart => return flow::cancel(turn).await,
+        // Starts over: the flow cancelled, and the AI assistant's memory cleared (FR-AI-11)
+        Keyword::Restart => {
+            assistant::clear(turn.db, turn.actor.user.id).await?;
+            return flow::cancel(turn).await;
+        }
         Keyword::Cart => return cart::show(turn).await,
         Keyword::Orders => return lists::typed(turn).await,
         Keyword::Help => return help::show(turn).await,
@@ -866,7 +890,8 @@ mod tests {
         assert_eq!(decide(&postback("Browse"), new), Step::BadPostback);
     }
 
-    /// FR-UI-12 step 3: the flow takes text before the keywords; `ยกเลิก` always cancels.
+    /// FR-UI-12 step 3: the flow takes text before the keywords; `ยกเลิก` always cancels, and
+    /// `เริ่มใหม่` starts over (FR-AI-11).
     #[test]
     fn a_flow_takes_the_answer_before_the_keywords() {
         let in_flow = State {
@@ -885,6 +910,11 @@ mod tests {
         assert_eq!(
             decide(&text(" ยกเลิก "), in_flow),
             Step::Keyword(Keyword::Cancel)
+        );
+        // FR-AI-11: starting over cancels the flow too
+        assert_eq!(
+            decide(&text("เริ่มใหม่"), in_flow),
+            Step::Keyword(Keyword::Restart)
         );
         assert_eq!(decide(&Input::Unsupported, in_flow), Step::Unsupported);
         assert_eq!(decide(&audio(), in_flow), Step::Unsupported);

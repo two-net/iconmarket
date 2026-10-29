@@ -218,7 +218,15 @@ impl Setup {
         self.handle(user_id, async |turn| {
             let session = turn.flow.as_ref().and_then(|flow| flow.read::<ShopFlow>());
             let session = session.expect("applying for a shop");
-            answered = answer(turn, &self.config, &line, session, &input).await?;
+            answered = answer(
+                turn,
+                &self.config,
+                &ai::testing::off(),
+                &line,
+                session,
+                &input,
+            )
+            .await?;
             Ok(answered.clone().unwrap_or_default())
         })
         .await;

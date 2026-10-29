@@ -35,6 +35,7 @@ use super::postback::Postback;
 use crate::admin::categories::DeleteCategory;
 use crate::catalog::products::manage::{DeleteProduct, UpdateProduct};
 use crate::line::Message;
+use crate::orders::cart::AddToCart;
 use crate::orders::checkout::Checkout;
 use crate::persistence::entity::pending_action;
 use crate::persistence::random_id;
@@ -174,6 +175,7 @@ pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>
         (Some(DeleteProduct::KIND), Some(id)) => confirm::<DeleteProduct>(turn, id).await,
         (Some(UpdateProduct::KIND), Some(id)) => confirm::<UpdateProduct>(turn, id).await,
         (Some(Checkout::KIND), Some(id)) => confirm::<Checkout>(turn, id).await,
+        (Some(AddToCart::KIND), Some(id)) => confirm::<AddToCart>(turn, id).await,
         (Some(DeleteAccount::KIND), Some(id)) => confirm::<DeleteAccount>(turn, id).await,
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }

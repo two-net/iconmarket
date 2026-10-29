@@ -28,18 +28,22 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use sea_orm::ActiveValue::Set;
-use sea_orm::prelude::DateTimeUtc;
+use sea_orm::prelude::{DateTimeUtc, Uuid};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QuerySelect,
-    RelationTrait,
+    ColumnTrait, ConnectionTrait, DatabaseTransaction, DbErr, EntityTrait, JoinType, QueryFilter,
+    QuerySelect, RelationTrait,
 };
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
+use crate::ai::Gateway;
+use crate::ai::assistant::numbers::{self, Expect};
 use crate::catalog::browse::listing;
 use crate::catalog::products::Availability;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
 use crate::dispatcher::menu::Item;
+use crate::dispatcher::pending::{self, Applied, Proposal, Stale, Why};
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{Action, Message, QuickReply};
@@ -250,6 +254,7 @@ pub async fn show(turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
 /// What a line of a product can take now, as the user asks to put it in the cart.
 struct Room {
     product: product::Model,
+    shop: shop::Model,
     /// What the line holds now; 0 if the product isn't in the cart
     in_cart: i32,
     /// Whether the answer replaces what the line holds, rather than adds to it
@@ -278,51 +283,273 @@ impl Room {
     }
 }
 
-/// What product `id`'s line in the user's cart can take now, if it can go in it: buyers still
-/// see it (FR-SRCH-02), it isn't of the user's own shop (FR-CART-07), it can be ordered
-/// (FR-PROD-06, FR-SHOP-05), and the cart has room for one more product (FR-CART-07). If not,
-/// why. `change` is changing its line, which becomes adding to it once the line is gone.
-async fn room(turn: &Turn<'_>, id: i64, change: bool) -> Result<Result<Room, Message>, DbErr> {
-    let t = turn.templates;
-    let Some((product, shop)) = listing::product(turn.db, id).await? else {
-        return Ok(Err(t.denied(Denied::NotFound)));
+/// Why a product can't go in the user's cart now.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NoRoom {
+    /// Buyers don't see it (FR-SRCH-02)
+    NotFound,
+    /// It is of the user's own shop (FR-CART-07)
+    OwnProduct,
+    /// It can't be ordered now (FR-PROD-06, FR-SHOP-05), as its `availability` says: product
+    /// `name` of shop `shop`
+    NotOrderable {
+        name: String,
+        shop: String,
+        availability: Availability,
+    },
+    /// The cart holds [`MAX_ITEMS`] products already (FR-CART-07)
+    CartFull,
+}
+
+impl NoRoom {
+    /// Its name, as the AI assistant is told it (FR-AI-02).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::OwnProduct => "own_shop",
+            Self::NotOrderable {
+                availability: Availability::ShopClosed,
+                ..
+            } => "shop_closed",
+            Self::NotOrderable { .. } => "sold_out",
+            Self::CartFull => "cart_full",
+        }
+    }
+
+    /// What the user is told, with where to carry on.
+    pub fn message(&self, turn: &Turn<'_>) -> Message {
+        let t = turn.templates;
+        match self {
+            Self::NotFound => t.denied(Denied::NotFound),
+            Self::OwnProduct => t.own_product().with_quick_reply(next()),
+            Self::NotOrderable {
+                name,
+                shop,
+                availability,
+            } => t
+                .not_orderable(name, shop, *availability)
+                .with_quick_reply(next()),
+            Self::CartFull => {
+                let actions = [view_cart(), menu_button()];
+                t.cart_full(MAX_ITEMS)
+                    .with_quick_reply(QuickReply::new(actions))
+            }
+        }
+    }
+}
+
+/// What product `id`'s line in the user's cart can take now, read through `db`, if it can go
+/// in it: buyers still see it (FR-SRCH-02), it isn't of the user's own shop (FR-CART-07), it
+/// can be ordered (FR-PROD-06, FR-SHOP-05), and the cart has room for one more product
+/// (FR-CART-07). If not, why. `change` is changing its line, which becomes adding to it once
+/// the line is gone.
+async fn room(
+    db: &impl ConnectionTrait,
+    turn: &Turn<'_>,
+    id: i64,
+    change: bool,
+) -> Result<Result<Room, NoRoom>, DbErr> {
+    let Some((product, shop)) = listing::product(db, id).await? else {
+        return Ok(Err(NoRoom::NotFound));
     };
     if turn.actor.shop.as_ref().map(|own| own.id) == Some(shop.id) {
-        return Ok(Err(t.own_product().with_quick_reply(next())));
+        return Ok(Err(NoRoom::OwnProduct));
     }
     let availability = Availability::of(&product, &shop);
     if !availability.orderable() {
-        let refused = t.not_orderable(&product.name, &shop.name, availability);
-        return Ok(Err(refused.with_quick_reply(next())));
+        return Ok(Err(NoRoom::NotOrderable {
+            name: product.name,
+            shop: shop.name,
+            availability,
+        }));
     }
-    let items = items(turn.db, turn.actor.user.id).await?;
+    let items = items(db, turn.actor.user.id).await?;
     let in_cart = items
         .iter()
         .find(|item| item.product_id == id)
         .map_or(0, |item| item.quantity);
     if in_cart == 0 && items.len() >= MAX_ITEMS {
-        let actions = [view_cart(), menu_button()];
-        return Ok(Err(t
-            .cart_full(MAX_ITEMS)
-            .with_quick_reply(QuickReply::new(actions))));
+        return Ok(Err(NoRoom::CartFull));
     }
     let limit = product
         .stock
         .map_or(MAX_QUANTITY, |left| left.min(MAX_QUANTITY));
     Ok(Ok(Room {
         product,
+        shop,
         in_cart,
         change: change && in_cart > 0,
         limit,
     }))
 }
 
+/// Putting a quantity of a product in the cart as the AI assistant proposes it (FR-AI-03), once
+/// confirmed with its "ใส่ 2 แผง" (FR-UI-13): as if the quantity were typed after "ใส่ตะกร้า",
+/// and only at the price its card showed, from the database (FR-AI-04).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddToCart {
+    product_id: i64,
+    quantity: i32,
+    /// For one, as the card showed it
+    price: Money,
+}
+
+/// A proposal to put a product in the cart: the product, its shop, and the button that
+/// confirms it, for its card.
+#[derive(Debug)]
+pub struct Offer {
+    pub product: product::Model,
+    pub shop: shop::Model,
+    pub confirm: Action,
+}
+
+/// Why putting a product in the cart wasn't proposed.
+#[derive(Debug)]
+pub enum Declined {
+    /// The user may not buy now: they are suspended (FR-ADM-04)
+    Denied(Denied),
+    /// The product can't go in the cart now
+    NoRoom(NoRoom),
+    /// Fewer than 1
+    TooFew,
+    /// More than its line can take now: at most this many more, maybe none
+    TooMany(i32),
+}
+
+impl Declined {
+    /// Its name, as the AI assistant is told it (FR-AI-02).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Denied(_) => "not_allowed",
+            Self::NoRoom(refused) => refused.code(),
+            Self::TooFew => "too_few",
+            Self::TooMany(_) => "too_many",
+        }
+    }
+}
+
+impl AddToCart {
+    /// Proposes putting `quantity` of product `id` in the user's cart, if it fits there, as
+    /// "ใส่ตะกร้า" would take it: the confirm button, labelled with the quantity, for the
+    /// product's card. If not, why.
+    pub async fn offer(
+        turn: &Turn<'_>,
+        id: i64,
+        quantity: i32,
+    ) -> Result<Result<Offer, Declined>, DbErr> {
+        if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Buy).await? {
+            return Ok(Err(Declined::Denied(denied)));
+        }
+        let room = match room(turn.db, turn, id, false).await? {
+            Ok(room) => room,
+            Err(refused) => return Ok(Err(Declined::NoRoom(refused))),
+        };
+        if quantity < 1 {
+            return Ok(Err(Declined::TooFew));
+        }
+        if quantity > room.most() {
+            return Ok(Err(Declined::TooMany(room.most())));
+        }
+        let product = &room.product;
+        let proposal = Self {
+            product_id: id,
+            quantity,
+            price: product.price,
+        };
+        let confirm = pending::propose(turn, &proposal).await?;
+        let confirm = confirm.button(turn.templates.add_quantity(quantity, &product.unit));
+        let Room { product, shop, .. } = room;
+        Ok(Ok(Offer {
+            product,
+            shop,
+            confirm,
+        }))
+    }
+}
+
+impl Proposal for AddToCart {
+    const KIND: &'static str = "cart.add";
+
+    fn requires(&self) -> access::Action {
+        access::Action::Buy
+    }
+
+    /// Puts the quantity in the cart, unless the product changed since it was proposed: no
+    /// longer one to put there, at another price, or fewer left than that.
+    async fn apply(
+        &self,
+        _id: Uuid,
+        txn: &DatabaseTransaction,
+        turn: &Turn<'_>,
+    ) -> Result<Applied, DbErr> {
+        let Ok(room) = room(txn, turn, self.product_id, false).await? else {
+            return Ok(Applied::Changed);
+        };
+        if room.product.price != self.price || self.quantity > room.most() {
+            return Ok(Applied::Changed);
+        }
+        info!(
+            product_id = self.product_id,
+            "proposed quantity put in the cart"
+        );
+        Ok(Applied::Done(put(txn, turn, &room, self.quantity).await?))
+    }
+
+    /// That it is in the cart already, from an earlier tap; or that the button expired; or,
+    /// the product having changed since, the proposal made again as it is now, if it can be.
+    async fn current_state(stale: Stale<Self>, turn: &Turn<'_>) -> Result<Vec<Message>, DbErr> {
+        if let Err(denied) = authorize(turn.db, &turn.actor, access::Action::Buy).await? {
+            return Ok(vec![turn.denied(denied)]);
+        }
+        let t = turn.templates;
+        let carry_on = || QuickReply::new([view_cart(), continue_shopping()]);
+        // Cancelled, or expired and deleted: which product it was is gone with it
+        let Some(proposal) = stale.proposal else {
+            return Ok(vec![t.cart_offer_gone(None).with_quick_reply(carry_on())]);
+        };
+        let product = product::Entity::find_by_id(proposal.product_id)
+            .one(turn.db)
+            .await?;
+        let name = product.as_ref().map(|product| product.name.as_str());
+        match stale.why {
+            Why::Confirmed => {
+                let name = name.unwrap_or_default();
+                Ok(vec![t.cart_offer_done(name).with_quick_reply(carry_on())])
+            }
+            Why::Gone => Ok(vec![t.cart_offer_gone(name).with_quick_reply(carry_on())]),
+            Why::Changed => {
+                match Self::offer(turn, proposal.product_id, proposal.quantity).await? {
+                    Ok(offer) => {
+                        let product = &offer.product;
+                        let quantity = proposal.quantity;
+                        let changed = t.cart_offer_changed(
+                            &product.name,
+                            quantity,
+                            &product.unit,
+                            product.price,
+                            product.price.times(quantity),
+                        );
+                        let actions = [offer.confirm, view_cart(), continue_shopping()];
+                        Ok(vec![changed.with_quick_reply(QuickReply::new(actions))])
+                    }
+                    Err(Declined::Denied(denied)) => Ok(vec![turn.denied(denied)]),
+                    Err(Declined::NoRoom(refused)) => Ok(vec![refused.message(turn)]),
+                    // How many fit now is asked, as "ใส่ตะกร้า" asks it
+                    Err(Declined::TooFew | Declined::TooMany(_)) => {
+                        ask(turn, proposal.product_id, false).await
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// "ใส่ตะกร้า", or "แก้จำนวน" if `change`, on product `id`: how many, in place of any flow in
 /// progress (FR-CART-01). Nothing is asked when the line is full already.
 async fn ask(turn: &Turn<'_>, id: i64, change: bool) -> Result<Vec<Message>, DbErr> {
-    let room = match room(turn, id, change).await? {
+    let room = match room(turn.db, turn, id, change).await? {
         Ok(room) => room,
-        Err(refused) => return Ok(vec![refused]),
+        Err(refused) => return Ok(vec![refused.message(turn)]),
     };
     if room.most() == 0 {
         return Ok(vec![too_many(turn, &room)]);
@@ -347,10 +574,12 @@ fn question(turn: &Turn<'_>, room: &Room) -> Vec<Message> {
 }
 
 /// The quantity, tapped or typed (FR-UI-12 step 3): the line holds it, or that much more, if
-/// the product can still go in the cart and as many are left. `None` for anything but text, so
-/// routing goes on (FR-UI-14).
+/// the product can still go in the cart and as many are left. One typed in words is read by
+/// `ai`, if it can, and asked back (FR-AI-13). `None` for anything but text, so routing goes on
+/// (FR-UI-14).
 pub async fn answer(
     turn: &Turn<'_>,
+    ai: &Gateway,
     session: Session<QuantityFlow>,
     input: &Input,
 ) -> Result<Option<Vec<Message>>, DbErr> {
@@ -362,7 +591,9 @@ pub async fn answer(
     // or a line that can take no more, as fewer are left than when asked
     let room = match authorize(turn.db, &turn.actor, access::Action::Buy).await? {
         Err(denied) => Err(turn.denied(denied)),
-        Ok(()) => room(turn, product_id, change).await?,
+        Ok(()) => room(turn.db, turn, product_id, change)
+            .await?
+            .map_err(|refused| refused.message(turn)),
     };
     let done = match room {
         Ok(room) if room.most() == 0 => Err(too_many(turn, &room)),
@@ -392,15 +623,25 @@ pub async fn answer(
                 );
                 Answer::Again(with_choices(vec![again], quantities(room.most())))
             }
-            Ok(quantity) => Answer::Done(put(turn, &room, quantity).await?),
+            Ok(quantity) => Answer::Done(put(turn.db, turn, &room, quantity).await?),
             Err(Refused::Empty) => Answer::Again(question(turn, &room)),
             Err(Refused::Zero) => {
                 let again = turn.templates.quantity_too_small(&room.product.unit);
                 Answer::Again(with_choices(vec![again], quantities(room.most())))
             }
             Err(Refused::NotANumber(e)) => {
-                let again = Message::text(turn.templates.number_problem(e));
-                Answer::Again(with_choices(vec![again], quantities(room.most())))
+                let unit = Some(room.product.unit.as_str());
+                let choices = quantities(room.most());
+                match numbers::ask_back(turn, ai, text, Expect::Whole, unit).await {
+                    Some((asked, typed)) => {
+                        let choices = std::iter::once(typed).chain(choices).collect();
+                        Answer::Again(with_choices(vec![asked], choices))
+                    }
+                    None => {
+                        let again = Message::text(turn.templates.number_problem(e));
+                        Answer::Again(with_choices(vec![again], choices))
+                    }
+                }
             }
         }
     };
@@ -431,9 +672,15 @@ fn quantity(text: &str, unit: &str) -> Result<i32, Refused> {
     }
 }
 
-/// Puts `quantity` of the product in the cart: in its line, or as a new one. Adding, the reply
-/// offers "สั่งซื้อเลย", "ดูตะกร้า" and "เลือกซื้อต่อ" (FR-CART-01); changing, the cart follows.
-async fn put(turn: &Turn<'_>, room: &Room, quantity: i32) -> Result<Vec<Message>, DbErr> {
+/// Puts `quantity` of the product in the cart, through `db`: in its line, or as a new one.
+/// Adding, the reply offers "สั่งซื้อเลย", "ดูตะกร้า" and "เลือกซื้อต่อ" (FR-CART-01); changing,
+/// the cart follows.
+async fn put(
+    db: &impl ConnectionTrait,
+    turn: &Turn<'_>,
+    room: &Room,
+    quantity: i32,
+) -> Result<Vec<Message>, DbErr> {
     let product = &room.product;
     let held = room.after(quantity);
     let line = cart_item::ActiveModel {
@@ -449,7 +696,7 @@ async fn put(turn: &Turn<'_>, room: &Room, quantity: i32) -> Result<Vec<Message>
                 .update_column(cart_item::Column::Quantity)
                 .to_owned(),
         )
-        .exec_without_returning(turn.db)
+        .exec_without_returning(db)
         .await?;
     let t = turn.templates;
     let total = product.price.times(held);

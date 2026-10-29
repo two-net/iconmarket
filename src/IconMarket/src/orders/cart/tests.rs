@@ -16,6 +16,7 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 
 use super::*;
+use crate::ai;
 use crate::config::{self, Config, SessionConfig};
 use crate::dispatcher::Finished;
 use crate::line::flex::{Bubble, Component, FlexContainer};
@@ -43,6 +44,8 @@ struct Setup {
     _container: ContainerAsync<Postgres>,
     db: DatabaseConnection,
     templates: Templates,
+    /// Off, unless a test reads numbers in words (FR-AI-13)
+    ai: Gateway,
     /// The owner of [`Setup::shop`]
     seller: i64,
     /// ร้านป้าแดง: approved and open
@@ -83,6 +86,7 @@ async fn setup() -> Setup {
         _container: container,
         db,
         templates: Templates::new(&config.app),
+        ai: ai::testing::off(),
         seller,
         shop,
         other_shop,
@@ -142,7 +146,7 @@ impl Setup {
                 .as_ref()
                 .and_then(|flow| flow.read::<QuantityFlow>());
             let session = session.expect("asking how many");
-            answered = answer(turn, session, &input).await?;
+            answered = answer(turn, &self.ai, session, &input).await?;
             Ok(answered.clone().unwrap_or_default())
         })
         .await;
@@ -982,4 +986,173 @@ fn a_quantity_is_a_whole_number_from_1() {
         quantity("สอง", "แผง"),
         Err(Refused::NotANumber(NumberError::NotANumber))
     );
+}
+
+// The AI assistant's proposals (FR-AI-03)
+
+impl Setup {
+    /// What proposing `quantity` of product `id` for user `user_id`'s cart offers.
+    async fn offers(&self, user_id: i64, id: i64, quantity: i32) -> Result<Offer, Declined> {
+        let mut offered = None;
+        self.handle_at(user_id, t0(), async |turn| {
+            offered = Some(AddToCart::offer(turn, id, quantity).await?);
+            Ok(Vec::new())
+        })
+        .await;
+        offered.unwrap()
+    }
+
+    /// User `user_id` taps the confirm button `confirm` at `now`.
+    async fn confirms_at(&self, user_id: i64, confirm: &Action, now: DateTimeUtc) -> Vec<Message> {
+        let Action::Postback { data, .. } = confirm else {
+            panic!("not a postback: {confirm:?}");
+        };
+        let postback = Postback::parse(data).unwrap();
+        self.handle_at(user_id, now, async |turn| {
+            pending::tapped(turn, &postback).await
+        })
+        .await
+    }
+}
+
+/// AC-04, Appendix A.1: the assistant's "ใส่ 2 แผง" changes nothing until tapped; the tap puts 2
+/// in the cart at the price the card showed, as "ใส่ตะกร้า" would, and a second tap adds nothing.
+#[tokio::test]
+async fn a_proposed_quantity_goes_in_the_cart_once_confirmed() {
+    let s = setup().await;
+    let offer = s.offers(s.buyer, s.eggs, 2).await.expect("an offer");
+    assert_eq!(offer.product.id, s.eggs);
+    assert_eq!(offer.shop.id, s.shop);
+    assert_eq!(offer.confirm.label().as_str(), "ใส่ 2 แผง");
+    assert_eq!(s.cart_of(s.buyer).await, []);
+    assert_eq!(s.flow().await, None);
+
+    let added = s.confirms_at(s.buyer, &offer.confirm, t0()).await;
+    assert_eq!(text(&added[0]), "ใส่ตะกร้าแล้วค่ะ ไข่ไก่เบอร์ 2 × 2 แผง = ฿220");
+    assert_eq!(quick_replies(&added[0]), ["สั่งซื้อเลย", "ดูตะกร้า", "เลือกซื้อต่อ"]);
+    assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 2)]);
+
+    let again = s.confirms_at(s.buyer, &offer.confirm, t0()).await;
+    assert_eq!(
+        text(&again[0]),
+        "ใส่ \"ไข่ไก่เบอร์ 2\" ลงตะกร้าไปแล้วค่ะ ดูตะกร้าหรือเลือกซื้อต่อได้เลยค่ะ"
+    );
+    assert_eq!(quick_replies(&again[0]), ["ดูตะกร้า", "เลือกซื้อต่อ"]);
+    assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 2)]);
+
+    // Another, for a product in the cart already, adds to its line, and taps arriving together
+    // apply once (NFR-REL-02)
+    let more = s.offers(s.buyer, s.eggs, 3).await.expect("an offer");
+    let tap = || s.confirms_at(s.buyer, &more.confirm, t0());
+    let (one, other) = tokio::join!(tap(), tap());
+    let mut replies = [text(&one[0]), text(&other[0])];
+    replies.sort();
+    assert_eq!(
+        replies,
+        [
+            "ใส่ \"ไข่ไก่เบอร์ 2\" ลงตะกร้าไปแล้วค่ะ ดูตะกร้าหรือเลือกซื้อต่อได้เลยค่ะ",
+            "ใส่เพิ่มแล้วค่ะ ตอนนี้ในตะกร้ามี ไข่ไก่เบอร์ 2 × 5 แผง = ฿550",
+        ]
+    );
+    assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 5)]);
+
+    // Someone else's button is not theirs to tap (FR-UI-13)
+    let other = s.offers(s.buyer, s.eggs, 1).await.expect("an offer");
+    let gone = s.confirms_at(s.seller, &other.confirm, t0()).await;
+    assert!(text(&gone[0]).contains("หมดเวลาแล้ว"), "{gone:?}");
+    assert_eq!(s.cart_of(s.seller).await, []);
+}
+
+/// FR-UI-13: a product that changed since its proposal isn't put in the cart: at a new price the
+/// proposal is made again at it, from the database (FR-AI-04); with fewer left, or no longer
+/// orderable, the tap says why; an expired button says so.
+#[tokio::test]
+async fn a_proposal_whose_product_changed_shows_it_as_it_is() {
+    let s = setup().await;
+    let t = &s.templates;
+    let offer = s.offers(s.buyer, s.eggs, 2).await.expect("an offer");
+    product::Entity::update_many()
+        .col_expr(product::Column::Price, Expr::value(Money::from_baht(115)))
+        .filter(product::Column::Id.eq(s.eggs))
+        .exec(&s.db)
+        .await
+        .unwrap();
+    let changed = s.confirms_at(s.buyer, &offer.confirm, t0()).await;
+    assert_eq!(
+        text(&changed[0]),
+        "\"ไข่ไก่เบอร์ 2\" มีการเปลี่ยนแปลงค่ะ ตอนนี้ราคา ฿115 / แผง ใส่ 2 แผง รวม ฿230 ไหมคะ"
+    );
+    assert_eq!(
+        quick_replies(&changed[0]),
+        ["ใส่ 2 แผง", "ดูตะกร้า", "เลือกซื้อต่อ"]
+    );
+    assert_eq!(s.cart_of(s.buyer).await, []);
+    let quick_reply = changed[0].quick_reply.as_ref().unwrap();
+    let again = quick_reply.items[0].action.clone();
+    let added = s.confirms_at(s.buyer, &again, t0()).await;
+    assert_eq!(text(&added[0]), "ใส่ตะกร้าแล้วค่ะ ไข่ไก่เบอร์ 2 × 2 แผง = ฿230");
+
+    // Fewer left than proposed: how many fit now is asked
+    let offer = s.offers(s.buyer, s.eggs, 5).await.expect("an offer");
+    s.set_stock(s.eggs, Some(4)).await;
+    let asked = s.confirms_at(s.buyer, &offer.confirm, t0()).await;
+    assert_eq!(
+        text(&asked[0]),
+        "\"ไข่ไก่เบอร์ 2\" อยู่ในตะกร้าแล้ว 2 แผง เอาเพิ่มอีกกี่แผงคะ"
+    );
+    assert_eq!(quick_replies(&asked[0]), ["1", "2", "ระบุเอง", "ยกเลิก"]);
+    assert_eq!(s.flow().await.as_deref(), Some("cart_quantity"));
+    s.handle_at(s.buyer, t0(), async |turn| flow::cancel(turn).await)
+        .await;
+    let offer = s.offers(s.buyer, s.eggs, 1).await.expect("an offer");
+    s.set_open(s.shop, false).await;
+    let closed = t.not_orderable("ไข่ไก่เบอร์ 2", "ร้านป้าแดง", Availability::ShopClosed);
+    let refused = s.confirms_at(s.buyer, &offer.confirm, t0()).await;
+    assert_eq!(refused, [closed.with_quick_reply(next())]);
+    s.set_open(s.shop, true).await;
+    assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 2)]);
+
+    let offer = s.offers(s.buyer, s.eggs, 1).await.expect("an offer");
+    let later = t0() + TimeDelta::minutes(61);
+    let expired = s.confirms_at(s.buyer, &offer.confirm, later).await;
+    assert_eq!(
+        text(&expired[0]),
+        "ปุ่มใส่ \"ไข่ไก่เบอร์ 2\" ลงตะกร้าหมดเวลาแล้วค่ะ กด \"ใส่ตะกร้า\" ที่สินค้า หรือถามผู้ช่วยใหม่ได้เลยค่ะ"
+    );
+    assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 2)]);
+}
+
+/// FR-CART-01, FR-CART-07, FR-ADM-04: what "ใส่ตะกร้า" refuses isn't proposed, and why is said
+/// to the user and named to the AI.
+#[tokio::test]
+async fn what_cant_go_in_the_cart_is_not_proposed() {
+    let s = setup().await;
+    let code = |offered: Result<Offer, Declined>| offered.map(|_| ()).unwrap_err().code();
+    assert_eq!(code(s.offers(s.seller, s.eggs, 1).await), "own_shop");
+    assert_eq!(code(s.offers(s.buyer, s.eggs, 9).await), "too_many");
+    assert_eq!(code(s.offers(s.buyer, s.eggs, 0).await), "too_few");
+    assert_eq!(code(s.offers(s.buyer, 999_999, 1).await), "not_found");
+    s.set_stock(s.eggs, Some(0)).await;
+    assert_eq!(code(s.offers(s.buyer, s.eggs, 1).await), "sold_out");
+    s.set_stock(s.eggs, Some(8)).await;
+    s.set_open(s.shop, false).await;
+    assert_eq!(code(s.offers(s.buyer, s.eggs, 1).await), "shop_closed");
+    s.set_open(s.shop, true).await;
+    s.put(s.buyer, s.eggs, 6, t0()).await;
+    let declined = s.offers(s.buyer, s.eggs, 3).await.map(|_| ());
+    assert!(
+        matches!(declined, Err(Declined::TooMany(2))),
+        "{declined:?}"
+    );
+    assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 6)]);
+    let mut buyer = user::Entity::find_by_id(s.buyer)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    buyer.status = Set(user::Status::Suspended);
+    buyer.update(&s.db).await.unwrap();
+    assert_eq!(code(s.offers(s.buyer, s.eggs, 1).await), "not_allowed");
+    assert_eq!(s.cart_of(s.buyer).await, [(s.eggs, 6)]);
 }

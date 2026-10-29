@@ -42,6 +42,7 @@ use tracing::{info, warn};
 use super::images::{self, Owner, Rejected};
 use super::moderation::{self, Held, Subject};
 use super::{categories, shops};
+use crate::ai::assistant::numbers::{self, Expect};
 use crate::ai::{self, Feature};
 use crate::config::Config;
 use crate::dispatcher::flow::{self, Answer, Flow, Session};
@@ -526,11 +527,7 @@ pub async fn answer(
             flow::answered(turn, Answer::Next(session, ask)).await?
         }
         Err(refused) => {
-            // Why, with the step's choices; or, for nothing at all, the step's question again
-            let again = match why(turn, &draft, refused) {
-                Some(why) => with_choices(vec![why], choices(turn, config, &draft, step, 0).await?),
-                None => prompt(turn, config, &draft, step).await?,
-            };
+            let again = refused_answer(turn, config, ai, &draft, step, text, refused).await?;
             flow::answered(turn, Answer::<ProductFlow>::Again(again)).await?
         }
     };
@@ -809,6 +806,39 @@ fn parts(draft: &ProductFlow) -> Vec<Action> {
             postback.button(part.label().clone())
         })
         .collect()
+}
+
+/// What `step` of `draft` asks when it didn't take `text`, as `refused`: why, with its choices;
+/// for a price or stock typed in words, what `ai` reads it as, asked back (FR-AI-13); or, for
+/// nothing at all, the step's question again.
+async fn refused_answer(
+    turn: &Turn<'_>,
+    config: &Config,
+    ai: &ai::Gateway,
+    draft: &ProductFlow,
+    step: Step,
+    text: &str,
+    refused: Refused,
+) -> Result<Vec<Message>, DbErr> {
+    let expect = match (refused, step) {
+        (Refused::NotANumber(_), Step::Price) => Some(Expect::Money),
+        (Refused::NotANumber(_), Step::Stock) => Some(Expect::Whole),
+        _ => None,
+    };
+    if let Some(expect) = expect {
+        let unit = (step == Step::Stock)
+            .then_some(draft.unit.as_deref())
+            .flatten();
+        if let Some((asked, typed)) = numbers::ask_back(turn, ai, text, expect, unit).await {
+            let choices = choices(turn, config, draft, step, 0).await?;
+            let choices = std::iter::once(typed).chain(choices).collect();
+            return Ok(with_choices(vec![asked], choices));
+        }
+    }
+    Ok(match why(turn, draft, refused) {
+        Some(why) => with_choices(vec![why], choices(turn, config, draft, step, 0).await?),
+        None => prompt(turn, config, draft, step).await?,
+    })
 }
 
 /// Why `step` didn't take an answer, before its choices; `None` when it is enough to ask again.

@@ -146,6 +146,26 @@ pub async fn tapped(
     Ok(vec![turn.templates.help_topic(article, next)])
 }
 
+/// Topic `topic` for the actor as tapping it shows it, with its text: what the AI assistant's
+/// `get_help` gives, the only source it answers how-to questions from (FR-AI-14). `None` for a
+/// topic their roles don't get.
+pub fn topic(
+    turn: &Turn<'_>,
+    config: &Config,
+    ai: &Gateway,
+    topic: Topic,
+) -> Option<(String, Message)> {
+    let actor = &turn.actor;
+    let roles = actor.roles();
+    if !topic.is_for(roles) {
+        return None;
+    }
+    let article = article(turn.templates, config, ai, roles, topic);
+    let next = next_steps(roles, actor.shop.is_some(), config, topic);
+    let shown = turn.templates.help_topic(article.clone(), next);
+    Some((article, shown))
+}
+
 /// The text of `topic` for a user with `roles` (FR-HELP-01). The AI assistant answers how-to
 /// questions from this alone (FR-AI-14), so it is what the topic shows in the chat.
 pub fn article(

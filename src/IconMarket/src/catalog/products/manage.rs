@@ -41,8 +41,8 @@ use tracing::info;
 use url::Url;
 
 use super::{
-    ProductFlow, Step, Stock, Taken, ask_category, choices, max_photos, may_become,
-    photos_done_label, prompt, receive, restocks, take, why,
+    ProductFlow, Step, Stock, Taken, ask_category, max_photos, may_become, photos_done_label,
+    prompt, receive, refused_answer, restocks, take,
 };
 use crate::ai;
 use crate::catalog::images::{self, Owner};
@@ -522,11 +522,7 @@ pub async fn answer(
             flow::answered(turn, Answer::Next(session, ask)).await?
         }
         Err(refused) => {
-            // Why, with the step's choices; or, for nothing at all, the step's question again
-            let again = match why(turn, &draft, refused) {
-                Some(why) => with_choices(vec![why], choices(turn, config, &draft, step, 0).await?),
-                None => prompt(turn, config, &draft, step).await?,
-            };
+            let again = refused_answer(turn, config, ai, &draft, step, text, refused).await?;
             flow::answered(turn, Answer::<EditFlow>::Again(again)).await?
         }
     };
@@ -881,7 +877,7 @@ async fn not_found(turn: &Turn<'_>, config: &Config, shop_id: i64) -> Result<Vec
 
 /// "สินค้าของฉัน" of shop `shop_id` at page `page`: its products but the deleted ones, sold-out
 /// ones first, to restock (FR-PROD-06), then the newest.
-async fn list(
+pub(crate) async fn list(
     db: &impl ConnectionTrait,
     templates: &Templates,
     config: &Config,

@@ -103,6 +103,32 @@ impl Templates {
         Message::text(text).with_quick_reply(menus())
     }
 
+    /// What the AI assistant says above the cards of what it found or proposed when it said
+    /// nothing itself (FR-AI-02).
+    pub fn assistant_found(&self) -> Message {
+        Message::text(format!("นี่คือที่หาให้{}", self.kha()))
+    }
+
+    /// The AI assistant's proposal to open shop `name`, or close it for now if not `open`
+    /// (FR-SHOP-05), to confirm with `switch` (FR-AI-03): what that does.
+    pub fn confirm_shop_open(&self, name: &str, open: bool, switch: Action) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let shop = shop_called(name);
+        let (headline, then) = if open {
+            (
+                format!("เปิด{shop}ไหม{kha_question}"),
+                "ผู้ซื้อจะสั่งสินค้าได้ตามปกติ".to_owned(),
+            )
+        } else {
+            (
+                format!("ปิด{shop}ชั่วคราวไหม{kha_question}"),
+                format!("ผู้ซื้อยังเห็นสินค้า แต่จะขึ้นว่า \"{CLOSED}\" และสั่งไม่ได้ ออเดอร์ที่มีอยู่ยังทำต่อตามปกติ"),
+            )
+        };
+        let tap = format!("กด \"{}\" เพื่อยืนยัน{kha}", switch.label().as_str());
+        notice(&headline, &[then, tap], vec![switch])
+    }
+
     /// Why an action was refused (NFR-SEC-02, NFR-SEC-10): what the user can still do, and
     /// where to ask. A button tapped too late gets this rather than a technical error.
     pub fn denied(&self, denied: Denied) -> Message {
@@ -190,6 +216,15 @@ impl Templates {
         let (kha, kha_question) = (self.kha(), self.kha_question());
         Message::text(format!(
             "ส่งข้อความเร็วเกินไปนิดหนึ่ง{kha} รอสักครู่แล้วค่อยส่งใหม่นะ{kha_question}"
+        ))
+    }
+
+    /// A number typed in words, read by the AI as `read` (FR-AI-13): asks whether that is what
+    /// was meant. The Quick Reply typing it in digits follows, then the step's choices.
+    pub fn number_read(&self, read: &str) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "หมายถึง {read} ใช่ไหม{kha_question} ถ้าใช่ แตะปุ่ม \"{read}\" ด้านล่าง หรือพิมพ์เป็นตัวเลขใหม่ได้เลย{kha}"
         ))
     }
 
@@ -834,11 +869,12 @@ impl Templates {
         Message::flex(details.name, contents).with_quick_reply(QuickReply::new(next))
     }
 
-    /// A page of "ร้านค้าทั้งหมด" (FR-SRCH-06): a card for each of `fronts`, as buyers see shops
-    /// (FR-SHOP-09), and, when more follow, "ดูเพิ่มเติม" sending the postback `more`; `next`
-    /// are its Quick Replies.
+    /// A page of "ร้านค้าทั้งหมด" (FR-SRCH-06), or the shops the AI assistant found, as
+    /// `browsed` says: a card for each of `fronts`, as buyers see shops (FR-SHOP-09), and, when
+    /// more follow, "ดูเพิ่มเติม" sending the postback `more`; `next` are its Quick Replies.
     pub fn shop_list(
         &self,
+        browsed: Browsed<'_>,
         fronts: &[ShopFront<'_>],
         more: Option<String>,
         next: Vec<Action>,
@@ -847,7 +883,7 @@ impl Templates {
             .iter()
             .map(|front| self.shop_front_bubble(front))
             .collect();
-        Message::flex(headline(Browsed::Shops), carousel(bubbles, more))
+        Message::flex(headline(browsed), carousel(bubbles, more))
             .with_quick_reply(QuickReply::new(next))
     }
 
@@ -871,6 +907,9 @@ impl Templates {
             ),
             Browsed::Shops => {
                 format!("ตอนนี้ยังไม่มีร้านค้าในตลาด{kha} ลองใหม่ภายหลังได้เลย{kha}")
+            }
+            Browsed::Found => {
+                format!("ยังไม่เจอที่ตรงกับที่ถาม{kha} ลองถามด้วยคำอื่น หรือเลือกดูจากหมวดได้เลย{kha}")
             }
         };
         Message::text(text).with_quick_reply(QuickReply::new(suggestions))
@@ -993,6 +1032,50 @@ impl Templates {
         } else {
             format!("ใส่ตะกร้าแล้ว{kha} {line}")
         })
+    }
+
+    /// The label of the button confirming the AI assistant's proposal to put `quantity` of
+    /// `unit` in the cart, as in Appendix A.1: *ใส่ 2 แผง*.
+    pub fn add_quantity(&self, quantity: i32, unit: &str) -> Label {
+        Label::fit(format!("ใส่ {quantity} {unit}"))
+    }
+
+    /// A proposal to put product `name` in the cart, confirmed already (FR-UI-13). Where to
+    /// carry on follows as Quick Replies.
+    pub fn cart_offer_done(&self, name: &str) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ใส่ \"{name}\" ลงตะกร้าไปแล้ว{kha} ดูตะกร้าหรือเลือกซื้อต่อได้เลย{kha}"
+        ))
+    }
+
+    /// A proposal to put product `name`, if still known, in the cart, that expired or was
+    /// cancelled (FR-UI-13). Where to carry on follows as Quick Replies.
+    pub fn cart_offer_gone(&self, name: Option<&str>) -> Message {
+        let kha = self.kha();
+        let what = name.map_or_else(|| "สินค้านี้".to_owned(), |name| format!("\"{name}\""));
+        Message::text(format!(
+            "ปุ่มใส่ {what} ลงตะกร้าหมดเวลาแล้ว{kha} กด \"{}\" ที่สินค้า หรือถามผู้ช่วยใหม่ได้เลย{kha}",
+            labels::ADD_TO_CART.as_str()
+        ))
+    }
+
+    /// Product `name` changed since putting `quantity` of it in the cart was proposed, so
+    /// nothing was put there (FR-UI-13): it is `price` a `unit` now, `total` for as many. The
+    /// proposal, again, follows as a Quick Reply.
+    pub fn cart_offer_changed(
+        &self,
+        name: &str,
+        quantity: i32,
+        unit: &str,
+        price: Money,
+        total: Money,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "\"{name}\" มีการเปลี่ยนแปลง{kha} ตอนนี้ราคา {} ใส่ {quantity} {unit} รวม {total} ไหม{kha_question}",
+            price_per_unit(price, unit)
+        ))
     }
 
     /// The line of product `name` now holds `quantity` of `unit`, `total` in all (FR-CART-03).
@@ -4229,6 +4312,8 @@ pub enum Browsed<'a> {
     Search(&'a str),
     /// "ร้านค้าทั้งหมด" (FR-SRCH-06)
     Shops,
+    /// What the AI assistant found or proposed (FR-AI-02)
+    Found,
 }
 
 /// A product's card as buyers see it in a list (FR-SRCH-07).
@@ -4776,6 +4861,7 @@ fn headline(browsed: Browsed<'_>) -> String {
         Browsed::NewToday => labels::NEW_TODAY.as_str().to_owned(),
         Browsed::Search(keyword) => format!("ผลการค้นหา \"{keyword}\""),
         Browsed::Shops => labels::ALL_SHOPS.as_str().to_owned(),
+        Browsed::Found => "ที่ผู้ช่วยหาให้".to_owned(),
     }
 }
 
@@ -6499,12 +6585,13 @@ mod tests {
             .collect()
     }
 
-    const BROWSED: [Browsed<'static>; 5] = [
+    const BROWSED: [Browsed<'static>; 6] = [
         Browsed::Category("ขนม/ของหวาน"),
         Browsed::Shop("ร้านป้าแดง"),
         Browsed::NewToday,
         Browsed::Search("ขนมครก"),
         Browsed::Shops,
+        Browsed::Found,
     ];
 
     const REPORTED: Reported<'static> = Reported::Product {
@@ -8525,7 +8612,7 @@ mod tests {
             .collect();
         let more = format!("browse.shops?page={max}");
         let next = vec![postback(&labels::BUY, "buy".to_owned())];
-        let page = t.shop_list(&fronts, Some(more), next);
+        let page = t.shop_list(Browsed::Shops, &fronts, Some(more), next);
         limits::check(slice::from_ref(&page)).unwrap();
         let Body::Flex {
             alt_text,

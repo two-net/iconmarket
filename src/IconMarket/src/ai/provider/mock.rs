@@ -5,7 +5,8 @@
 //! - free text: the user's last message, echoed
 //! - JSON: the smallest value the schema allows
 //! - tools: text, unless the user's last message is `/tool_name {"arg": 1}` naming an offered
-//!   tool, which becomes a call to it, so tool flows can be tried by hand
+//!   tool, which becomes a call to it, so tool flows can be tried by hand; once the tool's
+//!   result is back, text again, so the assistant's rounds end
 //!
 //! Tests script it instead ([`Mock::scripted`]): each request takes the next [`Step`], and
 //! every request is recorded.
@@ -129,10 +130,16 @@ fn answer(request: &Request) -> Response {
     let (text, tool_calls) = match &request.output {
         Output::Text => (echo(&last), Vec::new()),
         Output::Json(schema) => (schema.example().to_string(), Vec::new()),
-        Output::Tools(tools) => match command(&last, tools) {
-            Some(call) => (String::new(), vec![call]),
-            None => (echo(&last), Vec::new()),
-        },
+        Output::Tools(tools) => {
+            let answered = request
+                .messages
+                .last()
+                .is_some_and(|message| message.role == Role::Tool);
+            match command(&last, tools) {
+                Some(call) if !answered => (String::new(), vec![call]),
+                _ => (echo(&last), Vec::new()),
+            }
+        }
     };
 
     let prompt = request.system.chars().count()
@@ -192,6 +199,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::ai::request::Part;
     use crate::ai::schema::Schema;
 
     fn request(text: &str, output: Output) -> Request {
@@ -267,5 +275,28 @@ mod tests {
             assert!(response.tool_calls.is_empty(), "{text}");
             assert_eq!(response.text, format!("(mock) {text}"));
         }
+    }
+
+    #[tokio::test]
+    async fn the_result_of_a_call_is_answered_with_text() {
+        let command = r#"/search_products {"keywords": "ไข่ไก่"}"#;
+        let mut request = request(command, search());
+        let call = Mock::new("mock").complete(&request).await.unwrap();
+        request.messages.push(Message {
+            role: Role::Assistant,
+            parts: vec![Part::ToolCall(call.tool_calls[0].clone())],
+        });
+        request.messages.push(Message {
+            role: Role::Tool,
+            parts: vec![Part::ToolResult {
+                call_id: "mock-call-1".to_owned(),
+                content: json!({ "found": 2 }),
+            }],
+        });
+
+        let response = Mock::new("mock").complete(&request).await.unwrap();
+
+        assert!(response.tool_calls.is_empty());
+        assert_eq!(response.text, format!("(mock) {command}"));
     }
 }

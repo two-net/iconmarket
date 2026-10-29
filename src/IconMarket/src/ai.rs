@@ -6,14 +6,17 @@
 //!
 //! Each provider is one adapter in [`provider`], so adding or changing one touches nothing
 //! outside this module (NFR-MNT-02, FR-AIP-03): Claude, Gemini, GPT and Grok (FR-AIP-01), and
-//! the `mock` provider, which needs no network and no key (FR-AIP-05). The assistant's tools
-//! are built by #37.
+//! the `mock` provider, which needs no network and no key (FR-AIP-05).
+//!
+//! The [`assistant`] answers free text with the tools of Table 4.9-A, run as the user, and
+//! proposes changes for them to confirm (FR-AI-01 – FR-AI-04).
 
 #![allow(
     dead_code,
     reason = "the features that call the AI are built by later issues"
 )]
 
+pub mod assistant;
 mod call_log;
 mod gateway;
 mod limits;

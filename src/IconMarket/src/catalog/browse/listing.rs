@@ -17,13 +17,14 @@
 
 use chrono::TimeDelta;
 use sea_orm::prelude::DateTimeUtc;
+use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::sea_query::{Expr, ExprTrait, Order};
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QueryOrder,
     QuerySelect, RelationTrait, SelectTwoRequired,
 };
 
-use super::search::Search;
+use super::search::{Search, escaped};
 use crate::notifications::templates::{PRODUCTS_PER_PAGE, SHOPS_PER_PAGE};
 use crate::persistence::entity::{product, shop, user};
 use crate::persistence::paging::{Page, cut, paged};
@@ -110,6 +111,36 @@ pub async fn shop(db: &impl ConnectionTrait, id: i64) -> Result<Option<shop::Mod
 /// first, then by name, [`SHOPS_PER_PAGE`] a page. A page past the last is empty.
 pub async fn shops(db: &impl ConnectionTrait, page: usize) -> Result<Page<shop::Model>, DbErr> {
     let select = selling(shop::Entity::find())
+        .order_by_desc(shop::Column::IsOpen)
+        .order_by_asc(shop::Column::Name)
+        .order_by_asc(shop::Column::Id);
+    let rows = paged(select, page, SHOPS_PER_PAGE).all(db).await?;
+    Ok(cut(rows, page, SHOPS_PER_PAGE))
+}
+
+/// Page `page` (from 0) of the shops buyers see whose name or description holds each word of
+/// `keyword`, whatever the case, in the order of "ร้านค้าทั้งหมด": the AI assistant's
+/// `search_shops` (FR-AI-02). `keyword` is matched as written, never as a pattern.
+pub async fn find_shops(
+    db: &impl ConnectionTrait,
+    keyword: &str,
+    page: usize,
+) -> Result<Page<shop::Model>, DbErr> {
+    let mut words: Vec<&str> = Vec::new();
+    for word in keyword.split_whitespace() {
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    let condition = words.into_iter().fold(Condition::all(), |all, word| {
+        let pattern = || format!("%{}%", escaped(word));
+        let any = Condition::any()
+            .add(Expr::col((shop::Entity, shop::Column::Name)).ilike(pattern()))
+            .add(Expr::col((shop::Entity, shop::Column::Description)).ilike(pattern()));
+        all.add(any)
+    });
+    let select = selling(shop::Entity::find())
+        .filter(condition)
         .order_by_desc(shop::Column::IsOpen)
         .order_by_asc(shop::Column::Name)
         .order_by_asc(shop::Column::Id);

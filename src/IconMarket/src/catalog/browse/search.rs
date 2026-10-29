@@ -7,6 +7,11 @@
 //! each in any of the four. What the user types is matched as written, never as a pattern, and
 //! never logged (NFR-PRIV-05).
 //!
+//! The AI assistant searches too (FR-SRCH-05): it makes of a request in plain Thai, such as
+//! *อยากได้ผักสดส่งถึงบ้าน ไม่เกิน 50 บาท*, the keyword and other words for the same thing, any
+//! of which may match in its place, plus a category, a highest price and shops that deliver.
+//! What it finds comes from the database all the same.
+//!
 //! The keyword is asked for in a [flow](SearchFlow) of one step. A postback can't carry it
 //! (NFR-SEC-03), so a list longer than a page [keeps](pending::keep) the search for its
 //! "ดูเพิ่มเติม" to page through, until `session.pendingActionMinutes` have passed; after
@@ -15,7 +20,7 @@
 use sea_orm::prelude::Uuid;
 use sea_orm::sea_query::Expr;
 use sea_orm::sea_query::extension::postgres::PgExpr;
-use sea_orm::{Condition, DbErr};
+use sea_orm::{ColumnTrait, Condition, DbErr};
 use serde::{Deserialize, Serialize};
 
 use super::listing::Listing;
@@ -28,6 +33,7 @@ use crate::dispatcher::{Input, Turn};
 use crate::line::Message;
 use crate::notifications::templates::Browsed;
 use crate::persistence::entity::{category, product, shop};
+use crate::thai::Money;
 use crate::users::access::{self, authorize};
 
 /// The action of "ดูเพิ่มเติม" under a search's results: `pa` names the search kept, and
@@ -41,12 +47,25 @@ const KIND: &str = "search";
 /// The longest keyword, in characters: as long as a product's name (FR-PROD-03)
 pub const KEYWORD_CHARS: usize = 80;
 
-/// A search (FR-SRCH-04): the keyword the user typed. #37 adds the filters the AI assistant
-/// makes of a request in plain Thai (FR-SRCH-05).
+/// A search (FR-SRCH-04): the keyword the user typed, or what the AI assistant makes of a
+/// request in plain Thai (FR-SRCH-05). What the AI adds reads as nothing from a search kept
+/// before it could, so its "ดูเพิ่มเติม" pages on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Search {
     /// As typed, with its spaces made single
     keyword: String,
+    /// Other words for the same thing, each of which may match in the keyword's place
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    alternatives: Vec<String>,
+    /// Only the products of the category with this ID
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category_id: Option<i64>,
+    /// Only the products for at most this a unit
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_price: Option<Money>,
+    /// Only the products of shops that deliver
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    delivery_only: bool,
 }
 
 /// Why typed text is not a keyword.
@@ -60,13 +79,51 @@ pub enum Refused {
 impl Search {
     /// What the user typed as a search.
     pub fn parse(text: &str) -> Result<Self, Refused> {
-        let keyword = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if keyword.is_empty() {
-            Err(Refused::Empty)
-        } else if keyword.chars().count() > KEYWORD_CHARS {
-            Err(Refused::TooLong(KEYWORD_CHARS))
-        } else {
-            Ok(Self { keyword })
+        Ok(Self {
+            keyword: keyword(text)?,
+            alternatives: Vec::new(),
+            category_id: None,
+            max_price: None,
+            delivery_only: false,
+        })
+    }
+
+    /// A search for any of `keywords`, the first of which the reply names; one empty is left
+    /// out, and so is one repeated (FR-SRCH-05).
+    pub fn any_of<'a>(keywords: impl IntoIterator<Item = &'a str>) -> Result<Self, Refused> {
+        let mut keywords = keywords.into_iter().filter_map(|text| keyword(text).ok());
+        let mut search = Self::parse(&keywords.next().unwrap_or_default())?;
+        for keyword in keywords {
+            let known =
+                keyword == search.keyword || search.alternatives.as_slice().contains(&keyword);
+            if !known {
+                search.alternatives.push(keyword);
+            }
+        }
+        Ok(search)
+    }
+
+    /// Only what is in the category with ID `id`.
+    pub fn in_category(self, id: i64) -> Self {
+        Self {
+            category_id: Some(id),
+            ..self
+        }
+    }
+
+    /// Only what costs at most `price` a unit.
+    pub fn at_most(self, price: Money) -> Self {
+        Self {
+            max_price: Some(price),
+            ..self
+        }
+    }
+
+    /// Only what shops that deliver sell.
+    pub fn delivered(self) -> Self {
+        Self {
+            delivery_only: true,
+            ..self
         }
     }
 
@@ -75,28 +132,58 @@ impl Search {
         &self.keyword
     }
 
-    /// What a product found matches: each word of the keyword, inside its name, description,
-    /// category name or shop name, whatever the case. For a select joining the product's shop
-    /// and category.
+    /// What a product found matches: each word of the keyword, or of one of its alternatives,
+    /// inside its name, description, category name or shop name, whatever the case; and the
+    /// filters. For a select joining the product's shop and category.
     pub(super) fn condition(&self) -> Condition {
-        let mut words: Vec<&str> = Vec::new();
-        for word in self.keyword.split(' ') {
-            if !words.contains(&word) {
-                words.push(word);
-            }
+        let keywords = std::iter::once(&self.keyword).chain(&self.alternatives);
+        let any = keywords.fold(Condition::any(), |any, keyword| any.add(matches(keyword)));
+        let mut condition = Condition::all().add(any);
+        if let Some(id) = self.category_id {
+            condition = condition.add(product::Column::CategoryId.eq(id));
         }
-        words.into_iter().fold(Condition::all(), |all, word| {
-            // Without `ESCAPE`, which sea-query puts inside `ILIKE (…)` where PostgreSQL refuses
-            // it: PostgreSQL escapes with `\` anyway
-            let pattern = || format!("%{}%", escaped(word));
-            let any = Condition::any()
-                .add(Expr::col((product::Entity, product::Column::Name)).ilike(pattern()))
-                .add(Expr::col((product::Entity, product::Column::Description)).ilike(pattern()))
-                .add(Expr::col((category::Entity, category::Column::Name)).ilike(pattern()))
-                .add(Expr::col((shop::Entity, shop::Column::Name)).ilike(pattern()));
-            all.add(any)
-        })
+        if let Some(price) = self.max_price {
+            condition = condition.add(product::Column::Price.lte(price));
+        }
+        if self.delivery_only {
+            condition = condition.add(shop::Column::OffersDelivery.eq(true));
+        }
+        condition
     }
+}
+
+/// `text` as a keyword: its spaces made single, and not too long.
+fn keyword(text: &str) -> Result<String, Refused> {
+    let keyword = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if keyword.is_empty() {
+        Err(Refused::Empty)
+    } else if keyword.chars().count() > KEYWORD_CHARS {
+        Err(Refused::TooLong(KEYWORD_CHARS))
+    } else {
+        Ok(keyword)
+    }
+}
+
+/// What a product matching `keyword` has: each of its words inside its name, description,
+/// category name or shop name, whatever the case.
+fn matches(keyword: &str) -> Condition {
+    let mut words: Vec<&str> = Vec::new();
+    for word in keyword.split(' ') {
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words.into_iter().fold(Condition::all(), |all, word| {
+        // Without `ESCAPE`, which sea-query puts inside `ILIKE (…)` where PostgreSQL refuses
+        // it: PostgreSQL escapes with `\` anyway
+        let pattern = || format!("%{}%", escaped(word));
+        let any = Condition::any()
+            .add(Expr::col((product::Entity, product::Column::Name)).ilike(pattern()))
+            .add(Expr::col((product::Entity, product::Column::Description)).ilike(pattern()))
+            .add(Expr::col((category::Entity, category::Column::Name)).ilike(pattern()))
+            .add(Expr::col((shop::Entity, shop::Column::Name)).ilike(pattern()));
+        all.add(any)
+    })
 }
 
 /// `word` with `\`, `%` and `_` escaped by `\`, so that `LIKE` matches it as written.

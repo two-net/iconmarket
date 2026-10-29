@@ -8,7 +8,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use super::provider::{Adapter, Capabilities, Error, Mock, Step};
-use super::request::{Request, Response, Usage};
+use super::request::{Request, Response, ToolCall, Usage};
 use super::{Feature, Gateway};
 use crate::config::{AiConfig, AiEndpoint, AiFeatures, AiLimits, AiProvider};
 use crate::persistence::testing;
@@ -20,6 +20,10 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 pub enum Turn {
     /// Answers with this JSON
     Json(Value),
+    /// Answers with this text, calling no tool
+    Text(&'static str),
+    /// Calls these tools, each by name with its arguments, saying nothing
+    Tools(Vec<(&'static str, Value)>),
     /// Fails as an unreachable provider does, which isn't tried again
     Fail,
 }
@@ -52,15 +56,37 @@ pub fn scripted(
     images: bool,
     off: &[Feature],
 ) -> (Gateway, Model) {
-    let steps = turns.into_iter().map(|turn| match turn {
-        Turn::Json(value) => Step::Reply(Response {
-            text: value.to_string(),
-            tool_calls: Vec::new(),
+    let reply = |text: String, tool_calls| {
+        Step::Reply(Response {
+            text,
+            tool_calls,
             usage: Usage::default(),
             native: None,
-        }),
-        Turn::Fail => Step::Fail(Error::Network("connection refused".to_owned())),
-    });
+        })
+    };
+    let mut calls = 0;
+    let steps: Vec<Step> = turns
+        .into_iter()
+        .map(|turn| match turn {
+            Turn::Json(value) => reply(value.to_string(), Vec::new()),
+            Turn::Text(text) => reply(text.to_owned(), Vec::new()),
+            Turn::Tools(called) => {
+                let called = called
+                    .into_iter()
+                    .map(|(name, arguments)| {
+                        calls += 1;
+                        ToolCall {
+                            id: format!("call-{calls}"),
+                            name: name.to_owned(),
+                            arguments,
+                        }
+                    })
+                    .collect();
+                reply(String::new(), called)
+            }
+            Turn::Fail => Step::Fail(Error::Network("connection refused".to_owned())),
+        })
+        .collect();
     let capabilities = Capabilities {
         image_input: images,
         ..Capabilities::ALL
