@@ -138,7 +138,8 @@ methods = ["cash", "promptpay"]
 newOrderToSeller = true
 orderStatusToBuyer = true
 adminAlerts = true
-# Daily summary (FR-NOT-06), sent at dailySummaryTime (HH:mm)
+# Daily summary (FR-NOT-06), sent at dailySummaryTime (HH:mm): one push a day to each
+# seller who had an order placed or completed that day, counted against the push quota
 dailySummary = false
 dailySummaryTime = "20:00"
 # Village group digest (FR-NOT-07), posted at groupDigestTime (HH:mm)

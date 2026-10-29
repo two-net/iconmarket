@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use chrono_tz::Tz;
 use sea_orm::prelude::DateTimeUtc;
-use sea_orm::sea_query::Order;
+use sea_orm::sea_query::{Expr, Order};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QueryOrder,
     QuerySelect, RelationTrait,
@@ -105,7 +105,7 @@ pub async fn gather(
             orders: periods::placed(db, days, from, Some(shop_id)).await?,
             unpaid,
             unpaid_value,
-            top: top(db, shop_id, from).await?,
+            top: top(db, shop_id, order::Column::CreatedAt.gte(from)).await?,
         });
     }
     Ok(Sales {
@@ -136,12 +136,13 @@ async fn unpaid(
     Ok((count, value.unwrap_or(Money::ZERO)))
 }
 
-/// The products that sold the most in shop `shop_id`'s orders placed from `from` on and now
-/// `COMPLETED`: by value, then by quantity, then the first listed.
-async fn top(
+/// The products that sold the most in shop `shop_id`'s orders now `COMPLETED` that are in
+/// `window`, such as those placed from a day on: by value, then by quantity, then the first
+/// listed. At most [`TOP`].
+pub(super) async fn top(
     db: &impl ConnectionTrait,
     shop_id: i64,
-    from: DateTimeUtc,
+    window: Expr,
 ) -> Result<Vec<TopProduct>, DbErr> {
     let value = || order_item::Column::LineTotal.sum();
     let quantity = || order_item::Column::Quantity.sum();
@@ -153,7 +154,7 @@ async fn top(
         .column_as(order_item::Column::Id.max(), "latest")
         .join(JoinType::InnerJoin, order_item::Relation::Order.def())
         .filter(order::Column::ShopId.eq(shop_id))
-        .filter(order::Column::CreatedAt.gte(from))
+        .filter(window)
         .filter(order::Column::Status.eq(order::Status::Completed))
         .group_by(order_item::Column::ProductId)
         .order_by(value(), Order::Desc)

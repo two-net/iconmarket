@@ -245,6 +245,7 @@ fn shop_of(status: shop::Status, is_open: bool) -> shop::Model {
         pickup_longitude: None,
         rejection_reason: None,
         suspension_reason: None,
+        summary_sent_on: None,
         created_at: t0(),
         updated_at: t0(),
         deleted_at: None,

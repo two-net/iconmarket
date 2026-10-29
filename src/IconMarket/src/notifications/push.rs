@@ -60,8 +60,8 @@ const RETRIES_PER_RUN: u64 = 100;
 
 /// A notification of Table 4.8-A. Each feature builds its own, with buttons for what the
 /// recipient can do about it (FR-NOT-03), using
-/// [`templates::notice`](super::templates::notice). The daily summary, the village group digest
-/// and announcements are added by #47, #48 and #49.
+/// [`templates::notice`](super::templates::notice). The village group digest and announcements
+/// are added by #48 and #49.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// To the seller: a new order (FR-ORD-03)
@@ -110,6 +110,8 @@ pub enum Kind {
     HeldForReview,
     /// To the admins: a user reported a problem
     UserReport,
+    /// To the seller: how their shop's day went (FR-NOT-06)
+    DailySummary,
 }
 
 impl Kind {
@@ -137,6 +139,7 @@ impl Kind {
             Self::ShopApplication => "admin.shop_application",
             Self::HeldForReview => "admin.held_for_review",
             Self::UserReport => "admin.user_report",
+            Self::DailySummary => "seller.daily_summary",
         }
     }
 
@@ -146,6 +149,7 @@ impl Kind {
             Self::NewOrder => config.new_order_to_seller,
             Self::OrderStatus => config.order_status_to_buyer,
             Self::ShopApplication | Self::HeldForReview | Self::UserReport => config.admin_alerts,
+            Self::DailySummary => config.daily_summary,
             Self::OrderCancelled
             | Self::OrderExpired
             | Self::CancellationRequested

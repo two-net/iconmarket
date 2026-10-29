@@ -82,7 +82,15 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     let stop = CancellationToken::new();
     let jobs = TaskTracker::new();
-    scheduler::start(&jobs, stop.clone(), db.clone(), line.clone(), &config).await;
+    scheduler::start(
+        &jobs,
+        stop.clone(),
+        db.clone(),
+        line.clone(),
+        ai.clone(),
+        &config,
+    )
+    .await;
     // The dispatcher keeps what it needs of the config, the rest of which is read by now
     let port = config.app.listen_port;
     let webhook = webhook::Verifier::new(&config.line.channel_secret);

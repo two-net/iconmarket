@@ -96,6 +96,24 @@ fn a_schedule_is_recorded_with_what_it_depends_on() {
     );
 }
 
+/// FR-NOT-06: the daily summary runs only while its switch is on, at its configured time.
+#[test]
+fn the_daily_summary_runs_at_its_time_only_while_switched_on() {
+    let mut notification = crate::config::sample().notification;
+    assert!(!notification.daily_summary);
+    let off: Vec<Job> = Job::ALL
+        .into_iter()
+        .filter(|job| !job.is_on(&notification))
+        .collect();
+    assert_eq!(off, [Job::SendDailySummary]);
+
+    notification.daily_summary = true;
+    assert!(Job::ALL.into_iter().all(|job| job.is_on(&notification)));
+    assert_eq!(Job::SendDailySummary.schedule(&notification), daily(20, 0));
+    notification.daily_summary_time = NaiveTime::from_hms_opt(18, 30, 0).unwrap();
+    assert_eq!(Job::SendDailySummary.schedule(&notification), daily(18, 30));
+}
+
 /// Work that counts its runs in `runs`.
 fn count(runs: &Arc<AtomicUsize>) -> impl Future<Output = anyhow::Result<()>> + Send + use<> {
     let runs = Arc::clone(runs);

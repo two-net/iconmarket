@@ -43,9 +43,12 @@ async fn setup() -> Setup {
     }
 }
 
-/// The sample config's switches: all of Table 4.8-A on
+/// The sample config's switches, with the daily summary turned on too: all of Table 4.8-A on
 fn switches() -> NotificationConfig {
-    config::sample().notification
+    NotificationConfig {
+        daily_summary: true,
+        ..config::sample().notification
+    }
 }
 
 fn minutes(minutes: i64) -> TimeDelta {
@@ -222,6 +225,7 @@ fn all_off() -> NotificationConfig {
         new_order_to_seller: false,
         order_status_to_buyer: false,
         admin_alerts: false,
+        daily_summary: false,
         ..switches()
     }
 }
@@ -241,6 +245,7 @@ async fn each_switch_stops_its_own_notifications() {
         (Kind::ShopApplication, To::Admins, "คำขอเปิดร้าน"),
         (Kind::HeldForReview, To::Admins, "สินค้ารอตรวจ"),
         (Kind::UserReport, To::Admins, "รายงานปัญหา"),
+        (Kind::DailySummary, To::User(seller), "สรุปยอดขาย"),
         (Kind::OrderCancelled, To::User(seller), "ยกเลิก"),
         (Kind::OrderExpired, To::User(seller), "หมดเวลา"),
         (Kind::CancellationRequested, To::User(seller), "ขอยกเลิก"),
@@ -271,7 +276,7 @@ async fn each_switch_stops_its_own_notifications() {
         ]
     );
 
-    let switched: [(fn(&mut NotificationConfig), _); 3] = [
+    let switched: [(fn(&mut NotificationConfig), _); 4] = [
         (
             |c| c.new_order_to_seller = true,
             push(SELLER, &["ออเดอร์ใหม่"]),
@@ -284,12 +289,13 @@ async fn each_switch_stops_its_own_notifications() {
             |c| c.admin_alerts = true,
             push(ADMIN_1, &["คำขอเปิดร้าน", "สินค้ารอตรวจ", "รายงานปัญหา"]),
         ),
+        (|c| c.daily_summary = true, push(SELLER, &["สรุปยอดขาย"])),
     ];
     for (turn_on, pushed) in switched {
         let mut switches = all_off();
         turn_on(&mut switches);
         let before = s.pushes().len();
-        s.notify(outbox(5), &switches).await;
+        s.notify(outbox(6), &switches).await;
         assert_eq!(s.pushes().split_off(before), [pushed]);
     }
 }

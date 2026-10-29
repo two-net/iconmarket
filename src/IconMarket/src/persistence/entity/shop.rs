@@ -36,6 +36,9 @@ pub struct Model {
     /// Why an admin suspended the shop, while `SUSPENDED` (FR-ADM-03); its owner is told it
     /// whenever an action is refused. Cleared when unsuspended.
     pub suspension_reason: Option<String>,
+    /// The business day whose daily sales summary was last queued for the owner (FR-NOT-06), so
+    /// that a run of the job done again sends no second one (FR-JOB-03)
+    pub summary_sent_on: Option<Date>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     /// When the shop became `CLOSED`; shops are never removed (DR-04)

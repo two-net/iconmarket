@@ -1,6 +1,6 @@
 //! Shops (FR-SHOP): applying to open one ("เปิดร้าน"), and "ร้านของฉัน". Built by #23 and #24;
-//! running one, "เปิด/ปิดร้าน" and "ตั้งค่าร้าน", is [`settings`], and how it sells, "ยอดขาย",
-//! is [`sales`].
+//! running one, "เปิด/ปิดร้าน" and "ตั้งค่าร้าน", is [`settings`], how it sells, "ยอดขาย", is
+//! [`sales`], and the [`summary`] of its day pushed to its owner each evening is #47.
 //!
 //! A shop's status (FR-SHOP-10) is `PENDING` from its application until an admin approves it
 //! or turns it down ("อนุมัติร้าน", [`approvals`]), or `APPROVED` at once while
@@ -25,6 +25,7 @@
 
 pub mod sales;
 pub mod settings;
+pub mod summary;
 #[cfg(test)]
 mod tests;
 

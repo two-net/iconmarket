@@ -18,6 +18,7 @@ use crate::admin::statistics::Statistics;
 use crate::catalog::images::Rejected;
 use crate::catalog::products::Availability;
 use crate::catalog::shops::sales::Sales;
+use crate::catalog::shops::summary::Day;
 use crate::config::{AiProvider, AppConfig, PoliteParticle};
 use crate::dispatcher::menu::{Item, Tab};
 use crate::line::flex::{
@@ -80,6 +81,12 @@ impl Templates {
     /// The business time zone (`app.timeZone`), whose days number orders too (FR-ORD-01)
     pub fn time_zone(&self) -> Tz {
         self.time_zone
+    }
+
+    /// The particle that ends a statement, ค่ะ or ครับ, for text the AI writes in the same voice
+    /// (FR-UI-08)
+    pub fn particle(&self) -> &'static str {
+        self.kha()
     }
 
     /// Something failed on our side; the user can retry or start over.
@@ -887,6 +894,38 @@ impl Templates {
         let sections = [section("คำสั่งซื้อ", table), section("สินค้าขายดี", top)];
         let card = self.figures_card(&labels::SALES, Some(shop_name), at, sections, &buttons);
         Message::flex(labels::SALES.as_str(), card)
+    }
+
+    /// The daily sales summary (FR-NOT-06): how the seller's shop did on the day of `at`, the
+    /// orders placed and the sales completed, with the best seller of those, then the AI's
+    /// `comment` on it, if any, as an aside. `buttons` go at its foot.
+    pub fn daily_summary_notice(
+        &self,
+        at: DateTime<Utc>,
+        day: &Day,
+        comment: Option<&str>,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = format!("สรุปยอดขายวันนี้{kha} {}", self.date(at));
+        let placed = thai::group_thousands(day.placed);
+        let completed = thai::group_thousands(day.completed);
+        let mut details = vec![
+            (format!("ออเดอร์ใหม่ {placed} รายการ"), Tone::Plain),
+            (
+                format!("ขายสำเร็จ {completed} รายการ รวม {}", day.completed_value),
+                Tone::Plain,
+            ),
+        ];
+        if let Some(best) = day.top.first() {
+            let quantity = thai::group_thousands(best.quantity);
+            let line = format!("ขายดีสุด: {} {quantity} {}", best.name, best.unit);
+            details.push((line, Tone::Plain));
+        }
+        if let Some(comment) = comment {
+            details.push((format!("ผู้ช่วย AI: {comment}"), Tone::Muted));
+        }
+        Message::flex(&headline, toned_notice_card(&headline, &details, buttons))
     }
 
     /// A card of figures: `title`, what they are `about` if it says, as they were `at`, then
@@ -6872,6 +6911,7 @@ mod tests {
 
     use super::*;
     use crate::catalog::browse::search::KEYWORD_CHARS;
+    use crate::catalog::shops::sales::TopProduct;
     use crate::line::Body;
     use crate::line::flex::{Component, Text};
     use crate::orders::relay::MESSAGE_CHARS;
@@ -7231,6 +7271,9 @@ mod tests {
         texts.extend(REJECTIONS.map(|rejected| t.image_rejected(rejected)));
         texts.extend(DENIALS.map(|denied| text(&t.denied(denied)).to_owned()));
         texts.extend(order_texts(t));
+        // Without the AI's comment, which is the AI's to write
+        let summary = t.daily_summary_notice(summary_time(), &summary_day(), None, Vec::new());
+        texts.push(notice_lines(&summary).join("\n"));
         texts
     }
 
@@ -9259,6 +9302,69 @@ mod tests {
             panic!("not a card");
         };
         assert_eq!(alt_text, "ลูกค้าส่งสลิปโอนเงินออเดอร์ IM-20261022-0007 แล้วค่ะ");
+    }
+
+    /// 30 ต.ค. 2569 20:00 in Bangkok, when the daily summary goes by default
+    fn summary_time() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 30, 13, 0, 0).unwrap()
+    }
+
+    /// A shop's day: 5 orders placed, 3 completed for ฿1,450, most of it ขนมครก
+    fn summary_day() -> Day {
+        let best = TopProduct {
+            product_id: 1,
+            name: "ขนมครก".to_owned(),
+            unit: "กล่อง".to_owned(),
+            quantity: 30,
+            value: Money::from_baht(600),
+        };
+        Day {
+            placed: 5,
+            completed: 3,
+            completed_value: Money::from_baht(1_450),
+            top: vec![best],
+        }
+    }
+
+    /// FR-NOT-06: the day's orders and sales and its best seller, then the AI's comment as an
+    /// aside, if any.
+    #[test]
+    fn the_daily_summary_shows_the_day_then_the_ai_comment_aside() {
+        let t = templates(PoliteParticle::Kha);
+        let headline = ("สรุปยอดขายวันนี้ค่ะ 30 ต.ค. 2569", None, true);
+        let comment = "ขนมครกขายดีกว่าเมื่อวานเยอะเลยค่ะ";
+        let notice = t.daily_summary_notice(summary_time(), &summary_day(), Some(comment), vec![]);
+        assert_eq!(
+            toned_lines(&notice),
+            [
+                headline,
+                ("ออเดอร์ใหม่ 5 รายการ", None, false),
+                ("ขายสำเร็จ 3 รายการ รวม ฿1,450", None, false),
+                ("ขายดีสุด: ขนมครก 30 กล่อง", None, false),
+                ("ผู้ช่วย AI: ขนมครกขายดีกว่าเมื่อวานเยอะเลยค่ะ", Some(MUTED), false),
+            ]
+        );
+        // The headline is its preview
+        let Body::Flex { alt_text, .. } = &notice.body else {
+            panic!("not a card");
+        };
+        assert_eq!(alt_text, headline.0);
+
+        // Nothing completed yet, and no comment, as with the AI off
+        let quiet = Day {
+            placed: 1,
+            completed: 0,
+            completed_value: Money::ZERO,
+            top: Vec::new(),
+        };
+        assert_eq!(
+            toned_lines(&t.daily_summary_notice(summary_time(), &quiet, None, vec![])),
+            [
+                headline,
+                ("ออเดอร์ใหม่ 1 รายการ", None, false),
+                ("ขายสำเร็จ 0 รายการ รวม ฿0", None, false),
+            ]
+        );
     }
 
     /// FR-PAY-07: the seller is asked whether they got the money of an order handed over

@@ -340,6 +340,7 @@ async fn every_attribute_can_be_stored() {
             pickup_longitude: Some(102.835_9),
             rejection_reason: Some("ยังไม่ได้แจ้งเบอร์ติดต่อ".to_owned()),
             suspension_reason: Some("ขายสินค้าต้องห้าม".to_owned()),
+            summary_sent_on: NaiveDate::from_ymd_opt(2026, 10, 22),
             created_at: at,
             updated_at: at,
             deleted_at: Some(at),
