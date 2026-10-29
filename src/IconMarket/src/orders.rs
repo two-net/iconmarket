@@ -1,5 +1,6 @@
 //! Cart & orders (SRS §2.1): cart, checkout, stock reservation and the order lifecycle.
-//! Built by #29, #32, #33, #34 and #35.
+//! Built by #29, #32, #33, #34 and #35; [`periods`] counts the orders placed of late, for
+//! "สถิติ" and "ยอดขาย".
 
 pub mod actions;
 pub mod cart;
@@ -8,6 +9,7 @@ mod contact;
 mod expiry;
 pub mod lifecycle;
 pub mod lists;
+pub mod periods;
 
 pub use expiry::expire;
 

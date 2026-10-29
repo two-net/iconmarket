@@ -17,6 +17,7 @@ use url::Url;
 use crate::admin::statistics::Statistics;
 use crate::catalog::images::Rejected;
 use crate::catalog::products::Availability;
+use crate::catalog::shops::sales::Sales;
 use crate::config::{AiProvider, AppConfig, PoliteParticle};
 use crate::dispatcher::menu::{Item, Tab};
 use crate::line::flex::{
@@ -25,6 +26,7 @@ use crate::line::flex::{
 };
 use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
 use crate::orders::cart;
+use crate::orders::periods::Orders;
 use crate::payments;
 use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{order, product, shop};
@@ -807,28 +809,7 @@ impl Templates {
     /// again.
     pub fn statistics(&self, statistics: &Statistics, at: DateTime<Utc>, again: Action) -> Message {
         let count = |n: u64, unit: &str| format!("{} {unit}", thai::group_thousands(n));
-        let periods = &statistics.orders;
-        let mut orders = vec![table_row(
-            "สถานะ",
-            periods.iter().map(|period| match period.days {
-                1 => "วันนี้".to_owned(),
-                days => format!("{days} วัน"),
-            }),
-            true,
-        )];
-        for (i, &(status, _)) in periods[0].by_status.iter().enumerate() {
-            let counts = periods.iter().map(|period| period.by_status[i].1);
-            let counts = counts.map(thai::group_thousands);
-            orders.push(table_row(order_status_name(status), counts, false));
-        }
-        let totals = periods
-            .iter()
-            .map(|period| thai::group_thousands(period.total()));
-        orders.push(table_row("รวม", totals, true));
-        let values = periods
-            .iter()
-            .map(|period| period.completed_value.to_string());
-        orders.push(table_row("ยอดที่สำเร็จ", values, true));
+        let periods: Vec<&Orders> = statistics.orders.iter().collect();
         let ai = statistics.ai_calls.map_or_else(
             || "ปิดอยู่".to_owned(),
             |calls| {
@@ -851,7 +832,7 @@ impl Templates {
                     row("เปิดอยู่ตอนนี้", &count(statistics.open_shops, "ร้าน")),
                 ],
             ),
-            section("คำสั่งซื้อ", orders),
+            section("คำสั่งซื้อ", orders_table(&periods)),
             section("ผู้ช่วย AI", [row("ใช้วันนี้", &ai)]),
             section(
                 "การแจ้งเตือนเดือนนี้",
@@ -861,17 +842,84 @@ impl Templates {
                 ],
             ),
         ];
+        let card = self.figures_card(&labels::STATS, None, at, sections, &[again]);
+        Message::flex(labels::STATS.as_str(), card)
+    }
 
+    /// "ยอดขาย" (FR-SHOP-11): the `sales` of shop `shop_name` as they were `at`. Orders are a
+    /// table of their statuses by period, closed by the value of those completed and those of
+    /// them unpaid; then each period's best-selling products, with how many sold and for how
+    /// much. `buttons` go at its foot.
+    pub fn sales(
+        &self,
+        shop_name: &str,
+        sales: &Sales,
+        at: DateTime<Utc>,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let periods = &sales.periods;
+        let orders: Vec<&Orders> = periods.iter().map(|period| &period.orders).collect();
+        let mut table = orders_table(&orders);
+        let unpaid = periods
+            .iter()
+            .map(|period| thai::group_thousands(period.unpaid));
+        table.push(table_row(labels::FILTER_UNPAID.as_str(), unpaid, false));
+        let unpaid_values = periods.iter().map(|period| period.unpaid_value.to_string());
+        table.push(table_row("ยอดค้างชำระ", unpaid_values, false));
+        let mut top = Vec::new();
+        for period in periods {
+            top.push(table_row(&period_name(period.orders.days), [], true));
+            if period.top.is_empty() {
+                top.push(table_row("ยังไม่มี", [], false));
+            }
+            for (rank, product) in (1..).zip(&period.top) {
+                let sold = [
+                    format!(
+                        "{} {}",
+                        thai::group_thousands(product.quantity),
+                        product.unit
+                    ),
+                    product.value.to_string(),
+                ];
+                top.push(table_row(&format!("{rank}. {}", product.name), sold, false));
+            }
+        }
+        let sections = [section("คำสั่งซื้อ", table), section("สินค้าขายดี", top)];
+        let card = self.figures_card(&labels::SALES, Some(shop_name), at, sections, &buttons);
+        Message::flex(labels::SALES.as_str(), card)
+    }
+
+    /// A card of figures: `title`, what they are `about` if it says, as they were `at`, then
+    /// `sections` one under another, and `buttons` at its foot.
+    fn figures_card(
+        &self,
+        title: &Label,
+        about: Option<&str>,
+        at: DateTime<Utc>,
+        sections: impl IntoIterator<Item = FlexBox>,
+        buttons: &[Action],
+    ) -> Bubble {
         let title = Text {
             size: Some(Size::Lg),
             weight: Some(Weight::Bold),
-            ..Text::new(labels::STATS.as_str())
+            ..Text::new(title.as_str())
         };
+        let about = about.map(|about| {
+            let about = Text {
+                size: Some(Size::Sm),
+                wrap: Some(true),
+                ..Text::new(about)
+            };
+            about.into()
+        });
         let as_of = Text {
             size: Some(Size::Xs),
             color: Some(MUTED.to_owned()),
             ..Text::new(format!("ณ {}", self.date_time(at)))
         };
+        let header = std::iter::once(title.into())
+            .chain(about)
+            .chain([as_of.into()]);
         let mut body = Vec::new();
         for (i, section) in sections.into_iter().enumerate() {
             if i > 0 {
@@ -879,22 +927,16 @@ impl Templates {
             }
             body.push(section.into());
         }
-        let again = Button {
-            style: Some(ButtonStyle::Secondary),
-            height: Some(ButtonHeight::Sm),
-            ..Button::new(again)
-        };
-        let card = Bubble {
+        Bubble {
             size: Some(BubbleSize::Mega),
-            header: Some(FlexBox::vertical([title.into(), as_of.into()])),
+            header: Some(FlexBox::vertical(header)),
             body: Some(FlexBox {
                 spacing: Some(Spacing::Lg),
                 ..FlexBox::vertical(body)
             }),
-            footer: Some(FlexBox::vertical([again.into()])),
+            footer: footer_of(buttons, false),
             ..Bubble::default()
-        };
-        Message::flex(labels::STATS.as_str(), card)
+        }
     }
 
     /// "ซื้อของ" (FR-SRCH-01): the active categories, `choices` a page of them.
@@ -4897,6 +4939,38 @@ fn table_row(label: &str, values: impl IntoIterator<Item = String>, bold: bool) 
         ..FlexBox::horizontal(std::iter::once(label.into()).chain(values))
     }
     .into()
+}
+
+/// The rows of a table of orders by status, a column for each of `periods`: a heading, a row
+/// for each status, their total, and the value of those completed.
+fn orders_table(periods: &[&Orders]) -> Vec<Component> {
+    let mut rows = vec![table_row(
+        "สถานะ",
+        periods.iter().map(|period| period_name(period.days)),
+        true,
+    )];
+    for (i, &(status, _)) in periods[0].by_status.iter().enumerate() {
+        let counts = periods.iter().map(|period| period.by_status[i].1);
+        let counts = counts.map(thai::group_thousands);
+        rows.push(table_row(order_status_name(status), counts, false));
+    }
+    let totals = periods
+        .iter()
+        .map(|period| thai::group_thousands(period.total()));
+    rows.push(table_row("รวม", totals, true));
+    let values = periods
+        .iter()
+        .map(|period| period.completed_value.to_string());
+    rows.push(table_row("ยอดที่สำเร็จ", values, true));
+    rows
+}
+
+/// A period of `days` days ending today, as figures name it.
+fn period_name(days: u64) -> String {
+    match days {
+        1 => "วันนี้".to_owned(),
+        days => format!("{days} วัน"),
+    }
 }
 
 /// A line of a section on its own.

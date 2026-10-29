@@ -3,10 +3,9 @@
 //! `async` tests each start a throwaway PostgreSQL, so they need Docker.
 
 use chrono::{TimeZone, Utc};
-use chrono_tz::Asia::Bangkok;
 use sea_orm::ActiveValue::Set;
 use sea_orm::prelude::Uuid;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, TransactionTrait};
+use sea_orm::{ActiveModelTrait, DatabaseConnection, Iterable, TransactionTrait};
 use serde_json::Value;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
@@ -15,8 +14,9 @@ use super::*;
 use crate::config::{self, SessionConfig};
 use crate::line::limits;
 use crate::notifications::templates::order_status_name;
-use crate::persistence::entity::{counter, push_log};
+use crate::persistence::entity::{counter, order, push_log};
 use crate::persistence::{orm, testing};
+use crate::thai::Money;
 use crate::users::access::{Actor, Denied};
 
 static SESSION: SessionConfig = SessionConfig {
@@ -52,19 +52,6 @@ fn month() -> DateTimeUtc {
 /// An instant before `at`
 fn just_before(at: DateTimeUtc) -> DateTimeUtc {
     at - chrono::TimeDelta::seconds(1)
-}
-
-#[test]
-fn periods_start_at_bangkok_midnight() {
-    assert_eq!(since(t0(), Bangkok, 1), today());
-    assert_eq!(since(t0(), Bangkok, 7), week());
-    assert_eq!(since(t0(), Bangkok, 30), month());
-    // Just after midnight in Bangkok, while it is still the day before in UTC
-    assert_eq!(since(today(), Bangkok, 1), today());
-    assert_eq!(
-        since(just_before(today()), Bangkok, 1),
-        utc(10, 20, 17, 0, 0)
-    );
 }
 
 struct Setup {

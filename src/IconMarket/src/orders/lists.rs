@@ -390,6 +390,11 @@ fn runs_shop(turn: &Turn<'_>) -> bool {
     })
 }
 
+/// "ออเดอร์ร้าน" on "ค้างชำระ", for "ยอดขาย" (FR-SHOP-11) to show the orders it counts unpaid.
+pub fn unpaid_list() -> Postback {
+    filtered(Filter::Unpaid)
+}
+
 /// "ออเดอร์ร้าน" with `filter`.
 fn filtered(filter: Filter) -> Postback {
     Item::ShopOrders.postback().with_name(FILTER, filter.key())

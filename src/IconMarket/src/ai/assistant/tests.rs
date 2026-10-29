@@ -19,6 +19,7 @@ use super::*;
 use crate::admin::statistics;
 use crate::ai::request::Request;
 use crate::ai::testing::{Turn as Says, scripted};
+use crate::catalog::shops::sales;
 use crate::config::{self, SessionConfig};
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, flow};
@@ -26,7 +27,7 @@ use crate::line::{Action, Body, limits};
 use crate::notifications::templates::Templates;
 use crate::orders::cart;
 use crate::persistence::entity::{
-    ai_message, cart_item, counter, order, pending_action, product, session, shop, user,
+    ai_message, cart_item, counter, order, order_item, pending_action, product, session, shop, user,
 };
 use crate::persistence::testing::{self, Market};
 use crate::persistence::{orm, random_id};
@@ -54,9 +55,10 @@ const EVERYONES: [&str; 11] = [
 ];
 
 /// Sellers' besides
-const SELLERS: [&str; 6] = [
+const SELLERS: [&str; 7] = [
     "get_shop_orders",
     "get_my_products",
+    "get_sales_summary",
     "propose_create_product",
     "propose_update_product",
     "propose_set_shop_open",
@@ -355,6 +357,68 @@ async fn an_admin_reads_the_statistics() {
     let mut card = reply[1].clone();
     card.quick_reply = None;
     assert_eq!(card, statistics::card(&s.templates, &figures, now()));
+}
+
+/// FR-SHOP-11, FR-AI-04: a seller asks how today went. The model is told the figures of
+/// "ยอดขาย" for today only, and the user sees its card, built from the database.
+#[tokio::test]
+async fn a_seller_reads_their_sales() {
+    let s = setup().await;
+    let sold = s.order(s.buyer(), s.market.shop.id, 1).await;
+    let completed = order::ActiveModel {
+        id: Set(sold.id),
+        status: Set(order::Status::Completed),
+        ..Default::default()
+    };
+    completed.update(&s.db).await.unwrap();
+    let product = &s.market.product;
+    let line = order_item::ActiveModel {
+        order_id: Set(sold.id),
+        product_id: Set(product.id),
+        name: Set(product.name.clone()),
+        unit: Set(product.unit.clone()),
+        unit_price: Set(product.price),
+        quantity: Set(2),
+        line_total: Set(Money::from_baht(220)),
+        ..Default::default()
+    };
+    line.insert(&s.db).await.unwrap();
+
+    let says = [
+        calls("get_sales_summary", json!({ "period": "today" })),
+        Says::Text("วันนี้ขายได้ 220 บาทค่ะ"),
+    ];
+    let (reply, requests) = s.asks(s.seller(), "วันนี้ขายได้เท่าไหร่", says).await;
+    let today = json!({
+        "days": 1,
+        "byStatus": {
+            "pending": 0, "accepted": 0, "ready": 0, "delivering": 0,
+            "completed": 1, "rejected": 0, "cancelled": 0, "expired": 0,
+        },
+        "total": 1,
+        "completedValue": "฿220",
+        "unpaidCompleted": { "orders": 1, "value": "฿220" },
+        "topProducts": [{
+            "productId": s.eggs(),
+            "name": "ไข่ไก่เบอร์ 2",
+            "quantity": 2,
+            "unit": "แผง",
+            "value": "฿220",
+        }],
+    });
+    assert_eq!(told(&requests[1]), [json!({ "periods": [today] })]);
+
+    assert_eq!(text(&reply[0]), "วันนี้ขายได้ 220 บาทค่ะ");
+    let time_zone = s.config.app.time_zone;
+    let figures = sales::gather(&s.db, time_zone, s.market.shop.id, now())
+        .await
+        .unwrap();
+    let mut card = reply[1].clone();
+    card.quick_reply = None;
+    assert_eq!(
+        card,
+        sales::card(&s.templates, &s.market.shop, &figures, now())
+    );
 }
 
 /// FR-ADM-04: a suspended user is told why, and the AI isn't asked.

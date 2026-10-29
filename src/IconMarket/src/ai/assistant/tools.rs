@@ -11,8 +11,9 @@
 //! shops' (FR-AI-08), and given as data (FR-AI-06); what the user sees are the system's cards
 //! ([`Shown`]).
 //!
-//! Admins get only read tools (FR-AI-17): `get_admin_overview`, the figures of "สถิติ" and its
-//! card. Sellers' `get_sales_summary` comes with "ยอดขาย" (#39).
+//! Sellers read how their shop sells with `get_sales_summary`, the figures of "ยอดขาย" and its
+//! card. Admins get only read tools (FR-AI-17): `get_admin_overview`, the figures of "สถิติ" and
+//! its card.
 
 use sea_orm::{ActiveEnum, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde_json::{Value, json};
@@ -26,7 +27,7 @@ use crate::catalog::browse::listing::{self, Listing};
 use crate::catalog::browse::search::{KEYWORD_CHARS, Search};
 use crate::catalog::categories;
 use crate::catalog::products::{Availability, listing as drafting, manage};
-use crate::catalog::shops::settings;
+use crate::catalog::shops::{sales, settings};
 use crate::config::Config;
 use crate::dispatcher::Turn;
 use crate::dispatcher::flow;
@@ -36,6 +37,7 @@ use crate::orders;
 use crate::orders::cart::{self, AddToCart, Declined, NoRoom};
 use crate::orders::checkout;
 use crate::orders::lists::{self, ListedOrder};
+use crate::orders::periods::Orders;
 use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{category, order, product, shop};
 use crate::thai::Money;
@@ -49,8 +51,10 @@ const MY_PRODUCTS: u64 = 30;
 const KEYWORDS: usize = 5;
 /// The highest price a search takes, in baht: the most a product may cost (FR-PROD-03)
 const MAX_PRICE: f64 = 100_000.0;
+/// The periods of "ยอดขาย" `get_sales_summary` takes, by name, with their length in days
+const SALES_PERIODS: [(&str, u64); 3] = [("today", 1), ("7days", 7), ("30days", 30)];
 
-/// The tools of Table 4.9-A that #37 builds.
+/// The tools of Table 4.9-A.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Name {
     SearchProducts,
@@ -66,6 +70,7 @@ enum Name {
     ProposeCancelOrder,
     GetShopOrders,
     GetMyProducts,
+    GetSalesSummary,
     ProposeCreateProduct,
     ProposeUpdateProduct,
     ProposeSetShopOpen,
@@ -74,7 +79,7 @@ enum Name {
 }
 
 impl Name {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 19] = [
         Self::SearchProducts,
         Self::GetProduct,
         Self::SearchShops,
@@ -88,6 +93,7 @@ impl Name {
         Self::ProposeCancelOrder,
         Self::GetShopOrders,
         Self::GetMyProducts,
+        Self::GetSalesSummary,
         Self::ProposeCreateProduct,
         Self::ProposeUpdateProduct,
         Self::ProposeSetShopOpen,
@@ -110,6 +116,7 @@ impl Name {
             Self::ProposeCancelOrder => "propose_cancel_order",
             Self::GetShopOrders => "get_shop_orders",
             Self::GetMyProducts => "get_my_products",
+            Self::GetSalesSummary => "get_sales_summary",
             Self::ProposeCreateProduct => "propose_create_product",
             Self::ProposeUpdateProduct => "propose_update_product",
             Self::ProposeSetShopOpen => "propose_set_shop_open",
@@ -134,6 +141,7 @@ impl Name {
             self,
             Self::GetShopOrders
                 | Self::GetMyProducts
+                | Self::GetSalesSummary
                 | Self::ProposeCreateProduct
                 | Self::ProposeUpdateProduct
                 | Self::ProposeSetShopOpen
@@ -160,6 +168,7 @@ impl Name {
                 Some(access::Action::Buy)
             }
             Self::GetMyProducts
+            | Self::GetSalesSummary
             | Self::ProposeCreateProduct
             | Self::ProposeUpdateProduct
             | Self::ProposeSetShopOpen => Some(access::Action::ManageShop),
@@ -325,6 +334,16 @@ fn tool(name: Name, categories: &[category::Model], topics: &[&str]) -> Tool {
             "The products of the user's shop. The user sees them.",
             Schema::object(),
         ),
+        Name::GetSalesSummary => (
+            "The sales of the user's shop, for the orders placed today, in the last 7 days or in \
+             the last 30 days, or all three: orders by status, the value of those completed, \
+             those completed but not yet paid, and the 5 products that sold the most by value. \
+             The user sees them as a card.",
+            Schema::object().optional(
+                "period",
+                Schema::string().one_of(SALES_PERIODS.map(|(name, _)| name)),
+            ),
+        ),
         Name::ProposeCreateProduct => (
             "Draft a new product for the user's shop, from only what the seller wrote. Nothing \
              is listed: the user sees a preview to correct and confirm.",
@@ -407,6 +426,7 @@ pub async fn run(
                 Name::ProposeCancelOrder => propose_cancel_order(turn, args, shown).await?,
                 Name::GetShopOrders => get_shop_orders(turn, args, shown).await?,
                 Name::GetMyProducts => get_my_products(turn, config, shown).await?,
+                Name::GetSalesSummary => get_sales_summary(turn, config, args, shown).await?,
                 Name::ProposeCreateProduct => {
                     propose_create_product(turn, config, args, shown).await?
                 }
@@ -892,23 +912,7 @@ async fn get_admin_overview(
 /// `figures` as the model is told them: counts, statuses by their names in lower case, and
 /// amounts as shown.
 fn overview(figures: &Statistics) -> Value {
-    let orders: Vec<Value> = figures
-        .orders
-        .iter()
-        .map(|period| {
-            let by_status: serde_json::Map<String, Value> = period
-                .by_status
-                .iter()
-                .map(|(status, count)| (status.to_value().to_lowercase(), json!(count)))
-                .collect();
-            json!({
-                "days": period.days,
-                "byStatus": by_status,
-                "total": period.total(),
-                "completedValue": period.completed_value.to_string(),
-            })
-        })
-        .collect();
+    let orders: Vec<Value> = figures.orders.iter().map(placed).collect();
     json!({
         "users": { "total": figures.users, "newInLast7Days": figures.new_users },
         "shops": { "approved": figures.approved_shops, "openNow": figures.open_shops },
@@ -917,6 +921,80 @@ fn overview(figures: &Statistics) -> Value {
             json!({ "made": calls.today, "dailyLimit": calls.limit })
         }),
         "pushesThisMonth": { "sent": figures.pushes.sent, "failed": figures.pushes.failed },
+    })
+}
+
+/// The figures of "ยอดขาย" (FR-SHOP-11), for the seller: the model is told those of the period
+/// asked, or of every period, and the user sees their card.
+async fn get_sales_summary(
+    turn: &Turn<'_>,
+    config: &Config,
+    args: &Value,
+    shown: &mut Shown,
+) -> Result<Value, DbErr> {
+    let Some(shop) = &turn.actor.shop else {
+        return Ok(failed("not_allowed"));
+    };
+    let figures = sales::gather(turn.db, config.app.time_zone, shop.id, turn.now).await?;
+    let asked = text(args, "period")
+        .and_then(|asked| SALES_PERIODS.iter().find(|&&(name, _)| name == asked))
+        .map(|&(_, days)| days);
+    let periods: Vec<&sales::Period> = figures
+        .periods
+        .iter()
+        .filter(|period| asked.is_none_or(|days| days == period.orders.days))
+        .collect();
+    let mut remembered = Vec::new();
+    for product in periods.iter().flat_map(|period| &period.top) {
+        if !remembered.contains(&product.product_id) {
+            remembered.push(product.product_id);
+            let id = product.product_id.to_string();
+            shown.remember(json!({ "product": id, "name": product.name }));
+        }
+    }
+    let told: Vec<Value> = periods.into_iter().map(sold).collect();
+    shown.messages([sales::card(turn.templates, shop, &figures, turn.now)]);
+    Ok(json!({ "periods": told }))
+}
+
+/// A period of "ยอดขาย" as the model is told it: the orders placed, those completed but unpaid,
+/// and the products that sold the most, by their IDs, with amounts as shown.
+fn sold(period: &sales::Period) -> Value {
+    let top: Vec<Value> = period
+        .top
+        .iter()
+        .map(|product| {
+            json!({
+                "productId": product.product_id.to_string(),
+                "name": product.name,
+                "quantity": product.quantity,
+                "unit": product.unit,
+                "value": product.value.to_string(),
+            })
+        })
+        .collect();
+    let mut told = placed(&period.orders);
+    told["unpaidCompleted"] = json!({
+        "orders": period.unpaid,
+        "value": period.unpaid_value.to_string(),
+    });
+    told["topProducts"] = Value::Array(top);
+    told
+}
+
+/// The orders placed in a period as the model is told them: counts, statuses by their names in
+/// lower case, and amounts as shown.
+fn placed(orders: &Orders) -> Value {
+    let by_status: serde_json::Map<String, Value> = orders
+        .by_status
+        .iter()
+        .map(|(status, count)| (status.to_value().to_lowercase(), json!(count)))
+        .collect();
+    json!({
+        "days": orders.days,
+        "byStatus": by_status,
+        "total": orders.total(),
+        "completedValue": orders.completed_value.to_string(),
     })
 }
 

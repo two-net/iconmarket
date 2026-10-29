@@ -1,5 +1,6 @@
 //! Shops (FR-SHOP): applying to open one ("เปิดร้าน"), and "ร้านของฉัน". Built by #23 and #24;
-//! running one, "เปิด/ปิดร้าน" and "ตั้งค่าร้าน", is [`settings`].
+//! running one, "เปิด/ปิดร้าน" and "ตั้งค่าร้าน", is [`settings`], and how it sells, "ยอดขาย",
+//! is [`sales`].
 //!
 //! A shop's status (FR-SHOP-10) is `PENDING` from its application until an admin approves it
 //! or turns it down ("อนุมัติร้าน", [`approvals`]), or `APPROVED` at once while
@@ -22,6 +23,7 @@
 //! arrives (FR-LINE-09) and kept as a [draft](Owner::Draft) of the user's until then. What the
 //! user types is never logged (NFR-PRIV-05).
 
+pub mod sales;
 pub mod settings;
 #[cfg(test)]
 mod tests;

@@ -41,6 +41,7 @@ use crate::catalog::browse::search::{self, SearchFlow};
 use crate::catalog::products::listing::{self, Typed};
 use crate::catalog::products::manage::{self, EditFlow};
 use crate::catalog::products::{self, ProductFlow};
+use crate::catalog::shops::sales;
 use crate::catalog::shops::settings::{self, SettingsFlow};
 use crate::catalog::shops::{self, ShopFlow};
 use crate::line::Message;
@@ -702,8 +703,8 @@ async fn menu_item(
         Cart => return cart::tapped(turn, postback).await,
         MyOrders => return lists::mine(turn, postback).await,
         ShopOrders => return lists::shop(turn, postback).await,
+        Sales => return sales::tapped(turn, &context.config).await,
         Stats => return statistics::tapped(turn, &context.config).await,
-        Sales => 39,
         Announcements => 49,
     };
     Ok(not_built(item.action(), issue, fallback(turn)))
