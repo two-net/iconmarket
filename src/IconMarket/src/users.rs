@@ -3,16 +3,17 @@
 //!
 //! [`roles`] holds who is a buyer, seller and admin, [`access`] the one authorization check
 //! every action goes through, [`onboarding`] what a user does before anything else,
-//! [`address`] the address asked for when first needed, [`profile`] "ข้อมูลของฉัน", [`help`]
-//! "ช่วยเหลือ", and [`report`] the problems users report.
+//! [`address`] the address asked for when first needed, [`profile`] "ข้อมูลของฉัน",
+//! [`deletion`] "ลบบัญชี", [`help`] "ช่วยเหลือ", and [`report`] the problems users report.
 
 #![allow(
     dead_code,
-    reason = "account deletion is built by #36; product and shop cards (#24, #28) carry the report button"
+    reason = "product and shop cards (#24, #28) carry the report button"
 )]
 
 pub mod access;
 pub mod address;
+pub mod deletion;
 pub mod help;
 pub mod onboarding;
 pub mod profile;
@@ -31,7 +32,7 @@ use crate::line::Profile;
 use crate::persistence::entity::user;
 
 /// The action of the button that deletes the user's account, after confirmation (FR-ONB-07,
-/// #36). Help's "ลบบัญชี" offers it.
+/// [`deletion`]). Help's "ลบบัญชี" offers it.
 pub const DELETE_ACCOUNT: &str = "delete_account";
 
 /// How long a fetched LINE profile is kept before it is fetched again (FR-LINE-10).

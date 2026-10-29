@@ -595,6 +595,73 @@ impl Templates {
         Message::flex(labels::MY_DATA.as_str(), card)
     }
 
+    /// Asks to confirm deleting the user's account (FR-ONB-07, FR-UI-13): what goes, their shop
+    /// `shop` closed for good with its products, what stays, and that it can't be undone.
+    /// `confirm` deletes it; cancelling keeps it.
+    pub fn confirm_delete_account(&self, shop: Option<&str>, confirm: Action) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let shop = shop
+            .map(|name| format!(" ร้าน \"{name}\" จะปิดถาวรและสินค้าทั้งหมดถูกลบ"))
+            .unwrap_or_default();
+        let text = format!(
+            "ลบบัญชีของคุณใช่ไหม{kha_question} ระบบจะลบชื่อ รูปโปรไฟล์ เบอร์โทร ที่อยู่ ตำแหน่ง และบัญชี LINE ที่ผูกไว้{shop} ประวัติคำสั่งซื้อยังอยู่ แต่ไม่ระบุว่าเป็นคุณ ลบแล้วกู้คืนไม่ได้ ถ้าแน่ใจ กด \"{}\" ได้เลย{kha}",
+            confirm.label().as_str()
+        );
+        with_cancel(Message::text(text).with_quick_reply(QuickReply::new([confirm])))
+    }
+
+    /// The account can't be deleted while orders are open (FR-ONB-07, AC-13): `as_buyer` the user
+    /// placed, `as_seller` at their shop. Then where to see them.
+    pub fn account_deletion_refused(&self, as_buyer: u64, as_seller: u64) -> Message {
+        let kha = self.kha();
+        let mut open = Vec::new();
+        if as_buyer > 0 {
+            open.push(format!("ที่คุณสั่งซื้อ {as_buyer} รายการ"));
+        }
+        if as_seller > 0 {
+            open.push(format!("ของร้านคุณ {as_seller} รายการ"));
+        }
+        let text = format!(
+            "ยังลบบัญชีไม่ได้{kha} เพราะมีคำสั่งซื้อที่ยังไม่จบ: {} เมื่อคำสั่งซื้อทั้งหมดเสร็จหรือยกเลิกแล้ว กด \"{}\" ได้อีกครั้ง{kha}",
+            open.join(" และ "),
+            labels::DELETE_ACCOUNT.as_str()
+        );
+        let mut choices = Vec::new();
+        if as_buyer > 0 {
+            choices.push(Item::MyOrders.postback().button(labels::MY_ORDERS.clone()));
+        }
+        if as_seller > 0 {
+            choices.push(
+                Item::ShopOrders
+                    .postback()
+                    .button(labels::SHOP_ORDERS.clone()),
+            );
+        }
+        choices.push(Action::message(labels::MENU.clone(), labels::MENU.as_str()));
+        Message::text(text).with_quick_reply(QuickReply::new(choices))
+    }
+
+    /// The account is deleted (FR-ONB-07). Writing again starts over as someone new, so there
+    /// are no buttons to carry on with.
+    pub fn account_deleted(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ลบบัญชีของคุณแล้ว{kha} ขอบคุณที่ใช้ {} ถ้าอยากกลับมาใช้อีก ส่งข้อความมาได้เลย ระบบจะเริ่มให้ใหม่{kha}",
+            self.app_name
+        ))
+    }
+
+    /// The account is kept, its deletion not having been confirmed in time; `again` asks again.
+    pub fn account_kept(&self, again: Action) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "ยังไม่ได้ลบบัญชี{kha} ถ้าจะลบ กด \"{}\" อีกครั้งได้เลย{kha}",
+            again.label().as_str()
+        );
+        let menu = Action::message(labels::MENU.clone(), labels::MENU.as_str());
+        Message::text(text).with_quick_reply(QuickReply::new([again, menu]))
+    }
+
     /// Asks for a category's name (FR-ADM-05) of at most `max_chars`: a new one, or a new name
     /// for the one named `current`.
     pub fn ask_category_name(&self, max_chars: usize, current: Option<&str>) -> Message {
@@ -4386,6 +4453,9 @@ pub struct PromptPayDue<'a> {
 
 /// The reason an order is cancelled for when its seller grants the buyer's request (FR-ORD-07).
 pub const BUYER_ASKED_TO_CANCEL: &str = "ลูกค้าขอยกเลิก";
+
+/// Who a deleted account's past orders show as their buyer (FR-ONB-07)
+pub const DELETED_ACCOUNT: &str = "ผู้ใช้ที่ลบบัญชีแล้ว";
 
 /// What a shop's card shows (FR-SHOP-01): its owner's, an applicant's or an admin's view.
 pub struct ShopCard<'a> {

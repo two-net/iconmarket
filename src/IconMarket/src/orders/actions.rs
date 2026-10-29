@@ -263,7 +263,7 @@ pub async fn found(
         number: &order.order_number,
         status: order.status,
         shop: &parties.shop.name,
-        buyer: parties.buyer.display_name.as_deref(),
+        buyer: contact::buyer_name(&parties.buyer),
         total: order.total,
         payment: order.payment_method,
         payment_status: order.payment_status,

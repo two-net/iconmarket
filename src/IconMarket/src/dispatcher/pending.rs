@@ -39,6 +39,7 @@ use crate::orders::checkout::Checkout;
 use crate::persistence::entity::pending_action;
 use crate::persistence::random_id;
 use crate::users::access::{self, Denied, authorize};
+use crate::users::deletion::DeleteAccount;
 
 /// The action of every confirm button
 pub const CONFIRM: &str = "confirm";
@@ -163,15 +164,17 @@ pub async fn kept<T: DeserializeOwned>(
 
 /// A tap on a confirm button: confirms its pending action as the kind it names. Each kind of
 /// proposal adds its arm, as its issue builds it: deleting a category (#21), deleting a product
-/// (#26), quick updates to a product (#30), checkout (#32) and the AI assistant's proposals
-/// (#37). A product being listed is confirmed by its preview's revision instead (#25, #30), and
-/// an order's buttons, which carry no proposed values, by the order's status (#33).
+/// (#26), quick updates to a product (#30), checkout (#32), deleting the account (#36) and the
+/// AI assistant's proposals (#37). A product being listed is confirmed by its preview's
+/// revision instead (#25, #30), and an order's buttons, which carry no proposed values, by the
+/// order's status (#33).
 pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>, DbErr> {
     match (postback.name(KIND), postback.uuid(ID)) {
         (Some(DeleteCategory::KIND), Some(id)) => confirm::<DeleteCategory>(turn, id).await,
         (Some(DeleteProduct::KIND), Some(id)) => confirm::<DeleteProduct>(turn, id).await,
         (Some(UpdateProduct::KIND), Some(id)) => confirm::<UpdateProduct>(turn, id).await,
         (Some(Checkout::KIND), Some(id)) => confirm::<Checkout>(turn, id).await,
+        (Some(DeleteAccount::KIND), Some(id)) => confirm::<DeleteAccount>(turn, id).await,
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }

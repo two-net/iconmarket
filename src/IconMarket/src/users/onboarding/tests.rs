@@ -319,6 +319,30 @@ async fn following_again_greets_the_user_back() {
     assert_eq!(text(&reply[1]), "ประกาศความเป็นส่วนตัว");
 }
 
+/// FR-ONB-06: unfollowing makes a known user no follower, once; an unknown LINE user is not
+/// registered by it.
+#[tokio::test]
+async fn unfollowing_stops_being_a_follower() {
+    let s = setup().await;
+    let alice = testing::new_user(ALICE).insert(&s.db).await.unwrap().id;
+    let bob = testing::new_user(BOB).insert(&s.db).await.unwrap().id;
+
+    assert_eq!(unfollowed(&s.db, ALICE, t0()).await.unwrap(), Some(alice));
+    let user = s.user(alice).await;
+    assert!(!user.is_following);
+    assert_eq!(user.updated_at, t0());
+    assert!(s.user(bob).await.is_following);
+
+    // Already not following: nothing changes
+    let later = t0() + TimeDelta::minutes(5);
+    assert_eq!(unfollowed(&s.db, ALICE, later).await.unwrap(), None);
+    assert_eq!(s.user(alice).await.updated_at, t0());
+
+    let unknown = "Uc3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
+    assert_eq!(unfollowed(&s.db, unknown, t0()).await.unwrap(), None);
+    assert_eq!(user::Entity::find().count(&s.db).await.unwrap(), 2);
+}
+
 /// FR-ONB-08
 #[tokio::test]
 async fn myid_returns_the_senders_own_id() {

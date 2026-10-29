@@ -1358,6 +1358,7 @@ async fn an_events_notifications_are_pushed_after_its_reply() {
                 reply: Some(reply),
                 pushes,
                 relink: Vec::new(),
+                unlink: Vec::new(),
             },
             received_at: Utc::now(),
             span: Span::none(),
@@ -1423,6 +1424,121 @@ async fn an_outdated_menu_is_relinked_after_the_reply() {
         .unwrap()
         .unwrap();
     assert_eq!(user.menu_roles, Some(MenuRoles::Admin));
+}
+
+/// FR-ONB-06: an unfollow, unanswered, makes the user no follower, so nothing is pushed to them;
+/// following again makes them one, and greets them back.
+#[tokio::test]
+async fn unfollowing_stops_pushes_until_following_again() {
+    let s = setup().await;
+    let alice = onboarded(&s.db, ALICE).await;
+    let notified = async || {
+        let mut outbox = Outbox::default();
+        let notice = vec![Message::text("ออเดอร์ใหม่ค่ะ")];
+        outbox.add(Kind::NewOrder, To::User(alice), notice);
+        let (config, txn) = (config(20), s.db.begin().await.unwrap());
+        let queued = outbox.queue(&txn, &config.notification, Utc::now());
+        let queued = queued.await.unwrap().len();
+        txn.rollback().await.unwrap();
+        queued
+    };
+    assert_eq!(notified().await, 1);
+
+    let running = s.run();
+    store(&s.db, [event("u1", "unfollow", user(ALICE), json!({}))]).await;
+    running.wakeup.notify();
+    settled(&s.db, 1).await;
+    assert!(!s.user(ALICE).await.is_following);
+    assert_eq!(s.line.requests().len(), 0);
+    assert_eq!(notified().await, 0);
+
+    let follow = json!({ "follow": { "isUnblocked": true } });
+    store(&s.db, [event("f1", "follow", user(ALICE), follow)]).await;
+    running.wakeup.notify();
+    settled(&s.db, 2).await;
+    replied(&s, 1).await;
+    running.stop().await;
+    assert!(s.user(ALICE).await.is_following);
+    let village = config(20).village.name;
+    let back = vec![s.templates.welcome_back(None, &village), s.menu()];
+    assert_replies(s.replies(), &[("f1", back)]);
+    assert_eq!(notified().await, 1);
+}
+
+/// AC-13, FR-ONB-07 end to end: a seller taps "ลบบัญชี", confirms and is answered; their account
+/// is anonymized, the events they sent before go, and their seller's menu is unlinked once they
+/// are answered. Their LINE account, writing again, is someone new, asked to consent.
+#[tokio::test]
+async fn an_account_is_deleted_end_to_end() {
+    let s = setup().await;
+    let alice = onboarded(&s.db, ALICE).await;
+    user::Entity::update_many()
+        .col_expr(user::Column::MenuRoles, Expr::value(MenuRoles::Seller))
+        .filter(user::Column::Id.eq(alice))
+        .exec(&s.db)
+        .await
+        .unwrap();
+    let shop = testing::new_shop(alice).insert(&s.db).await.unwrap().id;
+    let running = s.run();
+    // Not by the inbox, as deleting the account deletes the events handled before
+    let answer = async |event: Value, n: usize| {
+        store(&s.db, [event]).await;
+        running.wakeup.notify();
+        replied(&s, n).await;
+        s.replies()[n - 1].1.clone()
+    };
+
+    let ask = answer(tapped("d1", ALICE, crate::users::DELETE_ACCOUNT), 1).await;
+    let confirm = offered(&ask, "ยืนยันลบ");
+    let deleted = answer(pressed("d2", ALICE, &confirm), 2).await;
+    let unlink = format!("/v2/bot/user/{ALICE}/richmenu");
+    requested(&s, |path, _| path == unlink).await;
+    let again = answer(said("d3", ALICE, "เมนู"), 3).await;
+    running.stop().await;
+
+    assert_eq!(deleted, json!([s.templates.account_deleted()]));
+    assert_eq!(again, json!([s.notice(&config(20), false)]));
+    let requests: Vec<_> = s
+        .line
+        .requests()
+        .into_iter()
+        .map(|request| (request.method.to_string(), request.path))
+        .collect();
+    let profile = format!("/v2/bot/profile/{ALICE}");
+    let expected = [
+        ("POST", REPLY),
+        ("POST", REPLY),
+        ("DELETE", unlink.as_str()),
+        ("GET", profile.as_str()),
+        ("POST", REPLY),
+    ];
+    let expected = expected.map(|(method, path)| (method.to_owned(), path.to_owned()));
+    assert_eq!(requests, expected);
+
+    let old = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (old.status, old.line_user_id, old.consent_version),
+        (user::Status::Deleted, None, None)
+    );
+    let new = s.user(ALICE).await;
+    assert_ne!(new.id, alice);
+    assert_eq!(
+        (new.status, new.consent_version),
+        (user::Status::Active, None)
+    );
+    let shop = shop::Entity::find_by_id(shop).one(&s.db).await.unwrap();
+    assert_eq!(shop.unwrap().status, shop::Status::Closed);
+    let events: Vec<_> = inbox(&s.db)
+        .await
+        .into_iter()
+        .map(|row| (row.event_id, row.status))
+        .collect();
+    let handled = |id: &str| (id.to_owned(), Status::Done);
+    assert_eq!(events, [handled("d2"), handled("d3")]);
 }
 
 /// The pushes LINE got, in order: each one's recipient and messages.

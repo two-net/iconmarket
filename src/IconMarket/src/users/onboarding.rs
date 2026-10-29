@@ -1,8 +1,9 @@
 //! Onboarding (§4.1): what a user does before anything but help and `#myid` works (FR-UI-12).
 //!
 //! Following the OA registers the user, or makes them a follower again, and greets them with
-//! the village's name (FR-ONB-01). They then accept the privacy notice by tapping "ยอมรับ",
-//! which records the version they accepted and when (FR-ONB-02); a new `privacy.noticeVersion`
+//! the village's name (FR-ONB-01); unfollowing stops pushes to them until then (FR-ONB-06). They
+//! then accept the privacy notice by tapping "ยอมรับ", which records the version they accepted
+//! and when (FR-ONB-02); a new `privacy.noticeVersion`
 //! asks everyone again at their next message (NFR-PRIV-01). If `village.joinCode` is set, they
 //! then type it; 5 wrong codes within an hour block further attempts for an hour (FR-ONB-03).
 //!
@@ -85,6 +86,28 @@ pub async fn followed(turn: &Turn<'_>, config: &Config) -> Result<Vec<Message>, 
             ],
         },
     )
+}
+
+/// `unfollow` by `line_user_id` at `now` (FR-ONB-06): they are no longer a follower, so nothing
+/// is pushed to them until they follow again. Their open orders go on. Nobody is registered: a
+/// user who never wrote has nothing to update. Returns their ID, if they are known.
+pub async fn unfollowed(
+    db: &impl ConnectionTrait,
+    line_user_id: &str,
+    now: DateTimeUtc,
+) -> Result<Option<i64>, DbErr> {
+    let unfollowed = user::Entity::update_many()
+        .col_expr(user::Column::IsFollowing, Expr::value(false))
+        .col_expr(user::Column::UpdatedAt, Expr::value(now))
+        .filter(user::Column::LineUserId.eq(line_user_id))
+        .filter(user::Column::IsFollowing.eq(true))
+        .exec_with_returning(db)
+        .await?;
+    let user_id = unfollowed.first().map(|user| user.id);
+    if let Some(user_id) = user_id {
+        info!(user_id, "user unfollowed");
+    }
+    Ok(user_id)
 }
 
 /// The answer to what a user not yet onboarded sent (FR-UI-12 step 2): the privacy notice until

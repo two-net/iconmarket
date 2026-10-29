@@ -84,6 +84,8 @@ pub struct Turn<'a> {
     notifications: Mutex<Outbox>,
     /// The users whose roles handling the event changed, behind a lock likewise
     roles_changed: Mutex<Vec<i64>>,
+    /// The LINE users whose rich menus go back to the default, behind a lock likewise
+    unlinked: Mutex<Vec<String>>,
     /// Whether the reply must reach the user even if its reply token can't be used
     essential: AtomicBool,
 }
@@ -96,6 +98,8 @@ pub struct Finished {
     pub outbox: Outbox,
     /// The users whose rich menus to relink, in ID order (FR-UI-10)
     pub relink: Vec<i64>,
+    /// The LINE users whose rich menus to unlink, as no user holds their ID any more
+    pub unlink: Vec<String>,
     /// Whether the reply is pushed instead should its reply token fail (FR-LINE-07)
     pub essential: bool,
 }
@@ -125,6 +129,7 @@ impl<'a> Turn<'a> {
             expired,
             notifications: Mutex::new(Outbox::default()),
             roles_changed: Mutex::new(Vec::new()),
+            unlinked: Mutex::new(Vec::new()),
             essential: AtomicBool::new(false),
         })
     }
@@ -183,6 +188,16 @@ impl<'a> Turn<'a> {
             .push(user_id);
     }
 
+    /// Links LINE user `line_user_id` back to the default rich menu once the event takes effect,
+    /// as their account is deleted (FR-ONB-07): no user holds their ID any more, so relinking
+    /// can't find them.
+    pub fn unlink_rich_menu(&self, line_user_id: String) {
+        self.unlinked
+            .lock()
+            .expect("no panic while held")
+            .push(line_user_id);
+    }
+
     /// Marks the reply essential, such as an order confirmation (FR-LINE-07): should its reply
     /// token have expired or fail, it is pushed instead of dropped.
     pub fn essential(&self) {
@@ -208,10 +223,12 @@ impl<'a> Turn<'a> {
         }
         relink.sort_unstable();
         relink.dedup();
+        let unlink = self.unlinked.into_inner().expect("no panic while held");
         Finished {
             messages,
             outbox,
             relink,
+            unlink,
             essential: self.essential.into_inner(),
         }
     }

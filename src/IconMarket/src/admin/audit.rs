@@ -48,6 +48,10 @@ pub enum Action {
     UserUnsuspended,
     /// Its owner's card in "ผู้ใช้" lifts a shop's suspension
     ShopUnsuspended,
+    // Accounts (FR-ONB-07)
+    /// By the user themself: anonymized, with their shop closed for good and its products
+    /// deleted
+    AccountDeleted,
     // Orders (FR-ORD-12)
     /// An open order, found by its number in "ผู้ใช้"
     OrderCancelled,
@@ -80,6 +84,7 @@ impl Action {
             Self::UserSuspended => "user.suspended",
             Self::UserUnsuspended => "user.unsuspended",
             Self::ShopUnsuspended => "shop.unsuspended",
+            Self::AccountDeleted => "user.deleted",
             Self::OrderCancelled => "order.cancelled",
             Self::PaymentConfirmed => "payment.confirmed",
             Self::RefundConfirmed => "payment.refunded",

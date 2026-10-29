@@ -53,7 +53,7 @@ use crate::users::access::{Actor, Denied};
 use crate::users::address::{self, AddressFlow};
 use crate::users::onboarding::{self, Said};
 use crate::users::report::{self, ReportFlow};
-use crate::users::{self, help, profile, roles};
+use crate::users::{self, deletion, help, profile, roles};
 use crate::{orders, payments};
 
 /// Typed by the operator to get their own LINE user ID, for `admin.lineUserIds` (FR-ONB-08)
@@ -94,6 +94,8 @@ pub struct Handled {
     pub pushes: Queued,
     /// The users whose rich menus to relink (FR-UI-10)
     pub relink: Vec<i64>,
+    /// The LINE users whose rich menus to unlink, their accounts deleted (FR-ONB-07)
+    pub unlink: Vec<String>,
 }
 
 /// What a user sent, as handed to the module that handles it.
@@ -157,6 +159,7 @@ pub async fn handle(
         messages,
         outbox,
         relink,
+        unlink,
         essential,
     } = match source {
         Source::User(line_user_id) => {
@@ -182,6 +185,7 @@ pub async fn handle(
         reply,
         pushes,
         relink,
+        unlink,
     })
 }
 
@@ -205,7 +209,7 @@ async fn user_event(
         }
         // Without registering anyone: a user who never wrote has nothing to update
         Kind::Unfollow => {
-            debug!(what = "unfollowing", issue = 36, "not built yet");
+            onboarding::unfollowed(txn, line_user_id, now).await?;
             return Ok(Default::default());
         }
         Kind::Message(content) => Input::new(content),
@@ -642,9 +646,7 @@ async fn tapped(
         action if action.starts_with(orders::PREFIX) => {
             return actions::tapped(turn, postback).await;
         }
-        users::DELETE_ACCOUNT => {
-            return Ok(not_built("deleting the account", 36, fallback(turn)));
-        }
+        users::DELETE_ACCOUNT => return deletion::tapped(turn).await,
         _ => {}
     }
     match Item::from_action(postback.action()) {

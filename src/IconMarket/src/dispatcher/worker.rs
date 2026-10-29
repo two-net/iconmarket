@@ -321,7 +321,8 @@ impl Worker {
                 debug!(event_type = %row.event_type, attempt, "event handled");
                 let nothing = handled.reply.is_none()
                     && handled.pushes.is_empty()
-                    && handled.relink.is_empty();
+                    && handled.relink.is_empty()
+                    && handled.unlink.is_empty();
                 return Ok(if nothing {
                     Settled::Silent
                 } else {
@@ -357,6 +358,7 @@ impl Worker {
             }),
             pushes: Queued::default(),
             relink: Vec::new(),
+            unlink: Vec::new(),
         }))
     }
 
@@ -369,6 +371,7 @@ impl Worker {
                     reply,
                     pushes,
                     relink,
+                    unlink,
                 },
             received_at,
             span,
@@ -384,7 +387,10 @@ impl Worker {
             span.in_scope(|| debug!(pushes = count, "notifications sent"));
         }
         if !relink.is_empty() {
-            self.relink(&relink).instrument(span).await;
+            self.relink(&relink).instrument(span.clone()).await;
+        }
+        if !unlink.is_empty() {
+            self.unlink(&unlink).instrument(span).await;
         }
     }
 
@@ -399,6 +405,17 @@ impl Worker {
         for &user in users {
             if let Err(e) = notifications::relink_rich_menus(db, line, menus, Some(user)).await {
                 warn!(user_id = user, error = %e, "cannot relink the user's rich menu");
+            }
+        }
+    }
+
+    /// Links the LINE users `line_user_ids` back to the default rich menu, their accounts
+    /// deleted. No user holds their IDs any more, so a link that fails is not tried again.
+    async fn unlink(&self, line_user_ids: &[String]) {
+        for line_user_id in line_user_ids {
+            match self.context.line.unlink_rich_menu(line_user_id).await {
+                Ok(()) => debug!("deleted account's rich menu unlinked"),
+                Err(e) => warn!(error = %e, "cannot unlink a deleted account's rich menu"),
             }
         }
     }

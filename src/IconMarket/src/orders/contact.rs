@@ -11,8 +11,10 @@
 //!   (FR-PAY-03).
 //! - Once it is over, neither sees any: the seller keeps only the buyer's display name, to know
 //!   whom an order was for, or who owes it (FR-PAY-07).
+//!
+//! A buyer who deleted their account shows as [`DELETED_ACCOUNT`] (FR-ONB-07).
 
-use crate::notifications::templates::{self, Contact, OrderContact};
+use crate::notifications::templates::{self, Contact, DELETED_ACCOUNT, OrderContact};
 use crate::payments;
 use crate::persistence::entity::order::{self, Fulfillment, PaymentMethod, Status};
 use crate::persistence::entity::order_event::ActorType;
@@ -26,7 +28,7 @@ pub(super) fn shown<'a>(
     buyer: &'a user::Model,
     viewer: ActorType,
 ) -> OrderContact<'a> {
-    let name = buyer.display_name.as_deref();
+    let name = buyer_name(buyer);
     match viewer {
         ActorType::Seller if order.status == Status::Pending => OrderContact::Buyer {
             name,
@@ -56,6 +58,15 @@ pub(super) fn shown<'a>(
         }
         ActorType::Buyer | ActorType::Admin | ActorType::System => OrderContact::None,
     }
+}
+
+/// What `buyer` is called on their orders: their display name, if LINE gave one, or that they
+/// deleted their account (FR-ONB-07).
+pub(super) fn buyer_name(buyer: &user::Model) -> Option<&str> {
+    if buyer.status == user::Status::Deleted {
+        return Some(DELETED_ACCOUNT);
+    }
+    buyer.display_name.as_deref()
 }
 
 /// Where `order` is delivered, from the copy of the address it keeps; `None` for pickup.
