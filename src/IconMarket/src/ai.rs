@@ -33,6 +33,7 @@ mod validate;
 use crate::config::AiFeatures;
 
 pub use gateway::Gateway;
+pub use limits::calls_today;
 #[allow(
     unused_imports,
     reason = "the features that call the AI are built by later issues"

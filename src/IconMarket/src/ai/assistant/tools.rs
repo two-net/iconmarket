@@ -11,14 +11,15 @@
 //! shops' (FR-AI-08), and given as data (FR-AI-06); what the user sees are the system's cards
 //! ([`Shown`]).
 //!
-//! Admins get only read tools (FR-AI-17): none of their own until "สถิติ" is built (#38), which
-//! adds `get_admin_overview`; sellers' `get_sales_summary` comes with "ยอดขาย" (#39).
+//! Admins get only read tools (FR-AI-17): `get_admin_overview`, the figures of "สถิติ" and its
+//! card. Sellers' `get_sales_summary` comes with "ยอดขาย" (#39).
 
 use sea_orm::{ActiveEnum, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde_json::{Value, json};
 use tracing::debug;
 
 use super::shown::Shown;
+use crate::admin::statistics::{self, Statistics};
 use crate::ai::{Gateway, Schema, Tool, ToolCall, as_data};
 use crate::catalog::browse;
 use crate::catalog::browse::listing::{self, Listing};
@@ -40,6 +41,7 @@ use crate::persistence::entity::{category, order, product, shop};
 use crate::thai::Money;
 use crate::users::access::{self, authorize};
 use crate::users::help::{self, Topic};
+use crate::users::roles::Roles;
 
 /// The most of the shop's products `get_my_products` tells of, the newest first
 const MY_PRODUCTS: u64 = 30;
@@ -68,10 +70,11 @@ enum Name {
     ProposeUpdateProduct,
     ProposeSetShopOpen,
     ProposeOrderAction,
+    GetAdminOverview,
 }
 
 impl Name {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::SearchProducts,
         Self::GetProduct,
         Self::SearchShops,
@@ -89,6 +92,7 @@ impl Name {
         Self::ProposeUpdateProduct,
         Self::ProposeSetShopOpen,
         Self::ProposeOrderAction,
+        Self::GetAdminOverview,
     ];
 
     fn as_str(self) -> &'static str {
@@ -110,6 +114,7 @@ impl Name {
             Self::ProposeUpdateProduct => "propose_update_product",
             Self::ProposeSetShopOpen => "propose_set_shop_open",
             Self::ProposeOrderAction => "propose_order_action",
+            Self::GetAdminOverview => "get_admin_overview",
         }
     }
 
@@ -117,7 +122,13 @@ impl Name {
         Self::ALL.into_iter().find(|tool| tool.as_str() == name)
     }
 
-    /// Whether only sellers get it (Table 4.9-A); the others are everyone's, buyers all.
+    /// Whether the actor with `roles` gets it (Table 4.9-A): sellers' tools a seller, admins'
+    /// an admin, and everyone's anyone.
+    fn offered_to(self, roles: Roles) -> bool {
+        (roles.seller || !self.sellers_only()) && (roles.admin || !self.admins_only())
+    }
+
+    /// Whether only sellers get it.
     fn sellers_only(self) -> bool {
         matches!(
             self,
@@ -128,6 +139,11 @@ impl Name {
                 | Self::ProposeSetShopOpen
                 | Self::ProposeOrderAction
         )
+    }
+
+    /// Whether only admins get it.
+    fn admins_only(self) -> bool {
+        matches!(self, Self::GetAdminOverview)
     }
 
     /// What the user must be allowed to do to use it at all (NFR-SEC-02); a tool acting on an
@@ -147,6 +163,7 @@ impl Name {
             | Self::ProposeCreateProduct
             | Self::ProposeUpdateProduct
             | Self::ProposeSetShopOpen => Some(access::Action::ManageShop),
+            Self::GetAdminOverview => Some(access::Action::Administer),
             // Their own orders, which they always see (FR-ADM-04); each order is checked
             Self::GetMyOrders
             | Self::ProposeCancelOrder
@@ -181,14 +198,15 @@ pub struct Toolbox {
 }
 
 impl Toolbox {
-    /// The tools for the actor's roles (FR-AI-01): everyone's, and sellers' to a seller.
+    /// The tools for the actor's roles (FR-AI-01): everyone's, sellers' to a seller and
+    /// admins' to an admin.
     pub async fn of(turn: &Turn<'_>) -> Result<Self, DbErr> {
         let roles = turn.actor.roles();
         let categories = categories::active(turn.db).await?;
         let topics: Vec<&str> = Topic::for_roles(roles).map(Topic::key).collect();
         let tools = Name::ALL
             .into_iter()
-            .filter(|name| roles.seller || !name.sellers_only())
+            .filter(|name| name.offered_to(roles))
             .map(|name| tool(name, &categories, &topics))
             .collect();
         Ok(Self { tools, categories })
@@ -341,6 +359,12 @@ fn tool(name: Name, categories: &[category::Model], topics: &[&str]) -> Tool {
                     .property("action", Schema::string().one_of(actions)),
             )
         }
+        Name::GetAdminOverview => (
+            "The market's statistics, for an admin: users, shops, orders by status placed today \
+             and in the last 7 and 30 days with the value of those completed, today's AI calls \
+             against the daily limit, and this month's pushes. The user sees them as a card.",
+            Schema::object(),
+        ),
     };
     Tool {
         name: name.as_str().to_owned(),
@@ -391,6 +415,7 @@ pub async fn run(
                 }
                 Name::ProposeSetShopOpen => propose_set_shop_open(turn, args, shown),
                 Name::ProposeOrderAction => propose_order_action(turn, args, shown).await?,
+                Name::GetAdminOverview => get_admin_overview(turn, config, shown).await?,
             }
         }
     };
@@ -850,6 +875,49 @@ fn order_json(turn: &Turn<'_>, listed: &ListedOrder, as_buyer: bool) -> Value {
 
 fn status(order: &order::Model) -> String {
     order.status.to_value().to_lowercase()
+}
+
+/// The figures of "สถิติ" (FR-ADM-06), for an admin: the model is told them, and the user
+/// sees their card.
+async fn get_admin_overview(
+    turn: &Turn<'_>,
+    config: &Config,
+    shown: &mut Shown,
+) -> Result<Value, DbErr> {
+    let figures = statistics::gather(turn.db, config, turn.now).await?;
+    shown.messages([statistics::card(turn.templates, &figures, turn.now)]);
+    Ok(overview(&figures))
+}
+
+/// `figures` as the model is told them: counts, statuses by their names in lower case, and
+/// amounts as shown.
+fn overview(figures: &Statistics) -> Value {
+    let orders: Vec<Value> = figures
+        .orders
+        .iter()
+        .map(|period| {
+            let by_status: serde_json::Map<String, Value> = period
+                .by_status
+                .iter()
+                .map(|(status, count)| (status.to_value().to_lowercase(), json!(count)))
+                .collect();
+            json!({
+                "days": period.days,
+                "byStatus": by_status,
+                "total": period.total(),
+                "completedValue": period.completed_value.to_string(),
+            })
+        })
+        .collect();
+    json!({
+        "users": { "total": figures.users, "newInLast7Days": figures.new_users },
+        "shops": { "approved": figures.approved_shops, "openNow": figures.open_shops },
+        "ordersPlaced": orders,
+        "aiCallsToday": figures.ai_calls.map(|calls| {
+            json!({ "made": calls.today, "dailyLimit": calls.limit })
+        }),
+        "pushesThisMonth": { "sent": figures.pushes.sent, "failed": figures.pushes.failed },
+    })
 }
 
 /// What a tool tells the model when it can't do what was asked: why, by name.

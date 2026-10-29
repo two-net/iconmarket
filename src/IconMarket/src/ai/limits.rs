@@ -66,6 +66,20 @@ async fn increment(db: &impl ConnectionTrait, key: String, limit: u32) -> Result
     Ok(added == 1)
 }
 
+/// The calls counted against the global limit on the day of `now` so far, for the admin
+/// statistics (FR-ADM-06).
+pub async fn calls_today(
+    db: &impl ConnectionTrait,
+    now: DateTime<Utc>,
+    time_zone: Tz,
+) -> Result<u64, DbErr> {
+    let (global, _) = keys(now, time_zone, None);
+    let counted = counter::Entity::find_by_id(global).one(db).await?;
+    Ok(counted.map_or(0, |counter| {
+        counter.value.try_into().expect("a counter only counts up")
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;

@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use url::Url;
 
+use crate::admin::statistics::Statistics;
 use crate::catalog::images::Rejected;
 use crate::catalog::products::Availability;
 use crate::config::{AiProvider, AppConfig, PoliteParticle};
@@ -799,6 +800,101 @@ impl Templates {
         }
         let page = carousel_page(cards, page, CATEGORIES_PER_PAGE, category_card, more);
         Message::flex(labels::CATEGORIES.as_str(), page).with_quick_reply(add)
+    }
+
+    /// "สถิติ" (FR-ADM-06, FR-NOT-05): `statistics` as they were `at`. Orders are a table of
+    /// their statuses by period, closed by the value of those completed. `again` shows them
+    /// again.
+    pub fn statistics(&self, statistics: &Statistics, at: DateTime<Utc>, again: Action) -> Message {
+        let count = |n: u64, unit: &str| format!("{} {unit}", thai::group_thousands(n));
+        let periods = &statistics.orders;
+        let mut orders = vec![table_row(
+            "สถานะ",
+            periods.iter().map(|period| match period.days {
+                1 => "วันนี้".to_owned(),
+                days => format!("{days} วัน"),
+            }),
+            true,
+        )];
+        for (i, &(status, _)) in periods[0].by_status.iter().enumerate() {
+            let counts = periods.iter().map(|period| period.by_status[i].1);
+            let counts = counts.map(thai::group_thousands);
+            orders.push(table_row(order_status_name(status), counts, false));
+        }
+        let totals = periods
+            .iter()
+            .map(|period| thai::group_thousands(period.total()));
+        orders.push(table_row("รวม", totals, true));
+        let values = periods
+            .iter()
+            .map(|period| period.completed_value.to_string());
+        orders.push(table_row("ยอดที่สำเร็จ", values, true));
+        let ai = statistics.ai_calls.map_or_else(
+            || "ปิดอยู่".to_owned(),
+            |calls| {
+                let limit = thai::group_thousands(calls.limit.into());
+                format!("{} / {limit} ครั้ง", thai::group_thousands(calls.today))
+            },
+        );
+        let sections = [
+            section(
+                "ผู้ใช้",
+                [
+                    row("ทั้งหมด", &count(statistics.users, "คน")),
+                    row("ใหม่ใน 7 วัน", &count(statistics.new_users, "คน")),
+                ],
+            ),
+            section(
+                "ร้านค้า",
+                [
+                    row("อนุมัติแล้ว", &count(statistics.approved_shops, "ร้าน")),
+                    row("เปิดอยู่ตอนนี้", &count(statistics.open_shops, "ร้าน")),
+                ],
+            ),
+            section("คำสั่งซื้อ", orders),
+            section("ผู้ช่วย AI", [row("ใช้วันนี้", &ai)]),
+            section(
+                "การแจ้งเตือนเดือนนี้",
+                [
+                    row("ส่งแล้ว", &count(statistics.pushes.sent, "ครั้ง")),
+                    row("ส่งไม่สำเร็จ", &count(statistics.pushes.failed, "ครั้ง")),
+                ],
+            ),
+        ];
+
+        let title = Text {
+            size: Some(Size::Lg),
+            weight: Some(Weight::Bold),
+            ..Text::new(labels::STATS.as_str())
+        };
+        let as_of = Text {
+            size: Some(Size::Xs),
+            color: Some(MUTED.to_owned()),
+            ..Text::new(format!("ณ {}", self.date_time(at)))
+        };
+        let mut body = Vec::new();
+        for (i, section) in sections.into_iter().enumerate() {
+            if i > 0 {
+                body.push(Separator::default().into());
+            }
+            body.push(section.into());
+        }
+        let again = Button {
+            style: Some(ButtonStyle::Secondary),
+            height: Some(ButtonHeight::Sm),
+            ..Button::new(again)
+        };
+        let card = Bubble {
+            size: Some(BubbleSize::Mega),
+            header: Some(FlexBox::vertical([title.into(), as_of.into()])),
+            body: Some(FlexBox {
+                spacing: Some(Spacing::Lg),
+                ..FlexBox::vertical(body)
+            }),
+            footer: Some(FlexBox::vertical([again.into()])),
+            ..Bubble::default()
+        };
+        Message::flex(labels::STATS.as_str(), card)
     }
 
     /// "ซื้อของ" (FR-SRCH-01): the active categories, `choices` a page of them.
@@ -4773,6 +4869,36 @@ fn row(label: &str, value: &str) -> Component {
     FlexBox::baseline([label.into(), value.into()]).into()
 }
 
+/// A row of a table: its `label`, then its `values` in narrower columns, aligned right; in bold
+/// for a heading or a total.
+fn table_row(label: &str, values: impl IntoIterator<Item = String>, bold: bool) -> Component {
+    let weight = bold.then_some(Weight::Bold);
+    let label = Text {
+        size: Some(Size::Xs),
+        weight,
+        color: (!bold).then(|| MUTED.to_owned()),
+        wrap: Some(true),
+        flex: Some(3),
+        ..Text::new(label)
+    };
+    let values = values.into_iter().map(|value| {
+        let value = Text {
+            size: Some(Size::Xs),
+            weight,
+            wrap: Some(true),
+            align: Some(Align::End),
+            flex: Some(2),
+            ..Text::new(value)
+        };
+        value.into()
+    });
+    FlexBox {
+        spacing: Some(Spacing::Sm),
+        ..FlexBox::horizontal(std::iter::once(label.into()).chain(values))
+    }
+    .into()
+}
+
 /// A line of a section on its own.
 fn line(text: &str) -> Component {
     let text = Text {
@@ -5871,6 +5997,10 @@ pub mod labels {
         ACTIVATE = "เปิดใช้งาน",
         DELETE = "ลบ",
         CONFIRM_DELETE = "ยืนยันลบ",
+
+        // Statistics (FR-ADM-06)
+        /// Shows the statistics again, as they are now
+        REFRESH = "ดูตัวเลขล่าสุด",
 
         // Help topics (FR-HELP-01), with MY_DATA and DELETE_ACCOUNT
         HOW_TO_ORDER = "วิธีสั่งซื้อ",

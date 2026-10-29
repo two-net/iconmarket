@@ -16,6 +16,7 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
 
 use super::*;
+use crate::admin::statistics;
 use crate::ai::request::Request;
 use crate::ai::testing::{Turn as Says, scripted};
 use crate::config::{self, SessionConfig};
@@ -61,6 +62,9 @@ const SELLERS: [&str; 6] = [
     "propose_set_shop_open",
     "propose_order_action",
 ];
+
+/// Admins' besides, which only read (FR-AI-17)
+const ADMINS: [&str; 1] = ["get_admin_overview"];
 
 fn now() -> DateTimeUtc {
     testing::at()
@@ -259,9 +263,9 @@ fn quick_replies(message: &Message) -> Vec<&str> {
         })
 }
 
-/// FR-AI-01, FR-AI-17: everyone gets the buyers' tools and sellers theirs besides; admins get
-/// no tool of their own to change anything. The rules, the date and time, the roles and how
-/// data is given go with them.
+/// FR-AI-01, FR-AI-17: everyone gets the buyers' tools, sellers theirs besides and admins
+/// theirs, none of which changes anything. The rules, the date and time, the roles and how data
+/// is given go with them.
 #[tokio::test]
 async fn the_tools_offered_follow_the_users_roles() {
     let s = setup().await;
@@ -293,12 +297,64 @@ async fn the_tools_offered_follow_the_users_roles() {
     };
     admin.update(&s.db).await.unwrap();
     let (_, requests) = s.asks(s.buyer(), "สวัสดี", hello()).await;
-    assert_eq!(tools(&requests[0]), EVERYONES);
+    let admins: Vec<&str> = EVERYONES.into_iter().chain(ADMINS).collect();
+    assert_eq!(tools(&requests[0]), admins);
     assert!(
         requests[0]
             .system
             .contains("an admin, who may only read through you")
     );
+}
+
+/// FR-ADM-06, FR-AI-04: an admin asks how the market is doing. The model is told the figures of
+/// "สถิติ" and the user sees its card, built from the database.
+#[tokio::test]
+async fn an_admin_reads_the_statistics() {
+    let s = setup().await;
+    let admin = user::ActiveModel {
+        id: Set(s.buyer()),
+        is_admin: Set(true),
+        ..Default::default()
+    };
+    admin.update(&s.db).await.unwrap();
+    s.order(s.buyer(), s.market.shop.id, 1).await;
+    // The calls made today so far; the gateway counts its own by the clock, not by `now()`
+    let made = counter::ActiveModel {
+        key: Set("ai:20261022".to_owned()),
+        value: Set(5),
+    };
+    made.insert(&s.db).await.unwrap();
+
+    let says = [
+        calls("get_admin_overview", json!({})),
+        Says::Text("วันนี้มีออเดอร์ใหม่ 1 รายการค่ะ"),
+    ];
+    let (reply, requests) = s.asks(s.buyer(), "วันนี้ตลาดเป็นยังไงบ้าง", says).await;
+    let placed = |days: u64| {
+        json!({
+            "days": days,
+            "byStatus": {
+                "pending": 1, "accepted": 0, "ready": 0, "delivering": 0,
+                "completed": 0, "rejected": 0, "cancelled": 0, "expired": 0,
+            },
+            "total": 1,
+            "completedValue": "฿0",
+        })
+    };
+    let overview = json!({
+        "users": { "total": 2, "newInLast7Days": 2 },
+        "shops": { "approved": 1, "openNow": 1 },
+        "ordersPlaced": [placed(1), placed(7), placed(30)],
+        "aiCallsToday": { "made": 5, "dailyLimit": 2000 },
+        "pushesThisMonth": { "sent": 0, "failed": 0 },
+    });
+    assert_eq!(told(&requests[1]), [overview]);
+
+    assert_eq!(text(&reply[0]), "วันนี้มีออเดอร์ใหม่ 1 รายการค่ะ");
+    let figures = statistics::gather(&s.db, &s.config, now()).await.unwrap();
+    let mut card = reply[1].clone();
+    card.quick_reply = None;
+    assert_eq!(card, statistics::card(&s.templates, &figures, now()));
 }
 
 /// FR-ADM-04: a suspended user is told why, and the AI isn't asked.

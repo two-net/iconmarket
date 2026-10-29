@@ -34,7 +34,7 @@ use super::{Finished, Turn};
 use crate::admin::accounts;
 use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
-use crate::admin::review;
+use crate::admin::{review, statistics};
 use crate::ai::{Feature, assistant};
 use crate::catalog::browse;
 use crate::catalog::browse::search::{self, SearchFlow};
@@ -702,8 +702,8 @@ async fn menu_item(
         Cart => return cart::tapped(turn, postback).await,
         MyOrders => return lists::mine(turn, postback).await,
         ShopOrders => return lists::shop(turn, postback).await,
+        Stats => return statistics::tapped(turn, &context.config).await,
         Sales => 39,
-        Stats => 38,
         Announcements => 49,
     };
     Ok(not_built(item.action(), issue, fallback(turn)))
