@@ -1,5 +1,5 @@
-//! Acting on an order (Table 4.6-B, FR-ORD-02 – FR-ORD-09, FR-ORD-12): the buttons of its cards
-//! and notices, for its seller, its buyer and the admins.
+//! Acting on an order (Table 4.6-B, FR-ORD-02 – FR-ORD-09, FR-ORD-12, FR-PAY-03, FR-PAY-07 –
+//! FR-PAY-09): the buttons of its cards and notices, for its seller, its buyer and the admins.
 //!
 //! The seller is told of a new order with "รับออเดอร์" and "ปฏิเสธ" (FR-ORD-03), as in Appendix
 //! A.4, then moves it on: "พร้อมให้รับ" for pickup or "กำลังไปส่ง" for delivery, then
@@ -8,6 +8,13 @@
 //! receipt with "ได้รับของแล้ว" (FR-ORD-09). An admin finds an order by its number in "ผู้ใช้" and
 //! may cancel it while it is open (FR-ORD-12). Rejecting, and cancelling as the seller or an
 //! admin, ask why: one of the reasons of FR-ORD-04, or one typed after "อื่นๆ".
+//!
+//! The buyer of an order paid by PromptPay is told, as it is accepted, what to transfer where
+//! (FR-PAY-03). The seller records it paid with "ได้รับเงินแล้ว": a transfer once it arrives,
+//! and cash as they hand the order over, when they are asked "ได้รับเงินแล้วหรือยัง?"; one
+//! not paid then stays under "ค้างชำระ" (FR-PAY-07). A paid order cancelled is to be refunded,
+//! which they record with "คืนเงินแล้ว" (FR-PAY-09). An admin may record either from the
+//! order's card in "ผู้ใช้"; its buyer never can (FR-PAY-08).
 //!
 //! Every move goes through the [lifecycle](super::lifecycle), which checks it again against the
 //! order as it is now: a button of a card the order has moved on from, or tapped again, shows
@@ -27,8 +34,9 @@ use tracing::info;
 
 use super::lifecycle::{self, By, Moved};
 use super::{
-    ACCEPT, ADMIN_CANCEL, CANCEL_ORDER, COMPLETE, DELIVERING, GRANT_CANCEL, KEEP, ORDER_ID, READY,
-    RECEIVED, REJECT, REQUEST_CANCEL, SELLER_CANCEL, cart, contact,
+    ACCEPT, ADMIN_CANCEL, CANCEL_ORDER, COMPLETE, DELIVERING, GRANT_CANCEL, KEEP, MARK_PAID,
+    MARK_REFUNDED, NOT_PAID, ORDER_ID, READY, RECEIVED, REJECT, REQUEST_CANCEL, SELLER_CANCEL,
+    cart, contact,
 };
 use crate::admin::audit::{self, Entry, Target};
 use crate::admin::reason::{REASON_CHARS, Refused, reason};
@@ -37,10 +45,12 @@ use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, Turn};
 use crate::line::{Action, Message, QuickReply};
 use crate::notifications::templates::{
-    BUYER_ASKED_TO_CANCEL, FoundOrder, NewOrder, OrderContact, OrderLine, Templates, labels,
+    BUYER_ASKED_TO_CANCEL, FoundOrder, NewOrder, OrderContact, OrderLine, PromptPayDue, Templates,
+    labels,
 };
 use crate::notifications::{Kind, To};
-use crate::persistence::entity::order::{self, PaymentStatus, Status};
+use crate::payments::{self, Recorded};
+use crate::persistence::entity::order::{self, PaymentMethod, PaymentStatus, Status};
 use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{order_item, shop, user};
 use crate::thai::Label;
@@ -144,6 +154,9 @@ pub async fn tapped(turn: &Turn<'_>, postback: &Postback) -> Result<Vec<Message>
         REQUEST_CANCEL => request_cancel(turn, id).await,
         GRANT_CANCEL => grant_cancel(turn, id).await,
         KEEP => keep(turn, id).await,
+        MARK_PAID => pays(turn, id, PaymentStatus::Paid).await,
+        MARK_REFUNDED => pays(turn, id, PaymentStatus::Refunded).await,
+        NOT_PAID => not_paid(turn, id).await,
         _ => Ok(vec![turn.templates.denied(Denied::NotFound)]),
     }
 }
@@ -238,7 +251,8 @@ pub(super) fn notify_new_order(
 }
 
 /// `order` as an admin finds it by its number in "ผู้ใช้" (FR-ADM-04), with "ยกเลิกออเดอร์" while
-/// it is open (FR-ORD-12).
+/// it is open (FR-ORD-12), and "ได้รับเงินแล้ว" or "คืนเงินแล้ว" while it can be recorded so
+/// (FR-PAY-08).
 pub async fn found(
     db: &impl ConnectionTrait,
     templates: &Templates,
@@ -252,23 +266,35 @@ pub async fn found(
         buyer: parties.buyer.display_name.as_deref(),
         total: order.total,
         payment: order.payment_method,
+        payment_status: order.payment_status,
         placed_at: order.created_at,
     };
     Ok(templates.order_found(&found, buttons(order, ActorType::Admin)))
 }
 
 /// What `viewer` can do about `order` as it is now, as buttons: only the moves the lifecycle
-/// allows them (Table 4.6-B). The seller gets the next step, as in Appendix A.4, then
-/// "ปฏิเสธ" or "ยกเลิกออเดอร์", or, while the buyer asks to cancel, the answers to that; the buyer
+/// allows them (Table 4.6-B), and the payments they may record (FR-PAY-08). The seller gets the
+/// next step, as in Appendix A.4, "ได้รับเงินแล้ว" or "คืนเงินแล้ว", then "ปฏิเสธ" or
+/// "ยกเลิกออเดอร์", or, while the buyer asks to cancel, the answers to that; the buyer
 /// "ยกเลิกออเดอร์" until it is accepted, then "ได้รับของแล้ว" once it is ready or on its way, and
-/// "ขอยกเลิก"; an admin "ยกเลิกออเดอร์" while it is open.
+/// "ขอยกเลิก"; an admin the payments, and "ยกเลิกออเดอร์" while it is open.
 pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
     let can = |to| lifecycle::allowed(order.status, to, viewer, order.fulfillment);
-    let acts = |action, label: &Label| {
-        Postback::new(action)
-            .with_int(ORDER_ID, order.id)
-            .button(label.clone())
-    };
+    let acts = |action, label: &Label| button(order, action, label);
+    let records = [
+        (PaymentStatus::Paid, MARK_PAID, &labels::MARK_PAID),
+        (
+            PaymentStatus::Refunded,
+            MARK_REFUNDED,
+            &labels::MARK_REFUNDED,
+        ),
+    ]
+    .into_iter()
+    .filter(|&(to, ..)| {
+        let (from, method) = (order.payment_status, order.payment_method);
+        payments::allowed(from, to, viewer, order.status, method)
+    })
+    .map(|(_, action, label)| acts(action, label));
     let asked = order.cancel_requested_at.is_some();
     let mut buttons = Vec::new();
     match viewer {
@@ -282,6 +308,7 @@ pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
             if let Some(&(_, action, label)) = steps.iter().find(|&&(to, ..)| can(to)) {
                 buttons.push(acts(action, label));
             }
+            buttons.extend(records);
             if can(Status::Rejected) {
                 buttons.push(acts(REJECT, &labels::REJECT_ORDER));
             }
@@ -304,6 +331,7 @@ pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
             }
         }
         ActorType::Admin => {
+            buttons.extend(records);
             if can(Status::Cancelled) {
                 buttons.push(acts(ADMIN_CANCEL, &labels::CANCEL_ORDER));
             }
@@ -311,6 +339,22 @@ pub(super) fn buttons(order: &order::Model, viewer: ActorType) -> Vec<Action> {
         ActorType::System => {}
     }
     buttons
+}
+
+/// The button `label` that acts on `order` as `action` says.
+fn button(order: &order::Model, action: &'static str, label: &Label) -> Action {
+    Postback::new(action)
+        .with_int(ORDER_ID, order.id)
+        .button(label.clone())
+}
+
+/// "ได้รับเงินแล้ว" and "ยังไม่ได้รับ": the seller's answers to whether `order`, handed over, was
+/// paid (FR-PAY-07).
+fn paid_or_not(order: &order::Model) -> Vec<Action> {
+    vec![
+        button(order, MARK_PAID, &labels::MARK_PAID),
+        button(order, NOT_PAID, &labels::NOT_PAID),
+    ]
 }
 
 /// Whether the buyer may ask to cancel `order` (FR-ORD-07): once accepted, while its seller
@@ -415,8 +459,11 @@ async fn apply(
 }
 
 /// The notices telling the other party that `actor` moved `order`, with `parties`, to where it
-/// is now (Table 4.6-B, Table 4.8-A): the buyer of every move they didn't make (FR-ORD-08), and
-/// the seller of a cancellation they didn't make. Expiry has its own ([`expired_notices`]).
+/// is now (Table 4.6-B, Table 4.8-A): the buyer of every move they didn't make (FR-ORD-08), with
+/// what to transfer where once one paid by PromptPay is accepted, whatever
+/// `notification.orderStatusToBuyer` says, as they can't pay without it (FR-PAY-03); the seller
+/// of a cancellation they didn't make, and, asked whether they got the money, of the buyer
+/// receiving one not paid (FR-PAY-07). Expiry has its own ([`expired_notices`]).
 fn notices(
     templates: &Templates,
     order: &order::Model,
@@ -431,11 +478,19 @@ fn notices(
     let carry_on = || vec![cart::continue_shopping()];
     let status = Kind::OrderStatus;
     match (order.status, actor) {
+        (Status::Accepted, _) if order.payment_method == PaymentMethod::PromptPay => {
+            let due = PromptPayDue {
+                id: parties.shop.promptpay_id.as_deref(),
+                total: order.total,
+            };
+            let notice = templates.order_accepted_notice(shop, number, Some(&due), next);
+            vec![(Kind::PaymentDetails, buyer, notice)]
+        }
         (Status::Accepted, _) => {
             vec![(
                 status,
                 buyer,
-                templates.order_accepted_notice(shop, number, next),
+                templates.order_accepted_notice(shop, number, None, next),
             )]
         }
         (Status::Ready | Status::Delivering, _) | (Status::Completed, ActorType::Seller) => {
@@ -458,14 +513,19 @@ fn notices(
         (Status::Cancelled, ActorType::Admin) => {
             let to_buyer =
                 templates.order_cancelled_notice(shop, number, true, reason, refund, carry_on());
-            let to_seller = templates.order_cancelled_by_admin_notice(number, reason, refund);
+            let seller_can = buttons(order, ActorType::Seller);
+            let to_seller =
+                templates.order_cancelled_by_admin_notice(number, reason, refund, seller_can);
             vec![
                 (status, buyer, to_buyer),
                 (Kind::OrderCancelled, seller, to_seller),
             ]
         }
-        // The buyer's own "ได้รับของแล้ว"; the seller is asked about an unpaid one by #35
-        // (FR-PAY-07)
+        // The buyer's own "ได้รับของแล้ว" (FR-ORD-09)
+        (Status::Completed, _) if payments::UNPAID.contains(&order.payment_status) => {
+            let ask = templates.ask_paid(number, order.total, true, paid_or_not(order));
+            vec![(Kind::PaymentToConfirm, seller, ask)]
+        }
         (Status::Completed, _) => Vec::new(),
         // Moves no user makes here: placing, and expiry, tell of themselves
         (Status::Pending | Status::Expired, _) | (Status::Cancelled, ActorType::System) => {
@@ -475,7 +535,8 @@ fn notices(
 }
 
 /// What `actor` is told once they moved `order`, with `parties`, and what they can do next:
-/// how to reach the buyer once the seller accepted it, as in Appendix A.4 (FR-ORD-11).
+/// how to reach the buyer once the seller accepted it, as in Appendix A.4 (FR-ORD-11), and
+/// whether they got the money once they handed it over unpaid (FR-PAY-07).
 fn reply(
     templates: &Templates,
     order: &order::Model,
@@ -484,11 +545,18 @@ fn reply(
 ) -> Message {
     let (number, next) = (&order.order_number, buttons(order, actor));
     let shown = contact::shown(order, &parties.shop, &parties.buyer, actor);
+    let unpaid = payments::UNPAID.contains(&order.payment_status);
     let reply = match (order.status, shown) {
         (Status::Accepted, OrderContact::BuyerFull { contact, .. }) => {
             templates.order_accepted(number, &contact, next)
         }
-        (status, _) => templates.order_moved(number, status, actor, next),
+        (Status::Completed, _) if actor == ActorType::Seller && unpaid => {
+            templates.ask_paid(number, order.total, false, paid_or_not(order))
+        }
+        (status, _) => {
+            let refund = order.payment_status == PaymentStatus::RefundDue;
+            templates.order_moved(number, status, actor, refund, next)
+        }
     };
     if actor == ActorType::Buyer && order.status.is_final() {
         let carry_on = [cart::continue_shopping(), cart::menu_button()];
@@ -501,7 +569,14 @@ fn reply(
 /// the buttons that now apply (FR-UI-13, FR-ORD-02).
 fn now_is(templates: &Templates, order: &order::Model, viewer: ActorType) -> Message {
     let buttons = buttons(order, viewer);
-    templates.order_now(&order.order_number, order.status, buttons)
+    templates.order_now(&order.order_number, order.status, None, buttons)
+}
+
+/// `order` as it is now, with how far its payment is, for `viewer`, as what they asked to
+/// record of it can't be (FR-PAY-08): recorded meanwhile, or the same button tapped again.
+fn paid_now_is(templates: &Templates, order: &order::Model, viewer: ActorType) -> Message {
+    let (number, payment) = (&order.order_number, Some(order.payment_status));
+    templates.order_now(number, order.status, payment, buttons(order, viewer))
 }
 
 /// Asks why order `id` is moved as `act` says, if the actor may and the lifecycle allows it
@@ -620,4 +695,74 @@ async fn keep(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr> {
     turn.essential();
     let next = buttons(&order, ActorType::Seller);
     Ok(vec![templates.cancellation_kept(number, next)])
+}
+
+/// The seller's, or an admin's, "ได้รับเงินแล้ว" or "คืนเงินแล้ว" on order `id`: records it as
+/// `to` if it may be from where it is now (FR-PAY-08), tells the buyer, and audits an admin's.
+/// Shows the order as it is otherwise.
+async fn pays(turn: &Turn<'_>, id: i64, to: PaymentStatus) -> Result<Vec<Message>, DbErr> {
+    let actor = match payer(turn, id).await? {
+        Ok(actor) => actor,
+        Err(denied) => return Ok(vec![turn.denied(denied)]),
+    };
+    let by = By::user(actor, turn.actor.user.id);
+    let templates = turn.templates;
+    let order = match payments::record(turn.db, id, to, by, turn.now).await? {
+        Recorded::Done { order, .. } => order,
+        Recorded::Refused(order) => return Ok(vec![paid_now_is(templates, &order, actor)]),
+        Recorded::NotFound => return Ok(vec![templates.denied(Denied::NotFound)]),
+    };
+    let by_admin = actor == ActorType::Admin;
+    if by_admin {
+        let action = match to {
+            PaymentStatus::Refunded => audit::Action::RefundConfirmed,
+            _ => audit::Action::PaymentConfirmed,
+        };
+        let entry = Entry {
+            actor_id: Some(turn.actor.user.id),
+            action,
+            target: Target::Order(order.id),
+            reason: None,
+            details: audit::details([("order_number", json!(order.order_number))]),
+        };
+        audit::record(turn.db, turn.now, [entry]).await?;
+    }
+    let parties = Parties::of(turn.db, &order).await?;
+    let (number, shop) = (&order.order_number, &parties.shop.name);
+    let next = buttons(&order, ActorType::Buyer);
+    let told = templates.payment_recorded_notice(shop, number, to, by_admin, next);
+    turn.notify(Kind::OrderStatus, To::User(order.buyer_id), vec![told]);
+    turn.essential();
+    let next = buttons(&order, actor);
+    Ok(vec![templates.payment_recorded(number, to, next)])
+}
+
+/// As whom the actor records the payment of order `id` (FR-PAY-08): as its seller if its shop
+/// is theirs, else as an admin if they are one.
+async fn payer(turn: &Turn<'_>, id: i64) -> Result<Result<ActorType, Denied>, DbErr> {
+    let as_seller = may_act(turn, id, ActorType::Seller).await?;
+    if as_seller.is_err() && turn.actor.user.is_admin {
+        let as_admin = may_act(turn, id, ActorType::Admin).await?;
+        return Ok(as_admin.map(|()| ActorType::Admin));
+    }
+    Ok(as_seller.map(|()| ActorType::Seller))
+}
+
+/// The seller's "ยังไม่ได้รับ" when asked whether order `id`, handed over, was paid (FR-PAY-07):
+/// nothing changes, and it stays under "ค้างชำระ" until they record it paid. Shows the order as
+/// it is if it was recorded meanwhile.
+async fn not_paid(turn: &Turn<'_>, id: i64) -> Result<Vec<Message>, DbErr> {
+    if let Err(denied) = may_act(turn, id, ActorType::Seller).await? {
+        return Ok(vec![turn.denied(denied)]);
+    }
+    let templates = turn.templates;
+    let Some(order) = order::Entity::find_by_id(id).one(turn.db).await? else {
+        return Ok(vec![templates.denied(Denied::NotFound)]);
+    };
+    let unpaid = payments::UNPAID.contains(&order.payment_status);
+    if order.status != Status::Completed || !unpaid {
+        return Ok(vec![paid_now_is(templates, &order, ActorType::Seller)]);
+    }
+    let next = buttons(&order, ActorType::Seller);
+    Ok(vec![templates.left_unpaid(&order.order_number, next)])
 }

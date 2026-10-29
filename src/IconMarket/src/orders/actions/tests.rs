@@ -194,6 +194,17 @@ impl Setup {
         self.tapped(user_id, data).await.0
     }
 
+    /// Order `id` in full, as user `user_id` sees it from "ดูรายละเอียด", as LINE gets it.
+    async fn details(&self, user_id: i64, id: i64) -> String {
+        let postback = Postback::parse(&data(crate::orders::VIEW, id)).unwrap();
+        let (shown, _) = self
+            .handle(user_id, async |turn| {
+                crate::orders::lists::view(turn, &postback).await
+            })
+            .await;
+        serde_json::to_string(&shown).unwrap()
+    }
+
     /// User `user_id` types `text` as the reason asked for.
     async fn types(&self, user_id: i64, text: &str) -> Vec<Message> {
         let input = Input::Text(text.to_owned());
@@ -225,6 +236,29 @@ impl Setup {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    /// `order`, paid by `method`, now `payment`.
+    async fn paid_by(
+        &self,
+        order: &order::Model,
+        method: PaymentMethod,
+        payment: PaymentStatus,
+    ) -> order::Model {
+        let mut row: order::ActiveModel = order.clone().into();
+        row.payment_method = Set(method);
+        row.payment_status = Set(payment);
+        row.update(&self.db).await.unwrap()
+    }
+
+    /// The shop takes PromptPay to `id`, or no longer does.
+    async fn set_promptpay(&self, id: Option<&str>) {
+        let row = shop::ActiveModel {
+            id: Unchanged(self.shop.id),
+            promptpay_id: Set(id.map(str::to_owned)),
+            ..Default::default()
+        };
+        row.update(&self.db).await.unwrap();
     }
 
     async fn stock(&self) -> Option<i32> {
@@ -512,6 +546,7 @@ async fn the_seller_accepts_as_in_appendix_a4() {
     let told = s.templates.order_accepted_notice(
         &s.shop.name,
         &order.order_number,
+        None,
         vec![request.button(labels::REQUEST_CANCEL.clone())],
     );
     assert_eq!(
@@ -584,9 +619,22 @@ async fn the_seller_moves_an_order_on_until_handed_over() {
         ]
     );
 
+    // Handed over unpaid, the seller is asked whether they got the money (FR-PAY-07)
     let handed = s.taps(s.seller.id, &data(COMPLETE, id)).await;
-    assert_eq!(lines(&handed[0]), ["ออเดอร์ IM-20261025-0001 สำเร็จแล้วค่ะ"]);
-    assert_eq!(buttons_of(&handed[0]), []);
+    assert_eq!(
+        lines(&handed[0]),
+        [
+            "ออเดอร์ IM-20261025-0001 สำเร็จแล้วค่ะ",
+            "ได้รับเงิน ฿220 แล้วหรือยังคะ",
+        ]
+    );
+    assert_eq!(
+        buttons_of(&handed[0]),
+        [
+            ("ได้รับเงินแล้ว", data(MARK_PAID, id).as_str()),
+            ("ยังไม่ได้รับ", data(NOT_PAID, id).as_str()),
+        ]
+    );
     let order = s.get(id).await;
     assert_eq!(
         (order.status, order.completed_at),
@@ -953,7 +1001,40 @@ async fn the_buyer_confirms_receipt() {
             None
         )]
     );
-    // The seller is asked about payment by #35, not told here
+    // Not paid, so the seller is asked whether they got the money (FR-PAY-07)
+    let asked = s.templates.ask_paid(
+        &order.order_number,
+        order.total,
+        true,
+        vec![
+            Postback::new(MARK_PAID)
+                .with_int(ORDER_ID, order.id)
+                .button(labels::MARK_PAID.clone()),
+            Postback::new(NOT_PAID)
+                .with_int(ORDER_ID, order.id)
+                .button(labels::NOT_PAID.clone()),
+        ],
+    );
+    assert_eq!(
+        lines(&asked),
+        [
+            "ลูกค้าแจ้งว่าได้รับออเดอร์ IM-20261025-0002 แล้วค่ะ",
+            "ได้รับเงิน ฿230 แล้วหรือยังคะ",
+        ]
+    );
+    assert_eq!(
+        s.pushes().await,
+        [push("payment.to_confirm", SELLER, asked)]
+    );
+
+    // Paid already, there is nothing to ask
+    s.forget_pushes().await;
+    let paid = s.order(Status::Ready, order::Fulfillment::Pickup).await;
+    let paid = s
+        .paid_by(&paid, PaymentMethod::PromptPay, PaymentStatus::Paid)
+        .await;
+    s.taps(s.buyer.id, &data(RECEIVED, paid.id)).await;
+    assert_eq!(s.get(paid.id).await.status, Status::Completed);
     assert_eq!(s.pushes().await, []);
 }
 
@@ -986,9 +1067,9 @@ async fn an_admin_cancels_an_open_order_for_a_reason() {
         false,
         carry_on,
     );
-    let to_seller = s
-        .templates
-        .order_cancelled_by_admin_notice(number, "ร้านไม่ส่งของ", false);
+    let to_seller =
+        s.templates
+            .order_cancelled_by_admin_notice(number, "ร้านไม่ส่งของ", false, Vec::new());
     assert_eq!(
         lines(&to_seller),
         [
@@ -1123,7 +1204,7 @@ async fn an_order_found_by_its_number_offers_cancelling_while_open() {
             "สถานะ: กำลังไปส่ง",
             "ร้านป้าแดง",
             "ลูกค้า: สมชาย",
-            "รวม ฿230 · เงินสดตอนรับของ",
+            "รวม ฿230 · เงินสดตอนรับของ · ยังไม่ชำระ",
             "สั่งเมื่อ 22 ต.ค. 2569 14:30",
         ]
     );
@@ -1134,4 +1215,352 @@ async fn an_order_found_by_its_number_offers_cancelling_while_open() {
     let expired = s.order(Status::Expired, order::Fulfillment::Pickup).await;
     let card = found(&s.db, &s.templates, &expired).await.unwrap();
     assert_eq!(buttons_of(&card), []);
+    // One handed over unpaid may be recorded paid (FR-PAY-08)
+    let owed = s.order(Status::Completed, order::Fulfillment::Pickup).await;
+    let card = found(&s.db, &s.templates, &owed).await.unwrap();
+    assert_eq!(
+        buttons_of(&card),
+        [("ได้รับเงินแล้ว", data(MARK_PAID, owed.id).as_str())]
+    );
+}
+
+/// FR-PAY-03: once the seller accepts an order paid by PromptPay, the buyer is told the shop's
+/// PromptPay ID, its name and the exact amount, even with `notification.orderStatusToBuyer` off,
+/// as they can't pay without it; if the shop took its ID away since, to ask the shop for it.
+/// While they are yet to pay, the order's card shows the ID too.
+#[tokio::test]
+async fn a_promptpay_order_accepted_says_what_to_transfer_where() {
+    let s = setup().await;
+    s.switches.set(NotificationConfig {
+        order_status_to_buyer: false,
+        ..s.config.notification
+    });
+    s.set_promptpay(Some("0812345678")).await;
+    let placed = s.order(Status::Pending, order::Fulfillment::Delivery).await;
+    let placed = s
+        .paid_by(&placed, PaymentMethod::PromptPay, PaymentStatus::Unpaid)
+        .await;
+    s.taps(s.seller.id, &data(ACCEPT, placed.id)).await;
+    let pushes = s.pushes().await;
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(
+        (pushes[0].0.as_str(), pushes[0].1.as_str()),
+        ("payment.promptpay", BUYER)
+    );
+    let told = Pushed::of(&pushes[0].2);
+    assert_eq!(
+        told.lines,
+        [
+            "ร้านป้าแดงรับออเดอร์ IM-20261025-0001 แล้วค่ะ กำลังเตรียมของ",
+            "โอนพร้อมเพย์ ฿230",
+            "เลขพร้อมเพย์: 081-234-5678",
+            "ชื่อร้าน: ร้านป้าแดง",
+            "โอนแล้วร้านจะยืนยันเมื่อได้รับเงินค่ะ",
+        ]
+    );
+    assert_eq!(
+        told.buttons(),
+        [("ขอยกเลิก", data(REQUEST_CANCEL, placed.id).as_str())]
+    );
+    let card = s.details(s.buyer.id, placed.id).await;
+    assert!(card.contains("081-234-5678"), "{card}");
+
+    s.forget_pushes().await;
+    s.set_promptpay(None).await;
+    let other = s.order(Status::Pending, order::Fulfillment::Pickup).await;
+    let other = s
+        .paid_by(&other, PaymentMethod::PromptPay, PaymentStatus::Unpaid)
+        .await;
+    s.taps(s.seller.id, &data(ACCEPT, other.id)).await;
+    let pushes = s.pushes().await;
+    assert_eq!(
+        Pushed::of(&pushes[0].2).lines[1..],
+        [
+            "โอนพร้อมเพย์ ฿220",
+            "ร้านยังไม่มีเลขพร้อมเพย์ สอบถามเลขที่จะโอนกับร้านได้โดยตรงค่ะ",
+        ]
+    );
+
+    // A cash order's acceptance still follows the switch
+    s.forget_pushes().await;
+    let cash = s.order(Status::Pending, order::Fulfillment::Pickup).await;
+    s.taps(s.seller.id, &data(ACCEPT, cash.id)).await;
+    assert_eq!(s.pushes().await, []);
+}
+
+/// FR-PAY-07: asked whether they got the money of an order handed over, the seller answers
+/// "ยังไม่ได้รับ", which leaves it unpaid under "ค้างชำระ", then records it with "ได้รับเงินแล้ว"
+/// once they do; the buyer is told. Tapped again, it shows the order as it is.
+#[tokio::test]
+async fn the_seller_answers_whether_they_got_the_money() {
+    let s = setup().await;
+    let placed = s
+        .order(Status::Delivering, order::Fulfillment::Delivery)
+        .await;
+    let id = placed.id;
+    s.taps(s.seller.id, &data(COMPLETE, id)).await;
+    s.forget_pushes().await;
+
+    let not_yet = s.taps(s.seller.id, &data(NOT_PAID, id)).await;
+    assert_eq!(
+        lines(&not_yet[0]),
+        [
+            "ออเดอร์ IM-20261025-0001 ยังค้างชำระค่ะ",
+            "ดูได้ที่ \"ออเดอร์ร้าน\" > \"ค้างชำระ\" ได้รับเงินแล้วกด \"ได้รับเงินแล้ว\"ค่ะ",
+        ]
+    );
+    assert_eq!(
+        buttons_of(&not_yet[0]),
+        [("ได้รับเงินแล้ว", data(MARK_PAID, id).as_str())]
+    );
+    let order = s.get(id).await;
+    assert_eq!(order.payment_status, PaymentStatus::Unpaid);
+    assert_eq!(s.pushes().await, []);
+
+    let (paid, essential) = s.tapped(s.seller.id, &data(MARK_PAID, id)).await;
+    assert!(essential);
+    assert_eq!(
+        lines(&paid[0]),
+        ["บันทึกว่าได้รับเงินออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+    assert_eq!(buttons_of(&paid[0]), []);
+    assert_eq!(s.get(id).await.payment_status, PaymentStatus::Paid);
+    let told = s.templates.payment_recorded_notice(
+        &s.shop.name,
+        &order.order_number,
+        PaymentStatus::Paid,
+        false,
+        Vec::new(),
+    );
+    assert_eq!(
+        lines(&told),
+        ["ร้านป้าแดงยืนยันว่าได้รับเงินค่าออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+    assert_eq!(s.pushes().await, [push("order.status", BUYER, told)]);
+
+    for action in [MARK_PAID, NOT_PAID] {
+        let again = s.taps(s.seller.id, &data(action, id)).await;
+        assert_eq!(
+            lines(&again[0]),
+            [
+                "ออเดอร์ IM-20261025-0001 ตอนนี้สถานะ \"สำเร็จ\"ค่ะ",
+                "การชำระเงิน: ชำระแล้ว",
+            ]
+        );
+    }
+    assert_eq!(s.pushes().await.len(), 1);
+    assert_eq!(s.audited().await, []);
+}
+
+/// FR-PAY-03, FR-PAY-08: the seller records a transfer as soon as it arrives, from the order's
+/// card, while cash waits for the hand-over, as in Appendix A.4.
+#[tokio::test]
+async fn a_transfer_is_recorded_before_the_hand_over() {
+    let s = setup().await;
+    let cash = s
+        .order(Status::Accepted, order::Fulfillment::Delivery)
+        .await;
+    let early = s.taps(s.seller.id, &data(MARK_PAID, cash.id)).await;
+    assert_eq!(s.get(cash.id).await, cash);
+    assert_eq!(
+        buttons_of(&early[0]),
+        [
+            ("กำลังไปส่ง", data(DELIVERING, cash.id).as_str()),
+            ("ยกเลิกออเดอร์", data(SELLER_CANCEL, cash.id).as_str()),
+        ]
+    );
+
+    let transfer = s
+        .order(Status::Accepted, order::Fulfillment::Delivery)
+        .await;
+    let transfer = s
+        .paid_by(&transfer, PaymentMethod::PromptPay, PaymentStatus::Unpaid)
+        .await;
+    let id = transfer.id;
+    let card = s.details(s.seller.id, id).await;
+    assert!(card.contains(&data(MARK_PAID, id)), "{card}");
+    let paid = s.taps(s.seller.id, &data(MARK_PAID, id)).await;
+    assert_eq!(
+        buttons_of(&paid[0]),
+        [
+            ("กำลังไปส่ง", data(DELIVERING, id).as_str()),
+            ("ยกเลิกออเดอร์", data(SELLER_CANCEL, id).as_str()),
+        ]
+    );
+    let order = s.get(id).await;
+    assert_eq!(
+        (order.status, order.payment_status),
+        (Status::Accepted, PaymentStatus::Paid)
+    );
+
+    // Handed over paid, there is nothing to ask
+    let handed = s.taps(s.seller.id, &data(DELIVERING, id)).await;
+    assert_eq!(buttons_of(&handed[0])[0].0, "ส่งมอบแล้ว");
+    let handed = s.taps(s.seller.id, &data(COMPLETE, id)).await;
+    assert_eq!(lines(&handed[0]), ["ออเดอร์ IM-20261025-0002 สำเร็จแล้วค่ะ"]);
+}
+
+/// The acceptance criterion of #35, FR-PAY-08: a buyer can't record their own order paid,
+/// refunded or anything, not by its buttons, and not as an admin either. Nothing changes.
+#[tokio::test]
+async fn a_buyer_cannot_set_their_own_order_paid() {
+    let s = setup().await;
+    let owed = s.order(Status::Completed, order::Fulfillment::Pickup).await;
+    let refund = s.order(Status::Cancelled, order::Fulfillment::Pickup).await;
+    let refund = s
+        .paid_by(&refund, PaymentMethod::Cash, PaymentStatus::RefundDue)
+        .await;
+    let refused = vec![s.templates.refused(Denied::NotAllowed, None)];
+    for (user, action, order) in [
+        (s.buyer.id, MARK_PAID, &owed),
+        (s.buyer.id, NOT_PAID, &owed),
+        (s.buyer.id, MARK_REFUNDED, &refund),
+        (s.other_buyer, MARK_PAID, &owed),
+        (s.other_seller, MARK_PAID, &owed),
+        (s.other_seller, MARK_REFUNDED, &refund),
+        (s.admin.id, NOT_PAID, &owed),
+    ] {
+        assert_eq!(
+            s.taps(user, &data(action, order.id)).await,
+            refused,
+            "{action} by {user}"
+        );
+        assert_eq!(&s.get(order.id).await, order);
+    }
+
+    // An admin who bought it is its buyer
+    let own = order::ActiveModel {
+        buyer_id: Set(s.admin.id),
+        ..s.order(Status::Completed, order::Fulfillment::Pickup)
+            .await
+            .into()
+    };
+    let own = own.update(&s.db).await.unwrap();
+    let shown = s.taps(s.admin.id, &data(MARK_PAID, own.id)).await;
+    assert_eq!(
+        lines(&shown[0]),
+        [
+            "ออเดอร์ IM-20261025-0003 ตอนนี้สถานะ \"สำเร็จ\"ค่ะ",
+            "การชำระเงิน: ยังไม่ชำระ",
+        ]
+    );
+    assert_eq!(s.get(own.id).await, own);
+    assert_eq!(s.pushes().await, []);
+    assert_eq!(s.audited().await, []);
+}
+
+/// The acceptance criterion of #35, FR-PAY-09: cancelling a paid order, as its seller or an
+/// admin, leaves it to be refunded; the seller is told to refund the buyer, and records it with
+/// "คืนเงินแล้ว", from the reply, the admin's notice or "ค้างชำระ"; the buyer is told.
+#[tokio::test]
+async fn a_paid_order_cancelled_is_refunded_and_recorded() {
+    let s = setup().await;
+    let placed = s.order(Status::Ready, order::Fulfillment::Pickup).await;
+    let placed = s
+        .paid_by(&placed, PaymentMethod::PromptPay, PaymentStatus::Paid)
+        .await;
+    let id = placed.id;
+    s.taps(s.seller.id, &data(SELLER_CANCEL, id)).await;
+    let cancelled = s.types(s.seller.id, "ร้านปิดแล้ว").await;
+    assert_eq!(s.get(id).await.payment_status, PaymentStatus::RefundDue);
+    assert_eq!(
+        lines(&cancelled[0]),
+        [
+            "ยกเลิกออเดอร์ IM-20261025-0001 แล้วค่ะ",
+            "คืนจำนวนสินค้าเข้าสต็อกแล้วค่ะ",
+            "ลูกค้าชำระเงินแล้ว กรุณาคืนเงินให้ลูกค้า แล้วกด \"คืนเงินแล้ว\"ค่ะ",
+        ]
+    );
+    assert_eq!(
+        buttons_of(&cancelled[0]),
+        [("คืนเงินแล้ว", data(MARK_REFUNDED, id).as_str())]
+    );
+    s.forget_pushes().await;
+    let refunded = s.taps(s.seller.id, &data(MARK_REFUNDED, id)).await;
+    assert_eq!(
+        lines(&refunded[0]),
+        ["บันทึกว่าคืนเงินออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+    assert_eq!(buttons_of(&refunded[0]), []);
+    let order = s.get(id).await;
+    assert_eq!(
+        (order.status, order.payment_status),
+        (Status::Cancelled, PaymentStatus::Refunded)
+    );
+    let pushes = s.pushes().await;
+    assert_eq!(
+        Pushed::of(&pushes[0].2).lines,
+        ["ร้านป้าแดงแจ้งว่าคืนเงินค่าออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+
+    // Cancelled by an admin, the seller's notice records the refund
+    let placed = s
+        .order(Status::Delivering, order::Fulfillment::Delivery)
+        .await;
+    let placed = s
+        .paid_by(&placed, PaymentMethod::Cash, PaymentStatus::Paid)
+        .await;
+    s.forget_pushes().await;
+    s.taps(s.admin.id, &data(ADMIN_CANCEL, placed.id)).await;
+    s.types(s.admin.id, "ร้านไม่ส่งของ").await;
+    assert_eq!(
+        s.get(placed.id).await.payment_status,
+        PaymentStatus::RefundDue
+    );
+    let pushes = s.pushes().await;
+    let to_seller = Pushed::of(&pushes[1].2);
+    assert_eq!(pushes[1].1, SELLER);
+    assert_eq!(
+        to_seller.lines[3],
+        "ลูกค้าชำระเงินแล้ว กรุณาคืนเงินให้ลูกค้า แล้วกด \"คืนเงินแล้ว\"ค่ะ"
+    );
+    assert_eq!(
+        to_seller.buttons(),
+        [("คืนเงินแล้ว", data(MARK_REFUNDED, placed.id).as_str())]
+    );
+}
+
+/// FR-PAY-08, FR-ADM-08: an admin records a payment and a refund from the order's card in
+/// "ผู้ใช้"; each is audited, and the buyer is told it was an admin.
+#[tokio::test]
+async fn an_admin_records_a_payment_and_it_is_audited() {
+    let s = setup().await;
+    let owed = s.order(Status::Completed, order::Fulfillment::Pickup).await;
+    let recorded = s.taps(s.admin.id, &data(MARK_PAID, owed.id)).await;
+    assert_eq!(
+        lines(&recorded[0]),
+        ["บันทึกว่าได้รับเงินออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+    assert_eq!(s.get(owed.id).await.payment_status, PaymentStatus::Paid);
+    let pushes = s.pushes().await;
+    assert_eq!(
+        Pushed::of(&pushes[0].2).lines,
+        ["ผู้ดูแลยืนยันว่าได้รับเงินค่าออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+
+    let refund = s.order(Status::Cancelled, order::Fulfillment::Pickup).await;
+    let refund = s
+        .paid_by(&refund, PaymentMethod::Cash, PaymentStatus::RefundDue)
+        .await;
+    s.taps(s.admin.id, &data(MARK_REFUNDED, refund.id)).await;
+    assert_eq!(
+        s.get(refund.id).await.payment_status,
+        PaymentStatus::Refunded
+    );
+    let audit = |action: &str, order: &order::Model| {
+        (
+            Some(s.admin.id),
+            action.to_owned(),
+            "order".to_owned(),
+            Some(order.id),
+            serde_json::json!({ "order_number": order.order_number }),
+        )
+    };
+    assert_eq!(
+        s.audited().await,
+        [
+            audit("payment.confirmed", &owed),
+            audit("payment.refunded", &refund)
+        ]
+    );
 }

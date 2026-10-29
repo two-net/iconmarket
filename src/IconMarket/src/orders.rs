@@ -1,5 +1,5 @@
 //! Cart & orders (SRS §2.1): cart, checkout, stock reservation and the order lifecycle.
-//! Built by #29, #32, #33 and #34.
+//! Built by #29, #32, #33, #34 and #35.
 
 pub mod actions;
 pub mod cart;
@@ -49,6 +49,11 @@ pub const GRANT_CANCEL: &str = "order.grant_cancel";
 pub const KEEP: &str = "order.keep";
 /// An admin's "ยกเลิกออเดอร์", which asks why (FR-ORD-12)
 pub const ADMIN_CANCEL: &str = "order.admin_cancel";
+/// The seller's, or an admin's, "ได้รับเงินแล้ว" and "คืนเงินแล้ว" (FR-PAY-07 – FR-PAY-09)
+pub const MARK_PAID: &str = "order.paid";
+pub const MARK_REFUNDED: &str = "order.refunded";
+/// The seller's "ยังไม่ได้รับ" when asked whether an order handed over was paid (FR-PAY-07)
+pub const NOT_PAID: &str = "order.not_paid";
 
 /// "ดูรายละเอียด" on an order's card in "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน": the order in full,
 /// for its buyer, its seller or an admin (FR-ORD-10). [Lists](lists) show it, not

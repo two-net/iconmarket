@@ -51,6 +51,11 @@ pub enum Action {
     // Orders (FR-ORD-12)
     /// An open order, found by its number in "ผู้ใช้"
     OrderCancelled,
+    // Payments (FR-PAY-08)
+    /// An order recorded as paid, from its card in "ผู้ใช้"
+    PaymentConfirmed,
+    /// An order recorded as refunded
+    RefundConfirmed,
 }
 
 impl Action {
@@ -76,6 +81,8 @@ impl Action {
             Self::UserUnsuspended => "user.unsuspended",
             Self::ShopUnsuspended => "shop.unsuspended",
             Self::OrderCancelled => "order.cancelled",
+            Self::PaymentConfirmed => "payment.confirmed",
+            Self::RefundConfirmed => "payment.refunded",
         }
     }
 }

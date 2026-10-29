@@ -2404,6 +2404,53 @@ async fn a_seller_receives_and_accepts_an_order_end_to_end() {
     assert!(at(REPLY, &token("b1")) < at(PUSH, ALICE), "{paths:?}");
 }
 
+/// The acceptance criterion of #35, FR-PAY-07, FR-PAY-08, end to end: "ได้รับเงินแล้ว" on an
+/// order handed over unpaid is refused to its buyer, and records it paid for its seller, the
+/// buyer then being told.
+#[tokio::test]
+async fn only_the_seller_records_an_order_paid_end_to_end() {
+    use crate::persistence::entity::order;
+    let s = setup().await;
+    let bob = onboarded(&s.db, BOB).await;
+    let (alice, product) = returning_buyer(&s, bob).await;
+    let handed_over = order::ActiveModel {
+        status: Set(order::Status::Completed),
+        ..testing::new_order(
+            alice,
+            product.shop_id,
+            "IM-20261025-0001",
+            crate::persistence::random_id(),
+        )
+    };
+    let placed = handed_over.insert(&s.db).await.unwrap();
+    let running = s.run();
+
+    let paid = format!("order.paid?order={}", placed.id);
+    let refused = reply_to(&s, &running, tapped("a1", ALICE, &paid), 1).await;
+    let recorded = reply_to(&s, &running, tapped("b1", BOB, &paid), 2).await;
+    requested(&s, |path, body| path == PUSH && body["to"] == ALICE).await;
+    running.stop().await;
+
+    let denied = s.templates.refused(Denied::NotAllowed, None);
+    assert_eq!(refused, json!([denied]));
+    assert_eq!(
+        card_lines(&recorded),
+        ["บันทึกว่าได้รับเงินออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+    let order = order::Entity::find_by_id(placed.id)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(order.payment_status, order::PaymentStatus::Paid);
+    let told = pushes(&s);
+    assert_eq!(told.len(), 1);
+    assert_eq!(
+        card_lines(&told[0].1),
+        ["ร้านป้าแดงยืนยันว่าได้รับเงินค่าออเดอร์ IM-20261025-0001 แล้วค่ะ"]
+    );
+}
+
 /// FR-LINE-07: a reply that isn't essential is dropped when its reply token fails, as a push
 /// counts against the monthly quota; an essential one is pushed, and the push logged.
 #[tokio::test]

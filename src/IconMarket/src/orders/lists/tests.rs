@@ -560,13 +560,21 @@ async fn the_shop_orders_are_filtered() {
     assert_eq!(listed("shop_orders").await, new);
     assert_eq!(listed("shop_orders?filter=new").await, new);
     assert_eq!(listed("shop_orders?filter=active").await, active);
+    // Money still to settle, either way (FR-PAY-07, FR-PAY-09)
     assert_eq!(
         listed("shop_orders?filter=unpaid").await,
-        [to_confirm.clone(), unpaid.clone()]
+        [refund.clone(), to_confirm.clone(), unpaid.clone()]
     );
     assert_eq!(
         listed("shop_orders?filter=done").await,
-        [expired, refund, rejected, to_confirm, unpaid.clone(), paid]
+        [
+            expired,
+            refund.clone(),
+            rejected,
+            to_confirm.clone(),
+            unpaid.clone(),
+            paid
+        ]
     );
     // An unknown filter, from no button of ours, is "ใหม่"
     assert_eq!(listed("shop_orders?filter=all").await, new);
@@ -581,7 +589,28 @@ async fn the_shop_orders_are_filtered() {
         row(owed, "ชำระเงิน").as_deref(),
         Some("เงินสดตอนรับของ · ค้างชำระ")
     );
-    assert_eq!(labels_of(owed), ["ดูรายละเอียด"]);
+    assert_eq!(labels_of(owed), ["ได้รับเงินแล้ว", "ดูรายละเอียด"]);
+    let owed_back = card_of(list, &refund);
+    assert_eq!(
+        row(owed_back, "ชำระเงิน").as_deref(),
+        Some("เงินสดตอนรับของ · รอคืนเงิน")
+    );
+    assert_eq!(labels_of(owed_back), ["คืนเงินแล้ว", "ดูรายละเอียด"]);
+    // Refunded, it is settled
+    let refunded = order::ActiveModel {
+        payment_status: Set(PaymentStatus::Refunded),
+        ..Default::default()
+    };
+    order::Entity::update_many()
+        .set(refunded)
+        .filter(order::Column::OrderNumber.eq(&refund))
+        .exec(&s.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed("shop_orders?filter=unpaid").await,
+        [to_confirm.clone(), unpaid.clone()]
+    );
     assert_eq!(
         quick_replies(list),
         [
@@ -597,7 +626,7 @@ async fn the_shop_orders_are_filtered() {
     let reply = s.taps(s.seller.id, "shop_orders").await;
     let first = card_of(&reply[1], &new[0]);
     assert_eq!(labels_of(first), ["รับออเดอร์", "ปฏิเสธ", "ดูรายละเอียด"]);
-    // The buyer's card never says ค้างชำระ: it is the seller's to chase
+    // The buyer's card never says ค้างชำระ, only how far it is paid: it is the seller's to chase
     let owed = order::Entity::find()
         .filter(order::Column::OrderNumber.eq(&unpaid))
         .one(&s.db)
@@ -606,7 +635,10 @@ async fn the_shop_orders_are_filtered() {
         .unwrap();
     let theirs = s.taps(s.buyer.id, &details(owed.id)).await;
     let theirs = card(&theirs[0]);
-    assert_eq!(row(theirs, "ชำระเงิน").as_deref(), Some("เงินสดตอนรับของ"));
+    assert_eq!(
+        row(theirs, "ชำระเงิน").as_deref(),
+        Some("เงินสดตอนรับของ · ยังไม่ชำระ")
+    );
 }
 
 /// FR-ORD-10: the shop's orders are paged within their filter, which "ดูเพิ่มเติม" keeps; a

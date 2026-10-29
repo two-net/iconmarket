@@ -1211,14 +1211,113 @@ impl Templates {
     }
 
     /// Tells the buyer shop `shop` accepted their order `number` (FR-ORD-08), as in Appendix
-    /// A.4. `buttons` are what they can do now, "ขอยกเลิก".
-    pub fn order_accepted_notice(&self, shop: &str, number: &str, buttons: Vec<Action>) -> Message {
+    /// A.4, and, if it is paid by PromptPay, what to transfer where (FR-PAY-03). `buttons` are
+    /// what they can do now, "ขอยกเลิก".
+    pub fn order_accepted_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        promptpay: Option<&PromptPayDue<'_>>,
+        buttons: Vec<Action>,
+    ) -> Message {
         let kha = self.kha();
         let headline = format!(
             "{}รับออเดอร์ {number} แล้ว{kha} กำลังเตรียมของ",
             shop_called(shop)
         );
+        let details = match promptpay {
+            Some(PromptPayDue {
+                id: Some(id),
+                total,
+            }) => vec![
+                format!("โอนพร้อมเพย์ {total}"),
+                format!("เลขพร้อมเพย์: {}", payments::format_promptpay_id(id)),
+                format!("ชื่อร้าน: {shop}"),
+                format!("โอนแล้วร้านจะยืนยันเมื่อได้รับเงิน{kha}"),
+            ],
+            // The shop took its PromptPay ID away since the order was placed
+            Some(PromptPayDue { id: None, total }) => vec![
+                format!("โอนพร้อมเพย์ {total}"),
+                format!("ร้านยังไม่มีเลขพร้อมเพย์ สอบถามเลขที่จะโอนกับร้านได้โดยตรง{kha}"),
+            ],
+            None => Vec::new(),
+        };
+        notice(&headline, &details, buttons)
+    }
+
+    /// Asks the seller whether they got order `number`'s `total` (FR-PAY-07), as they handed it
+    /// over, or, `by_buyer`, as its buyer says they received it. `buttons` are "ได้รับเงินแล้ว"
+    /// and "ยังไม่ได้รับ".
+    pub fn ask_paid(
+        &self,
+        number: &str,
+        total: Money,
+        by_buyer: bool,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let headline = if by_buyer {
+            format!("ลูกค้าแจ้งว่าได้รับออเดอร์ {number} แล้ว{kha}")
+        } else {
+            format!("ออเดอร์ {number} สำเร็จแล้ว{kha}")
+        };
+        let details = [format!("ได้รับเงิน {total} แล้วหรือยัง{kha_question}")];
+        notice(&headline, &details, buttons)
+    }
+
+    /// The seller, or an admin, recorded order `number` as `status`, paid or refunded
+    /// (FR-PAY-08). `buttons` are what they can do now.
+    pub fn payment_recorded(
+        &self,
+        number: &str,
+        status: order::PaymentStatus,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let headline = if status == order::PaymentStatus::Refunded {
+            format!("บันทึกว่าคืนเงินออเดอร์ {number} แล้ว{kha}")
+        } else {
+            format!("บันทึกว่าได้รับเงินออเดอร์ {number} แล้ว{kha}")
+        };
         notice(&headline, &[], buttons)
+    }
+
+    /// Tells the buyer shop `shop`, or an admin if `by_admin`, recorded their order `number` as
+    /// `status`, paid or refunded (FR-PAY-08). `buttons` are what they can do now.
+    pub fn payment_recorded_notice(
+        &self,
+        shop: &str,
+        number: &str,
+        status: order::PaymentStatus,
+        by_admin: bool,
+        buttons: Vec<Action>,
+    ) -> Message {
+        let kha = self.kha();
+        let who = if by_admin {
+            "ผู้ดูแล".to_owned()
+        } else {
+            shop_called(shop)
+        };
+        let headline = if status == order::PaymentStatus::Refunded {
+            format!("{who}แจ้งว่าคืนเงินค่าออเดอร์ {number} แล้ว{kha}")
+        } else {
+            format!("{who}ยืนยันว่าได้รับเงินค่าออเดอร์ {number} แล้ว{kha}")
+        };
+        notice(&headline, &[], buttons)
+    }
+
+    /// The seller has yet to get the money of order `number`, handed over (FR-PAY-07): it stays
+    /// under "ค้างชำระ". `buttons` are "ได้รับเงินแล้ว", for when they do.
+    pub fn left_unpaid(&self, number: &str, buttons: Vec<Action>) -> Message {
+        let kha = self.kha();
+        let headline = format!("ออเดอร์ {number} ยัง{}{kha}", labels::FILTER_UNPAID.as_str());
+        let details = [format!(
+            "ดูได้ที่ \"{}\" > \"{}\" ได้รับเงินแล้วกด \"{}\"{kha}",
+            labels::SHOP_ORDERS.as_str(),
+            labels::FILTER_UNPAID.as_str(),
+            labels::MARK_PAID.as_str()
+        )];
+        notice(&headline, &details, buttons)
     }
 
     /// Tells the buyer their order `number` from shop `shop` is now `status` (FR-ORD-08): ready
@@ -1319,12 +1418,14 @@ impl Templates {
     }
 
     /// Tells the seller an admin cancelled order `number`, for `reason` (FR-ORD-12); `refund` if
-    /// the buyer had paid, so the shop owes it back (FR-PAY-09).
+    /// the buyer had paid, so the shop owes it back (FR-PAY-09). `buttons` are what they can do
+    /// now, "คืนเงินแล้ว" once they have.
     pub fn order_cancelled_by_admin_notice(
         &self,
         number: &str,
         reason: &str,
         refund: bool,
+        buttons: Vec<Action>,
     ) -> Message {
         let kha = self.kha();
         let headline = format!("ผู้ดูแลยกเลิกออเดอร์ {number}{kha}");
@@ -1333,9 +1434,9 @@ impl Templates {
             format!("คืนจำนวนสินค้าเข้าสต็อกแล้ว{kha}"),
         ];
         if refund {
-            details.push(format!("ลูกค้าชำระเงินแล้ว กรุณาคืนเงินให้ลูกค้า{kha}"));
+            details.push(refund_line(kha));
         }
-        notice(&headline, &details, Vec::new())
+        notice(&headline, &details, buttons)
     }
 
     /// Tells the seller order `number` expired, unanswered within `minutes` (FR-ORD-05, AC-11).
@@ -1397,17 +1498,19 @@ impl Templates {
     }
 
     /// `by` moved order `number` to `status` (Table 4.6-B), other than accepting it, which says
-    /// more ([`order_accepted`](Self::order_accepted)). `buttons` are what they can do now.
+    /// more ([`order_accepted`](Self::order_accepted)); `refund` if it was paid, so the shop owes
+    /// it back (FR-PAY-09). `buttons` are what they can do now.
     pub fn order_moved(
         &self,
         number: &str,
         status: order::Status,
         by: ActorType,
+        refund: bool,
         buttons: Vec<Action>,
     ) -> Message {
         let kha = self.kha();
         let restocked = format!("คืนจำนวนสินค้าเข้าสต็อกแล้ว{kha}");
-        let (headline, details) = match status {
+        let (headline, mut details) = match status {
             order::Status::Ready => (format!("ออเดอร์ {number} พร้อมให้รับแล้ว{kha}"), vec![]),
             order::Status::Delivering => (format!("ออเดอร์ {number} กำลังไปส่ง{kha}"), vec![]),
             order::Status::Completed if by == ActorType::Buyer => {
@@ -1420,19 +1523,34 @@ impl Templates {
             order::Status::Cancelled => (format!("ยกเลิกออเดอร์ {number} แล้ว{kha}"), vec![restocked]),
             _ => (format!("ออเดอร์ {number} สำเร็จแล้ว{kha}"), vec![]),
         };
+        if refund && by == ActorType::Seller {
+            details.push(refund_line(kha));
+        } else if refund {
+            details.push(format!("ลูกค้าชำระเงินแล้ว ร้านต้องคืนเงินให้ลูกค้า{kha}"));
+        }
         notice(&headline, &details, buttons)
     }
 
-    /// Order `number` is `status` now, so what was asked of it can't be done (FR-UI-13,
-    /// FR-ORD-02): it moved meanwhile, or the same button was tapped again. `buttons` are what
-    /// can be done now.
-    pub fn order_now(&self, number: &str, status: order::Status, buttons: Vec<Action>) -> Message {
+    /// Order `number` is `status` now, and its payment `payment` if that is what was asked
+    /// about, so what was asked of it can't be done (FR-UI-13, FR-ORD-02): it moved meanwhile,
+    /// or the same button was tapped again. `buttons` are what can be done now.
+    pub fn order_now(
+        &self,
+        number: &str,
+        status: order::Status,
+        payment: Option<order::PaymentStatus>,
+        buttons: Vec<Action>,
+    ) -> Message {
         let kha = self.kha();
         let headline = format!(
             "ออเดอร์ {number} ตอนนี้สถานะ \"{}\"{kha}",
             order_status_name(status)
         );
-        notice(&headline, &[], buttons)
+        let details: Vec<String> = payment
+            .map(|payment| format!("การชำระเงิน: {}", payment_status_name(payment)))
+            .into_iter()
+            .collect();
+        notice(&headline, &details, buttons)
     }
 
     /// Asks why order `number` is moved to `status`, rejected or cancelled, by an admin if
@@ -1479,9 +1597,10 @@ impl Templates {
             details.push(format!("ลูกค้า: {buyer}"));
         }
         details.push(format!(
-            "รวม {} · {}",
+            "รวม {} · {} · {}",
             order.total,
-            payment_name(order.payment)
+            payment_name(order.payment),
+            payment_status_name(order.payment_status)
         ));
         details.push(format!("สั่งเมื่อ {}", self.date_time(order.placed_at)));
         notice(&headline, &details, buttons)
@@ -1643,21 +1762,32 @@ impl Templates {
                 pickup,
                 location,
                 phone,
+                promptpay,
             } => {
                 let phone =
                     phone.map(|phone| row(labels::SHOP_PHONE.as_str(), &thai::format_phone(phone)));
-                (received, *pickup, phone.into_iter().collect(), *location)
+                let promptpay = promptpay.map(|id| {
+                    row(
+                        labels::PROMPTPAY.as_str(),
+                        &payments::format_promptpay_id(id),
+                    )
+                });
+                let people = phone.into_iter().chain(promptpay).collect();
+                (received, *pickup, people, *location)
             }
         };
         contents.push(row("รับของ", &received));
         if let Some(pickup) = pickup {
             contents.push(row(labels::PICKUP_ADDRESS.as_str(), pickup));
         }
+        // Whether it is paid once it is to be: an order never accepted, or called off unpaid,
+        // owes nothing
+        let owed = card.status.is_active() || card.status == order::Status::Completed;
         let paid = payment_name(card.payment);
-        let paid = if card.unpaid {
-            format!("{paid} · {}", labels::FILTER_UNPAID.as_str())
-        } else {
-            paid.to_owned()
+        let paid = match card.payment_status {
+            _ if card.unpaid => format!("{paid} · {}", labels::FILTER_UNPAID.as_str()),
+            order::PaymentStatus::Unpaid if !owed => paid.to_owned(),
+            status => format!("{paid} · {}", payment_status_name(status)),
         };
         contents.push(row("ชำระเงิน", &paid));
         contents.extend(people);
@@ -3878,6 +4008,15 @@ fn footer_of(buttons: &[Action], primary: bool) -> Option<FlexBox> {
 /// fewer than a carousel holds fit its 50 KB (FR-LINE-11).
 pub const APPLICATIONS_PER_PAGE: usize = 8;
 
+/// Tells the seller the buyer of an order cancelled had paid, so they are to refund them and
+/// record it (FR-PAY-09).
+fn refund_line(kha: &str) -> String {
+    format!(
+        "ลูกค้าชำระเงินแล้ว กรุณาคืนเงินให้ลูกค้า แล้วกด \"{}\"{kha}",
+        labels::MARK_REFUNDED.as_str()
+    )
+}
+
 /// The shop called `name` as a sentence names it: `ร้านป้าแดง` as it is, and a name that
 /// doesn't say it is a shop with `ร้าน` before it, as in Appendix A.5.
 pub fn shop_called(name: &str) -> String {
@@ -4187,12 +4326,14 @@ pub enum OrderContact<'a> {
         contact: Contact<'a>,
         location: Option<(f64, f64)>,
     },
-    /// The buyer's view of an active order: where to pick it up, as the shop gave it, and the
-    /// shop's phone, unless its seller hides it (FR-SHOP-08)
+    /// The buyer's view of an active order: where to pick it up, as the shop gave it, the
+    /// shop's phone, unless its seller hides it (FR-SHOP-08), and, while a PromptPay order is
+    /// yet to be paid, the shop's PromptPay ID, its digits (FR-PAY-03)
     Shop {
         pickup: Option<&'a str>,
         location: Option<(f64, f64)>,
         phone: Option<&'a str>,
+        promptpay: Option<&'a str>,
     },
 }
 
@@ -4211,6 +4352,7 @@ pub struct OrderCard<'a> {
     pub total: Money,
     pub fulfillment: order::Fulfillment,
     pub payment: order::PaymentMethod,
+    pub payment_status: order::PaymentStatus,
     /// Whether it is handed over but not paid, on its seller's card: "ค้างชำระ" (FR-PAY-07)
     pub unpaid: bool,
     pub contact: OrderContact<'a>,
@@ -4228,7 +4370,18 @@ pub struct FoundOrder<'a> {
     pub buyer: Option<&'a str>,
     pub total: Money,
     pub payment: order::PaymentMethod,
+    pub payment_status: order::PaymentStatus,
     pub placed_at: DateTime<Utc>,
+}
+
+/// What the buyer of an order paid by PromptPay transfers, and where, once it is accepted
+/// (FR-PAY-03).
+pub struct PromptPayDue<'a> {
+    /// The shop's PromptPay ID, its digits; `None` if it took it away since the order was
+    /// placed
+    pub id: Option<&'a str>,
+    /// The order's total, exactly
+    pub total: Money,
 }
 
 /// The reason an order is cancelled for when its seller grants the buyer's request (FR-ORD-07).
@@ -4928,6 +5081,17 @@ pub fn payment_name(payment: order::PaymentMethod) -> &'static str {
     match payment {
         order::PaymentMethod::Cash => labels::CASH_ON_RECEIPT.as_str(),
         order::PaymentMethod::PromptPay => labels::PROMPTPAY_TRANSFER.as_str(),
+    }
+}
+
+/// How far an order's payment is (FR-PAY-08).
+pub fn payment_status_name(status: order::PaymentStatus) -> &'static str {
+    match status {
+        order::PaymentStatus::Unpaid => "ยังไม่ชำระ",
+        order::PaymentStatus::AwaitingConfirmation => "รอร้านตรวจสอบ",
+        order::PaymentStatus::Paid => "ชำระแล้ว",
+        order::PaymentStatus::RefundDue => "รอคืนเงิน",
+        order::PaymentStatus::Refunded => labels::MARK_REFUNDED.as_str(),
     }
 }
 
@@ -5672,6 +5836,12 @@ pub mod labels {
         CONFIRM_RECEIPT = "ได้รับของแล้ว",
         /// The seller goes on with an order the buyer asked to cancel (FR-ORD-07)
         KEEP_ORDER = "ไม่ยกเลิก",
+        /// The seller, or an admin, records an order paid (FR-PAY-07, FR-PAY-08)
+        MARK_PAID = "ได้รับเงินแล้ว",
+        /// The seller, asked whether an order handed over was paid, says not yet (FR-PAY-07)
+        NOT_PAID = "ยังไม่ได้รับ",
+        /// The seller, or an admin, records a paid order cancelled as refunded (FR-PAY-09)
+        MARK_REFUNDED = "คืนเงินแล้ว",
         /// An order's card in full, from "คำสั่งซื้อของฉัน" or "ออเดอร์ร้าน" (FR-ORD-10)
         ORDER_DETAILS = "ดูรายละเอียด",
         /// Opens where to deliver or pick up an order on a map (FR-ORD-11)
@@ -5681,7 +5851,7 @@ pub mod labels {
         FILTER_NEW = "ใหม่",
         /// Orders accepted, being prepared, ready or on their way
         FILTER_ACTIVE = "กำลังดำเนินการ",
-        /// Orders handed over but not paid (FR-PAY-07)
+        /// Orders handed over but not paid (FR-PAY-07), or cancelled and owed back (FR-PAY-09)
         FILTER_UNPAID = "ค้างชำระ",
         /// Orders over: completed, rejected, cancelled or expired
         FILTER_DONE = "เสร็จแล้ว/ยกเลิก",
@@ -5770,6 +5940,7 @@ mod tests {
     use std::slice;
 
     use chrono::TimeZone;
+    use sea_orm::Iterable;
 
     use super::*;
     use crate::line::Body;
@@ -6107,12 +6278,17 @@ mod tests {
             t.new_order_notice(number, &new_order(order::Fulfillment::Pickup), Vec::new()),
             t.order_accepted(number, &contact(true), Vec::new()),
             t.order_accepted(number, &contact(false), Vec::new()),
-            t.order_accepted_notice(shop, number, Vec::new()),
+            t.order_accepted_notice(shop, number, None, Vec::new()),
+            t.order_accepted_notice(shop, number, Some(&due(Some("0812345678"))), Vec::new()),
+            t.order_accepted_notice(shop, number, Some(&due(None)), Vec::new()),
+            t.ask_paid(number, Money::from_baht(230), false, Vec::new()),
+            t.ask_paid(number, Money::from_baht(230), true, Vec::new()),
+            t.left_unpaid(number, Vec::new()),
             t.order_rejected_notice(shop, number, "สินค้าหมด", Vec::new()),
             t.order_expired_notice(shop, number, 60, Vec::new()),
             t.order_cancelled_by_buyer_notice(number),
-            t.order_cancelled_by_admin_notice(number, "สินค้าหมด", false),
-            t.order_cancelled_by_admin_notice(number, "สินค้าหมด", true),
+            t.order_cancelled_by_admin_notice(number, "สินค้าหมด", false, Vec::new()),
+            t.order_cancelled_by_admin_notice(number, "สินค้าหมด", true, Vec::new()),
             t.order_expired_seller_notice(number, 60),
             t.cancellation_requested_notice(number, Vec::new()),
             t.cancellation_kept_notice(shop, number, Vec::new()),
@@ -6127,22 +6303,37 @@ mod tests {
                 t.order_cancelled_notice(shop, number, by_admin, reason, refund, vec![]);
             notices.push(cancelled);
         }
-        for (status, by) in [
-            (Ready, ActorType::Seller),
-            (Delivering, ActorType::Seller),
-            (Completed, ActorType::Seller),
-            (Completed, ActorType::Buyer),
-            (Rejected, ActorType::Seller),
-            (Cancelled, ActorType::Buyer),
-            (Cancelled, ActorType::Seller),
-            (Cancelled, ActorType::Admin),
+        for (status, by, refund) in [
+            (Ready, ActorType::Seller, false),
+            (Delivering, ActorType::Seller, false),
+            (Completed, ActorType::Seller, false),
+            (Completed, ActorType::Buyer, false),
+            (Rejected, ActorType::Seller, false),
+            (Cancelled, ActorType::Buyer, false),
+            (Cancelled, ActorType::Seller, false),
+            (Cancelled, ActorType::Seller, true),
+            (Cancelled, ActorType::Admin, false),
+            (Cancelled, ActorType::Admin, true),
         ] {
-            notices.push(t.order_moved(number, status, by, Vec::new()));
+            notices.push(t.order_moved(number, status, by, refund, Vec::new()));
         }
         for status in [
             Pending, Accepted, Ready, Delivering, Completed, Rejected, Cancelled, Expired,
         ] {
-            notices.push(t.order_now(number, status, Vec::new()));
+            notices.push(t.order_now(number, status, None, Vec::new()));
+        }
+        for payment in order::PaymentStatus::iter() {
+            notices.push(t.order_now(number, Completed, Some(payment), Vec::new()));
+        }
+        for (status, by_admin) in [
+            (order::PaymentStatus::Paid, false),
+            (order::PaymentStatus::Paid, true),
+            (order::PaymentStatus::Refunded, false),
+            (order::PaymentStatus::Refunded, true),
+        ] {
+            notices.push(t.payment_recorded(number, status, Vec::new()));
+            let told = t.payment_recorded_notice(shop, number, status, by_admin, Vec::new());
+            notices.push(told);
         }
         let mut texts: Vec<String> = notices
             .iter()
@@ -6209,6 +6400,14 @@ mod tests {
             address: delivered.then(|| address_line("ซอย 3", "45/2", Some("รั้วสีเขียว"))),
             phone: Some("0812345678"),
             note: Some("ไม่ใส่ถุง"),
+        }
+    }
+
+    /// ฿230 to transfer to PromptPay ID `id`, or to ask the shop for if `None`.
+    fn due(id: Option<&str>) -> PromptPayDue<'_> {
+        PromptPayDue {
+            id,
+            total: Money::from_baht(230),
         }
     }
 
@@ -7724,10 +7923,73 @@ mod tests {
         );
         let picked_up = t.order_accepted(number, &contact(false), Vec::new());
         assert_eq!(notice_lines(&picked_up)[1], "รับเองที่ร้าน");
-        let told = t.order_accepted_notice("ร้านป้าแดง", number, Vec::new());
+        let told = t.order_accepted_notice("ร้านป้าแดง", number, None, Vec::new());
         assert_eq!(
             notice_lines(&told),
             ["ร้านป้าแดงรับออเดอร์ IM-20261022-0007 แล้วค่ะ กำลังเตรียมของ"]
+        );
+    }
+
+    /// FR-PAY-03: the buyer of an order paid by PromptPay is told, as it is accepted, the
+    /// shop's PromptPay ID, its name and the exact amount; if the shop took its ID away since,
+    /// to ask the shop for it.
+    #[test]
+    fn a_promptpay_order_accepted_says_what_to_transfer_where() {
+        let t = templates(PoliteParticle::Kha);
+        let number = "IM-20261022-0007";
+        let shop = "ร้านป้าแดง";
+        let told = t.order_accepted_notice(shop, number, Some(&due(Some("0812345678"))), vec![]);
+        assert_eq!(
+            notice_lines(&told),
+            [
+                "ร้านป้าแดงรับออเดอร์ IM-20261022-0007 แล้วค่ะ กำลังเตรียมของ",
+                "โอนพร้อมเพย์ ฿230",
+                "เลขพร้อมเพย์: 081-234-5678",
+                "ชื่อร้าน: ร้านป้าแดง",
+                "โอนแล้วร้านจะยืนยันเมื่อได้รับเงินค่ะ",
+            ]
+        );
+        let citizen =
+            t.order_accepted_notice(shop, number, Some(&due(Some("1101700203450"))), vec![]);
+        assert_eq!(notice_lines(&citizen)[2], "เลขพร้อมเพย์: 1-1017-00203-45-0");
+        let gone = t.order_accepted_notice(shop, number, Some(&due(None)), vec![]);
+        assert_eq!(
+            notice_lines(&gone),
+            [
+                "ร้านป้าแดงรับออเดอร์ IM-20261022-0007 แล้วค่ะ กำลังเตรียมของ",
+                "โอนพร้อมเพย์ ฿230",
+                "ร้านยังไม่มีเลขพร้อมเพย์ สอบถามเลขที่จะโอนกับร้านได้โดยตรงค่ะ",
+            ]
+        );
+    }
+
+    /// FR-PAY-07: the seller is asked whether they got the money of an order handed over
+    /// unpaid, as they hand it over or as its buyer says they received it.
+    #[test]
+    fn the_seller_is_asked_whether_they_got_the_money() {
+        let t = templates(PoliteParticle::Khrap);
+        let number = "IM-20261022-0007";
+        let total = Money::from_baht(230);
+        assert_eq!(
+            notice_lines(&t.ask_paid(number, total, false, Vec::new())),
+            [
+                "ออเดอร์ IM-20261022-0007 สำเร็จแล้วครับ",
+                "ได้รับเงิน ฿230 แล้วหรือยังครับ",
+            ]
+        );
+        assert_eq!(
+            notice_lines(&t.ask_paid(number, total, true, Vec::new())),
+            [
+                "ลูกค้าแจ้งว่าได้รับออเดอร์ IM-20261022-0007 แล้วครับ",
+                "ได้รับเงิน ฿230 แล้วหรือยังครับ",
+            ]
+        );
+        assert_eq!(
+            notice_lines(&t.left_unpaid(number, Vec::new())),
+            [
+                "ออเดอร์ IM-20261022-0007 ยังค้างชำระครับ",
+                "ดูได้ที่ \"ออเดอร์ร้าน\" > \"ค้างชำระ\" ได้รับเงินแล้วกด \"ได้รับเงินแล้ว\"ครับ",
+            ]
         );
     }
 
@@ -7783,6 +8045,7 @@ mod tests {
             buyer: Some(&buyer),
             total: Money::from_baht(100_000).times(99 * 20),
             payment: order::PaymentMethod::PromptPay,
+            payment_status: order::PaymentStatus::AwaitingConfirmation,
             placed_at: Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap(),
         };
         let reasons = [
@@ -7798,10 +8061,24 @@ mod tests {
             t.cancellation_requested_notice(number, request),
             t.order_cancelled_notice(&shop, number, true, &reason, true, carry_on()),
             t.order_rejected_notice(&shop, number, &reason, carry_on()),
-            t.order_cancelled_by_admin_notice(number, &reason, true),
+            t.order_cancelled_by_admin_notice(
+                number,
+                &reason,
+                true,
+                vec![button(&labels::MARK_REFUNDED, "order.refunded")],
+            ),
+            t.order_accepted_notice(
+                &shop,
+                number,
+                Some(&due(Some("004999012345678"))),
+                vec![button(&labels::REQUEST_CANCEL, "order.request_cancel")],
+            ),
             t.order_found(
                 &found,
-                vec![button(&labels::CANCEL_ORDER, "order.admin_cancel")],
+                vec![
+                    button(&labels::MARK_PAID, "order.paid"),
+                    button(&labels::CANCEL_ORDER, "order.admin_cancel"),
+                ],
             ),
             t.ask_order_reason(number, order::Status::Cancelled, true, reasons.to_vec()),
         ] {
@@ -7841,6 +8118,7 @@ mod tests {
                 total: Money::from_baht(100_000).times(99 * 20),
                 fulfillment: order::Fulfillment::Delivery,
                 payment: order::PaymentMethod::PromptPay,
+                payment_status: order::PaymentStatus::AwaitingConfirmation,
                 unpaid: true,
                 contact,
                 buttons,
@@ -7862,6 +8140,7 @@ mod tests {
             };
             let buttons = vec![
                 button(&labels::MARK_COMPLETED, "order.complete"),
+                button(&labels::MARK_PAID, "order.paid"),
                 button(&labels::CANCEL_ORDER, "order.grant_cancel"),
                 button(&labels::KEEP_ORDER, "order.keep"),
                 button(&labels::ORDER_DETAILS, "order.view"),
@@ -7874,6 +8153,7 @@ mod tests {
                 pickup: Some(&pickup),
                 location,
                 phone: Some("0812345678"),
+                promptpay: Some("004999012345678"),
             };
             let buttons = vec![
                 button(&labels::CONFIRM_RECEIPT, "order.received"),
@@ -7933,6 +8213,7 @@ mod tests {
             total: Money::from_baht(230),
             fulfillment,
             payment: order::PaymentMethod::Cash,
+            payment_status: order::PaymentStatus::Unpaid,
             unpaid: false,
             contact,
             buttons: Vec::new(),
@@ -7970,7 +8251,7 @@ mod tests {
                 "รับของ",
                 "ส่งที่ ซอย 3",
                 "ชำระเงิน",
-                "เงินสดตอนรับของ",
+                "เงินสดตอนรับของ · ยังไม่ชำระ",
                 "ลูกค้า",
                 "สมชาย",
             ]
@@ -7979,6 +8260,7 @@ mod tests {
             pickup: Some("หน้าวัด"),
             location: None,
             phone: None,
+            promptpay: None,
         };
         let pickup = t.order_details(
             &card(Some("ร้านป้าแดง"), order::Fulfillment::Pickup, shop),
@@ -8001,10 +8283,87 @@ mod tests {
                 "ที่รับของ",
                 "หน้าวัด",
                 "ชำระเงิน",
-                "เงินสดตอนรับของ"
+                "เงินสดตอนรับของ · ยังไม่ชำระ"
             ]
         );
         assert!(pickup.footer.is_none());
+
+        // FR-PAY-03: the shop's PromptPay ID, while the buyer is yet to transfer
+        let shop = OrderContact::Shop {
+            pickup: None,
+            location: None,
+            phone: Some("0898765432"),
+            promptpay: Some("0812345678"),
+        };
+        let mut transfer = card(Some("ร้านป้าแดง"), delivered, shop);
+        transfer.payment = order::PaymentMethod::PromptPay;
+        let transfer = t.order_details(&transfer, Vec::new());
+        let Body::Flex {
+            contents: FlexContainer::Bubble(transfer),
+            ..
+        } = &transfer.body
+        else {
+            panic!("not a card");
+        };
+        let texts = card_texts(transfer);
+        assert_eq!(
+            texts[texts.len() - 6..],
+            [
+                "ชำระเงิน",
+                "โอนพร้อมเพย์ · ยังไม่ชำระ",
+                "เบอร์ร้าน",
+                "089-876-5432",
+                "พร้อมเพย์",
+                "081-234-5678"
+            ]
+        );
+    }
+
+    /// FR-PAY-08, FR-PAY-07: an order's card says how far it is paid once it is to be: not while
+    /// it is yet to be accepted, or once called off unpaid; "ค้างชำระ" on its seller's card once
+    /// handed over unpaid.
+    #[test]
+    fn an_orders_card_says_how_far_it_is_paid() {
+        use order::PaymentStatus::{Paid, RefundDue, Refunded, Unpaid};
+        use order::Status::{Cancelled, Completed, Delivering, Pending};
+        let t = templates(PoliteParticle::Kha);
+        for (status, payment, unpaid, shown) in [
+            (Pending, Unpaid, false, "เงินสดตอนรับของ"),
+            (Cancelled, Unpaid, false, "เงินสดตอนรับของ"),
+            (Delivering, Unpaid, false, "เงินสดตอนรับของ · ยังไม่ชำระ"),
+            (Completed, Unpaid, true, "เงินสดตอนรับของ · ค้างชำระ"),
+            (Completed, Unpaid, false, "เงินสดตอนรับของ · ยังไม่ชำระ"),
+            (Completed, Paid, false, "เงินสดตอนรับของ · ชำระแล้ว"),
+            (Cancelled, RefundDue, false, "เงินสดตอนรับของ · รอคืนเงิน"),
+            (Cancelled, Refunded, false, "เงินสดตอนรับของ · คืนเงินแล้ว"),
+        ] {
+            let card = OrderCard {
+                number: "IM-20261022-0007",
+                status,
+                placed_at: Utc.with_ymd_and_hms(2026, 10, 22, 7, 30, 0).unwrap(),
+                shop: None,
+                lines: Vec::new(),
+                subtotal: Money::from_baht(220),
+                delivery_fee: Money::ZERO,
+                total: Money::from_baht(220),
+                fulfillment: order::Fulfillment::Pickup,
+                payment: order::PaymentMethod::Cash,
+                payment_status: payment,
+                unpaid,
+                contact: OrderContact::None,
+                buttons: Vec::new(),
+            };
+            let details = t.order_details(&card, Vec::new());
+            let Body::Flex {
+                contents: FlexContainer::Bubble(details),
+                ..
+            } = &details.body
+            else {
+                panic!("not a card");
+            };
+            let texts = card_texts(details);
+            assert_eq!(texts.last().unwrap(), shown, "{status:?}, {payment:?}");
+        }
     }
 
     /// FR-SRCH-07: a product's details show its card and every other photo, as many as a carousel

@@ -3,9 +3,9 @@
 //! "คำสั่งซื้อของฉัน" lists the buyer's orders, open ones first, then the rest, the newest first
 //! within each. "ออเดอร์ร้าน" lists the shop's orders by filter: ใหม่, those yet to be accepted,
 //! and กำลังดำเนินการ, the active ones, the oldest first, as they are to be handled; ค้างชำระ,
-//! those handed over but not paid (FR-PAY-07), and เสร็จแล้ว/ยกเลิก, those over, the newest
-//! first. Both are paged in the database; a page past the last, from an old "ดูเพิ่มเติม",
-//! shows the first.
+//! those handed over but not paid (FR-PAY-07), and those cancelled once paid, to be refunded
+//! (FR-PAY-09); and เสร็จแล้ว/ยกเลิก, those over, the newest first. Both are paged in the
+//! database; a page past the last, from an old "ดูเพิ่มเติม", shows the first.
 //!
 //! Each card shows as much of how to reach the other party as FR-ORD-11 lets its viewer see
 //! ([`contact`](super::contact)), and the buttons of what they can do about it now, those of
@@ -32,6 +32,7 @@ use crate::dispatcher::menu::Item;
 use crate::dispatcher::postback::Postback;
 use crate::line::{Action, Message};
 use crate::notifications::templates::{ORDERS_PER_PAGE, OrderCard, labels};
+use crate::payments::UNPAID;
 use crate::persistence::entity::order::{self, PaymentStatus, Status};
 use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{order_item, shop, user};
@@ -44,10 +45,6 @@ const PAGE: &str = "page";
 /// The filter of "ออเดอร์ร้าน", by its key
 const FILTER: &str = "filter";
 
-/// The payment statuses of an order not paid: none recorded, or a transfer its seller is yet
-/// to confirm (FR-PAY-08)
-const UNPAID: [PaymentStatus; 2] = [PaymentStatus::Unpaid, PaymentStatus::AwaitingConfirmation];
-
 /// The filters of "ออเดอร์ร้าน" (FR-ORD-10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Filter {
@@ -55,7 +52,8 @@ enum Filter {
     New,
     /// "กำลังดำเนินการ": accepted, and ready or on its way, but not yet handed over
     Active,
-    /// "ค้างชำระ": handed over but not paid (FR-PAY-07)
+    /// "ค้างชำระ": money still to settle: handed over but not paid (FR-PAY-07), or cancelled
+    /// once paid and not yet refunded (FR-PAY-09)
     Unpaid,
     /// "เสร็จแล้ว/ยกเลิก": over
     Done,
@@ -86,27 +84,33 @@ impl Filter {
         }
     }
 
-    /// The one that lists `order` as it is now, that of its unpaid status once it is handed
-    /// over unpaid.
+    /// The one that lists `order` as it is now, "ค้างชำระ" while money on it is still to
+    /// settle.
     fn of(order: &order::Model) -> Self {
         match order.status {
             Status::Pending => Self::New,
-            _ if unpaid(order) => Self::Unpaid,
+            _ if owed(order) => Self::Unpaid,
             status if status.is_active() => Self::Active,
             _ => Self::Done,
         }
     }
 
-    /// The orders it picks, as [`of`](Self::of) and [`unpaid`] say.
+    /// The orders it picks, as [`of`](Self::of) and [`owed`] say.
     fn condition(self) -> Condition {
         let status = order::Column::Status;
         let condition = Condition::all();
         match self {
             Self::New => condition.add(status.eq(Status::Pending)),
             Self::Active => condition.add(status.is_in(Status::iter().filter(|s| s.is_active()))),
-            Self::Unpaid => condition
-                .add(status.eq(Status::Completed))
-                .add(order::Column::PaymentStatus.is_in(UNPAID)),
+            Self::Unpaid => {
+                let payment = order::Column::PaymentStatus;
+                let unpaid = condition
+                    .add(status.eq(Status::Completed))
+                    .add(payment.is_in(UNPAID));
+                Condition::any()
+                    .add(unpaid)
+                    .add(payment.eq(PaymentStatus::RefundDue))
+            }
             Self::Done => condition.add(status.is_in(Status::iter().filter(|s| s.is_final()))),
         }
     }
@@ -118,9 +122,15 @@ impl Filter {
     }
 }
 
-/// Whether `order` is handed over but not paid: "ค้างชำระ" (FR-PAY-07).
+/// Whether `order` is handed over but not paid (FR-PAY-07).
 fn unpaid(order: &order::Model) -> bool {
     order.status == Status::Completed && UNPAID.contains(&order.payment_status)
+}
+
+/// Whether money on `order` is still to settle: "ค้างชำระ". It is handed over but not paid, or
+/// was cancelled once paid and is yet to be refunded (FR-PAY-09).
+fn owed(order: &order::Model) -> bool {
+    unpaid(order) || order.payment_status == PaymentStatus::RefundDue
 }
 
 /// "คำสั่งซื้อของฉัน" (FR-ORD-10): the page its postback asks for.
@@ -377,6 +387,7 @@ fn card<'a>(
         total: order.total,
         fulfillment: order.fulfillment,
         payment: order.payment_method,
+        payment_status: order.payment_status,
         unpaid: viewer == ActorType::Seller && unpaid(order),
         contact: contact::shown(order, shop, buyer, viewer),
         buttons: actions::buttons(order, viewer),

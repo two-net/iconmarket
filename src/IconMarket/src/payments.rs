@@ -1,6 +1,10 @@
 //! Payments (SRS §2.1): payment method and status, PromptPay details and slips.
 //! Built by #35, #40 and #41.
 
+mod status;
+
+pub use status::{Recorded, UNPAID, allowed, record};
+
 use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder};
 
 use crate::persistence::entity::order::{self, PaymentMethod, PaymentStatus, Status};

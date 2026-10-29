@@ -6,13 +6,15 @@
 //!   decide; the buyer sees nothing of the shop yet.
 //! - Once it is accepted, while it is active, the seller also sees the buyer's phone if they
 //!   gave one, the full address and location it is delivered to, and the note; the buyer sees
-//!   where to pick it up, for pickup, and the shop's phone unless its seller hides it
-//!   (FR-SHOP-08).
+//!   where to pick it up, for pickup, the shop's phone unless its seller hides it
+//!   (FR-SHOP-08), and its PromptPay ID while an order paid by PromptPay is yet to be paid
+//!   (FR-PAY-03).
 //! - Once it is over, neither sees any: the seller keeps only the buyer's display name, to know
 //!   whom an order was for, or who owes it (FR-PAY-07).
 
 use crate::notifications::templates::{self, Contact, OrderContact};
-use crate::persistence::entity::order::{self, Fulfillment, Status};
+use crate::payments;
+use crate::persistence::entity::order::{self, Fulfillment, PaymentMethod, Status};
 use crate::persistence::entity::order_event::ActorType;
 use crate::persistence::entity::{shop, user};
 
@@ -43,10 +45,13 @@ pub(super) fn shown<'a>(
         ActorType::Seller => OrderContact::Buyer { name, zone: None },
         ActorType::Buyer if order.status.is_active() => {
             let pickup = order.fulfillment == Fulfillment::Pickup;
+            let transfers = order.payment_method == PaymentMethod::PromptPay
+                && payments::UNPAID.contains(&order.payment_status);
             OrderContact::Shop {
                 pickup: shop.pickup_address.as_deref().filter(|_| pickup),
                 location: (shop.pickup_latitude.zip(shop.pickup_longitude)).filter(|_| pickup),
                 phone: shop.phone.as_deref().filter(|_| shop.show_phone),
+                promptpay: shop.promptpay_id.as_deref().filter(|_| transfers),
             }
         }
         ActorType::Buyer | ActorType::Admin | ActorType::System => OrderContact::None,
