@@ -11,7 +11,9 @@ use super::flex::{
     Weight,
 };
 use super::limits;
-use super::testing::{Answer, BOT_INFO, Fake, GROUP, PUSH, REPLY, TOKEN, USER};
+use super::testing::{
+    Answer, BOT_INFO, Fake, GROUP, PUSH, QUOTA, QUOTA_CONSUMPTION, REPLY, TOKEN, USER,
+};
 use super::*;
 use crate::config::Secret;
 use crate::thai::Label;
@@ -729,6 +731,60 @@ async fn the_bot_info_has_the_basic_id() {
         (request.method.as_str(), request.path.as_str()),
         ("GET", BOT_INFO)
     );
+}
+
+/// FR-ADM-07, NFR-COST-01: the push quota as LINE counts it, limited or not, for an admin to
+/// see before sending an announcement.
+#[tokio::test]
+async fn the_quota_is_what_line_allows_and_has_counted() {
+    let fake = Fake::start().await;
+    let limit = |body| [Answer::json(200, body)];
+    fake.script(QUOTA, limit(json!({ "type": "limited", "value": 300 })));
+    fake.script(
+        QUOTA_CONSUMPTION,
+        [Answer::json(200, json!({ "totalUsage": 320 }))],
+    );
+
+    let quota = fake.client().quota().await.unwrap();
+
+    let expected = Quota {
+        limit: Some(300),
+        used: 320,
+    };
+    assert_eq!(quota, expected);
+    assert_eq!(quota.left(), Some(0));
+    let mut asked: Vec<_> = fake
+        .requests()
+        .iter()
+        .map(|request| (request.method.to_string(), request.path.clone()))
+        .collect();
+    asked.sort();
+    assert_eq!(
+        asked,
+        [
+            ("GET".to_owned(), QUOTA.to_owned()),
+            ("GET".to_owned(), QUOTA_CONSUMPTION.to_owned()),
+        ]
+    );
+
+    fake.script(QUOTA, limit(json!({ "type": "none" })));
+    fake.script(
+        QUOTA_CONSUMPTION,
+        [Answer::json(200, json!({ "totalUsage": 12 }))],
+    );
+    let unlimited = fake.client().quota().await.unwrap();
+    assert_eq!(
+        unlimited,
+        Quota {
+            limit: None,
+            used: 12
+        }
+    );
+    assert_eq!(unlimited.left(), None);
+
+    // Either call failing fails both
+    fake.script(QUOTA, [Answer::error(500, "Internal Server Error")]);
+    assert!(fake.client().quota().await.is_err());
 }
 
 // Rich menus (#17)

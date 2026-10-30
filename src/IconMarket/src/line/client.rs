@@ -1,6 +1,6 @@
 //! The connection to LINE: TLS, the access token, timeouts and error mapping, plus the calls
-//! that read from LINE or only show something: the OA's own details, profiles, content and the
-//! loading animation.
+//! that read from LINE or only show something: the OA's own details and push quota, profiles,
+//! content and the loading animation.
 
 use std::time::Duration;
 
@@ -59,6 +59,38 @@ pub struct Profile {
 pub struct BotInfo {
     /// Its basic ID, such as `@216ruvtu`, which links to a chat with it open
     pub basic_id: String,
+}
+
+/// The OA's push quota for the month, as LINE counts it: one message per recipient of each push
+/// request, whatever the number of message objects in it (NFR-COST-01).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Quota {
+    /// How many it may push this month; `None` when the plan sets no limit
+    pub limit: Option<u64>,
+    /// How many it has pushed this month
+    pub used: u64,
+}
+
+impl Quota {
+    /// How many it may still push this month; `None` without a limit.
+    pub fn left(&self) -> Option<u64> {
+        self.limit.map(|limit| limit.saturating_sub(self.used))
+    }
+}
+
+/// LINE's answer to `GET /v2/bot/message/quota`.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum QuotaLimit {
+    Limited { value: u64 },
+    None,
+}
+
+/// LINE's answer to `GET /v2/bot/message/quota/consumption`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Consumption {
+    total_usage: u64,
 }
 
 /// An image or audio file a user sent.
@@ -155,6 +187,29 @@ impl Client {
     pub async fn bot_info(&self) -> Result<BotInfo, Error> {
         let request = self.http.get(self.api_url(&["v2", "bot", "info"]));
         self.fetch(request).await
+    }
+
+    /// The OA's push quota for this month and how much of it is used, which an admin sees before
+    /// sending an announcement (FR-ADM-07).
+    pub async fn quota(&self) -> Result<Quota, Error> {
+        let limit = self
+            .http
+            .get(self.api_url(&["v2", "bot", "message", "quota"]));
+        let used = self
+            .http
+            .get(self.api_url(&["v2", "bot", "message", "quota", "consumption"]));
+        let (limit, used) = tokio::join!(
+            self.fetch::<QuotaLimit>(limit),
+            self.fetch::<Consumption>(used)
+        );
+        let limit = match limit? {
+            QuotaLimit::Limited { value } => Some(value),
+            QuotaLimit::None => None,
+        };
+        Ok(Quota {
+            limit,
+            used: used?.total_usage,
+        })
     }
 
     /// A user's display name and picture (FR-LINE-10). `None` when LINE won't say: the user

@@ -25,7 +25,7 @@ use crate::line::flex::{
     Align, AspectMode, Bubble, BubbleSize, Button, ButtonHeight, ButtonStyle, Carousel, Component,
     FlexBox, FlexContainer, Hero, Image, Justify, Separator, Size, Spacing, Text, Weight,
 };
-use crate::line::{Action, Message, QuickReply, QuickReplyItem, limits};
+use crate::line::{Action, Message, QuickReply, QuickReplyItem, Quota, limits};
 use crate::orders::cart;
 use crate::orders::periods::Orders;
 use crate::payments;
@@ -873,6 +873,143 @@ impl Templates {
         ];
         let card = self.figures_card(&labels::STATS, None, at, sections, &[again]);
         Message::flex(labels::STATS.as_str(), card)
+    }
+
+    /// Asks for the text of an announcement to every follower (FR-ADM-07), of at most
+    /// `max_chars`.
+    pub fn ask_announcement_text(&self, max_chars: usize) -> Message {
+        let kha = self.kha();
+        let max = thai::group_thousands(max_chars as u64);
+        Message::text(format!(
+            "พิมพ์ข้อความประกาศถึงผู้ติดตามทุกคนได้เลย{kha} ไม่เกิน {max} ตัวอักษร ขั้นต่อไปจะถามรูปประกอบ และให้ดูตัวอย่างก่อนส่ง{kha}"
+        ))
+    }
+
+    /// A photo where the announcement's text was asked for: the text comes first.
+    pub fn announcement_text_expected(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "ขอพิมพ์ข้อความประกาศก่อนนะ{kha_question} รูปประกอบส่งได้ในขั้นต่อไป{kha}"
+        ))
+    }
+
+    /// Asks for the announcement's optional photo (FR-ADM-07).
+    pub fn ask_announcement_photo(&self) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        Message::text(format!(
+            "มีรูปประกอบประกาศไหม{kha_question} ส่งมาได้เลย 1 รูป ถ้าไม่มี กด \"{}\" ได้เลย{kha}",
+            labels::SKIP.as_str()
+        ))
+    }
+
+    /// The announcement's photo sent earlier is gone, so it is asked for again.
+    pub fn announcement_photo_lost(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} รูปประกอบที่ส่งไว้หายไปแล้ว ส่งรูปมาใหม่ หรือกด \"{}\" ได้เลย{kha}",
+            labels::SKIP.as_str()
+        ))
+    }
+
+    /// An announcement as its recipients see it (FR-ADM-07): the admin's `text`, as typed, under
+    /// a heading.
+    pub fn announcement(&self, text: &str) -> Message {
+        Message::text(format!("📢 {}\n\n{text}", labels::ANNOUNCEMENTS.as_str()))
+    }
+
+    /// Asks to confirm sending the announcement shown above it to `recipients` followers, one
+    /// push each (FR-ADM-07, NFR-COST-01): the quota LINE says is left, if it said, or else the
+    /// pushes logged this month, `pushed`. `confirm` sends it; `edit` writes it again.
+    pub fn confirm_announcement(
+        &self,
+        recipients: u64,
+        quota: Option<Quota>,
+        pushed: u64,
+        confirm: Action,
+        edit: Action,
+    ) -> Message {
+        let (kha, kha_question) = (self.kha(), self.kha_question());
+        let count = thai::group_thousands;
+        let mut lines = vec![
+            format!(
+                "ส่งประกาศด้านบนถึงผู้ติดตาม {} คนใช่ไหม{kha_question}",
+                count(recipients)
+            ),
+            format!(
+                "จะใช้โควตาข้อความของไลน์คนละ 1 ข้อความ รวม {} ข้อความ",
+                count(recipients)
+            ),
+        ];
+        match quota {
+            Some(Quota {
+                limit: Some(limit),
+                used,
+            }) => {
+                let left = limit.saturating_sub(used);
+                lines.push(format!(
+                    "เดือนนี้เหลือโควตา {} จาก {} ข้อความ",
+                    count(left),
+                    count(limit)
+                ));
+                if recipients > left {
+                    lines.push(format!(
+                        "⚠️ โควตาไม่พอ จะส่งได้ประมาณ {} คน คนที่เหลือจะไม่ได้รับประกาศ และการแจ้งเตือนออเดอร์จะส่งไม่ได้จนถึงเดือนหน้า",
+                        count(left)
+                    ));
+                }
+            }
+            Some(Quota { limit: None, used }) => lines.push(format!(
+                "แพ็กเกจนี้ไม่จำกัดโควตา เดือนนี้ใช้ไปแล้ว {} ข้อความ",
+                count(used)
+            )),
+            None => lines.push(format!(
+                "ตอนนี้ดูโควตาที่เหลือไม่ได้ เดือนนี้ระบบส่งการแจ้งเตือนไปแล้ว {} ข้อความ",
+                count(pushed)
+            )),
+        }
+        lines.push(format!(
+            "โควตานี้ใช้ร่วมกับการแจ้งเตือนออเดอร์ ถ้าแน่ใจ กด \"{}\" ได้เลย{kha}",
+            confirm.label().as_str()
+        ));
+        let text = lines.join("\n");
+        with_cancel(Message::text(text).with_quick_reply(QuickReply::new([confirm, edit])))
+    }
+
+    /// No one but the admin follows the OA, so the announcement isn't sent (FR-ADM-07). The
+    /// main menu follows.
+    pub fn no_announcement_recipients(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!("ยังไม่มีผู้ติดตามคนอื่นให้ส่งถึง{kha} ประกาศนี้จึงยังไม่ได้ส่ง{kha}"))
+    }
+
+    /// The announcement is being sent to `recipients` followers (FR-ADM-07).
+    pub fn announcement_sending(&self, recipients: u64) -> Message {
+        let (kha, stats) = (self.kha(), labels::STATS.as_str());
+        Message::text(format!(
+            "เริ่มส่งประกาศถึงผู้ติดตาม {} คนแล้ว{kha} ดูผลการส่งได้ใน \"{stats}\"{kha}",
+            thai::group_thousands(recipients)
+        ))
+    }
+
+    /// A second tap: the announcement went `at` to `recipients` followers, and isn't sent again.
+    pub fn announcement_sent_already(&self, at: DateTime<Utc>, recipients: u64) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ประกาศนี้ส่งไปแล้วเมื่อ {} ถึงผู้ติดตาม {} คน{kha}",
+            self.date_time(at),
+            thai::group_thousands(recipients)
+        ))
+    }
+
+    /// The confirm button of an announcement came too late: it wasn't sent, and `again` starts
+    /// writing one anew.
+    pub fn announcement_gone(&self, again: Action) -> Message {
+        let kha = self.kha();
+        let text = format!(
+            "ปุ่มนี้หมดอายุแล้ว ประกาศนี้จึงยังไม่ได้ส่ง{kha} ถ้ายังต้องการส่ง กด \"{}\" เพื่อเขียนใหม่ได้เลย{kha}",
+            again.label().as_str()
+        );
+        Message::text(text).with_quick_reply(QuickReply::new([again]))
     }
 
     /// "ยอดขาย" (FR-SHOP-11): the `sales` of shop `shop_name` as they were `at`. Orders are a
@@ -6721,6 +6858,10 @@ pub mod labels {
         /// Shows the statistics again, as they are now
         REFRESH = "ดูตัวเลขล่าสุด",
 
+        // Announcements (FR-ADM-07)
+        /// Sends an announcement to every follower
+        SEND_ANNOUNCEMENT = "ยืนยันส่ง",
+
         // Help topics (FR-HELP-01), with MY_DATA and DELETE_ACCOUNT
         HOW_TO_ORDER = "วิธีสั่งซื้อ",
         SELLING = "เปิดร้านและลงสินค้า",
@@ -7330,7 +7471,114 @@ mod tests {
         // Without the AI's comment, which is the AI's to write
         let summary = t.daily_summary_notice(summary_time(), &summary_day(), None, Vec::new());
         texts.push(notice_lines(&summary).join("\n"));
+        // Without the announcement itself, which is the admin's to word
+        texts.extend(announcement_texts(t));
         texts
+    }
+
+    /// Every text of writing and sending an announcement (FR-ADM-07), but the announcement.
+    fn announcement_texts(t: &Templates) -> Vec<String> {
+        let send = || {
+            let data = "confirm?k=announcement.send&pa=1";
+            Action::postback(labels::SEND_ANNOUNCEMENT.clone(), data)
+        };
+        let edit = || Action::postback(labels::EDIT.clone(), "announcements.edit");
+        let again = Action::postback(labels::ANNOUNCEMENTS.clone(), "announcements");
+        let quotas = [
+            None,
+            Some(Quota {
+                limit: Some(300),
+                used: 120,
+            }),
+            Some(Quota {
+                limit: Some(300),
+                used: 299,
+            }),
+            Some(Quota {
+                limit: None,
+                used: 4000,
+            }),
+        ];
+        let mut messages: Vec<Message> = quotas
+            .into_iter()
+            .map(|quota| t.confirm_announcement(3, quota, 42, send(), edit()))
+            .collect();
+        messages.extend([
+            t.ask_announcement_text(4000),
+            t.announcement_text_expected(),
+            t.ask_announcement_photo(),
+            t.announcement_photo_lost(),
+            t.no_announcement_recipients(),
+            t.announcement_sending(1200),
+            t.announcement_sent_already(summary_time(), 3),
+            t.announcement_gone(again),
+        ]);
+        messages
+            .iter()
+            .map(|message| text(message).to_owned())
+            .collect()
+    }
+
+    /// FR-ADM-07, NFR-COST-01: before an announcement is sent, the admin is told what it costs
+    /// of the push quota, and warned when what is left won't reach everyone.
+    #[test]
+    fn an_announcement_says_what_it_costs_before_it_is_sent() {
+        let t = templates(PoliteParticle::Kha);
+        let send = Action::postback(labels::SEND_ANNOUNCEMENT.clone(), "confirm");
+        let edit = Action::postback(labels::EDIT.clone(), "announcements.edit");
+        let card = |recipients, quota| {
+            let card = t.confirm_announcement(recipients, quota, 42, send.clone(), edit.clone());
+            text(&card).to_owned()
+        };
+        let limited = |used| {
+            Some(Quota {
+                limit: Some(1500),
+                used,
+            })
+        };
+
+        assert_eq!(
+            card(1200, limited(120)),
+            "ส่งประกาศด้านบนถึงผู้ติดตาม 1,200 คนใช่ไหมคะ\n\
+             จะใช้โควตาข้อความของไลน์คนละ 1 ข้อความ รวม 1,200 ข้อความ\n\
+             เดือนนี้เหลือโควตา 1,380 จาก 1,500 ข้อความ\n\
+             โควตานี้ใช้ร่วมกับการแจ้งเตือนออเดอร์ ถ้าแน่ใจ กด \"ยืนยันส่ง\" ได้เลยค่ะ"
+        );
+        // Exactly enough is no warning
+        assert!(!card(1380, limited(120)).contains("⚠️"));
+        assert!(
+            card(1381, limited(120))
+                .contains("⚠️ โควตาไม่พอ จะส่งได้ประมาณ 1,380 คน คนที่เหลือจะไม่ได้รับประกาศ")
+        );
+        // LINE may count more than the limit
+        assert!(card(3, limited(1600)).contains("เหลือโควตา 0 จาก 1,500"));
+        let unlimited = Some(Quota {
+            limit: None,
+            used: 4000,
+        });
+        assert!(card(3, unlimited).contains("ไม่จำกัดโควตา เดือนนี้ใช้ไปแล้ว 4,000 ข้อความ"));
+        assert!(card(3, None).contains("ระบบส่งการแจ้งเตือนไปแล้ว 42 ข้อความ"));
+
+        let quick_replies = t.confirm_announcement(3, None, 0, send.clone(), edit.clone());
+        let labels: Vec<_> = quick_replies
+            .quick_reply
+            .as_ref()
+            .expect("a Quick Reply")
+            .items
+            .iter()
+            .map(|item| item.action.label().as_str())
+            .collect();
+        assert_eq!(labels, ["ยืนยันส่ง", "แก้ไข", "ยกเลิก"]);
+    }
+
+    /// FR-ADM-07: recipients see the admin's text as typed, line breaks and all, under a
+    /// heading.
+    #[test]
+    fn an_announcement_is_the_admins_text_under_a_heading() {
+        let t = templates(PoliteParticle::Khrap);
+        let announcement = t.announcement("ตลาดนัดพรุ่งนี้\nหน้าวัด 7 โมง");
+        assert_eq!(text(&announcement), "📢 ประกาศ\n\nตลาดนัดพรุ่งนี้\nหน้าวัด 7 โมง");
+        assert_eq!(announcement.quick_reply, None);
     }
 
     /// Every text of acting on an order (Table 4.6-B), a notice's lines joined. The order

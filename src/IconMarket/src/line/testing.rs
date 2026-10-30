@@ -26,6 +26,8 @@ pub const GROUP: &str = "C0123456789abcdef0123456789abcdef";
 pub const PUSH: &str = "/v2/bot/message/push";
 pub const REPLY: &str = "/v2/bot/message/reply";
 pub const BOT_INFO: &str = "/v2/bot/info";
+pub const QUOTA: &str = "/v2/bot/message/quota";
+pub const QUOTA_CONSUMPTION: &str = "/v2/bot/message/quota/consumption";
 
 /// What the fake answers to one request.
 #[derive(Clone)]

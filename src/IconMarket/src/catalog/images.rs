@@ -1,11 +1,12 @@
-//! Images (FR-PROD-04): product and shop photos and payment slips, made safe and stored in
-//! PostgreSQL (CON-03), and the two links that serve them (§3.4, NFR-SEC-04).
+//! Images (FR-PROD-04): product and shop photos, payment slips and the photos of announcements,
+//! made safe and stored in PostgreSQL (CON-03), and the two links that serve them (§3.4,
+//! NFR-SEC-04).
 //!
 //! A user's photo is downloaded from LINE while its event is processed (FR-LINE-09), checked
-//! and re-encoded ([`process`]), then [`store`]d under a random ID. A product or shop image is
-//! public by that ID at `/img/p/{id}`. A slip image is reachable only through its payment slip's
-//! [`SlipLink`] at `/img/s/{token}`, until the link expires (AC-14). A product without a photo
-//! shows the [placeholder](placeholder_url) instead (FR-SRCH-07).
+//! and re-encoded ([`process`]), then [`store`]d under a random ID. A product or shop image, or
+//! an announcement's photo, is public by that ID at `/img/p/{id}`. A slip image is reachable only
+//! through its payment slip's [`SlipLink`] at `/img/s/{token}`, until the link expires (AC-14). A
+//! product without a photo shows the [placeholder](placeholder_url) instead (FR-SRCH-07).
 //!
 //! The PromptPay QR code of an order accepted is drawn by the system, not uploaded: it is
 //! [stored as a PNG](store_png) and sent to the buyer from `/img/p/{id}` like a photo
@@ -104,6 +105,8 @@ pub enum Owner {
     Draft(i64),
     /// The order with this ID, whose PromptPay QR code it is (FR-PAY-04)
     PaymentQr(i64),
+    /// The announcement with this ID, whose photo it is (FR-ADM-07)
+    Announcement(i64),
 }
 
 impl Owner {
@@ -114,6 +117,7 @@ impl Owner {
             Self::Slip(id) => (OwnerType::Slip, id),
             Self::Draft(user_id) => (OwnerType::Draft, user_id),
             Self::PaymentQr(order_id) => (OwnerType::PaymentQr, order_id),
+            Self::Announcement(id) => (OwnerType::Announcement, id),
         }
     }
 }
@@ -528,7 +532,8 @@ impl SlipLink {
 }
 
 /// `/img/p/{id}` under `app.baseUrl`: a product or shop image for Flex and image messages
-/// (FR-LINE-01), or an order's PromptPay QR code (FR-PAY-04). LINE accepts the same link as the
+/// (FR-LINE-01), an order's PromptPay QR code (FR-PAY-04), or an announcement's photo
+/// (FR-ADM-07). LINE accepts the same link as the
 /// preview, as stored images are small.
 pub fn product_image_url(base: &Url, id: Uuid) -> Url {
     link(base, "p", id)
@@ -559,9 +564,9 @@ fn link(base: &Url, kind: &str, id: Uuid) -> Url {
     url
 }
 
-/// `GET /img/p/{imageId}`: a product or shop image, or a draft of one, public by its random ID,
-/// or an order's PromptPay QR code, likewise but kept by no cache. Never a slip image, though it
-/// has an ID too.
+/// `GET /img/p/{imageId}`: a product or shop image, or a draft of one, or an announcement's
+/// photo, public by its random ID, or an order's PromptPay QR code, likewise but kept by no
+/// cache. Never a slip image, though it has an ID too.
 pub async fn serve_product(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Ok(id) = Uuid::try_parse(&id) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -572,6 +577,7 @@ pub async fn serve_product(State(state): State<AppState>, Path(id): Path<String>
             OwnerType::Shop,
             OwnerType::Draft,
             OwnerType::PaymentQr,
+            OwnerType::Announcement,
         ]))
         .one(&persistence::orm(state.db))
         .await;

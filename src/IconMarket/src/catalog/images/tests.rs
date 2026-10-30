@@ -394,6 +394,15 @@ async fn a_stored_photo_has_no_metadata_and_is_served_by_its_random_id() {
         get(&db, &format!("/img/p/{shop}")).await.status(),
         StatusCode::OK
     );
+    // An announcement's photo, which LINE fetches for its followers (FR-ADM-07)
+    let announcement = Owner::Announcement(1);
+    let announced = store(&db, announcement, photo(), &config(), Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    let response = get(&db, &format!("/img/p/{announced}")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], PUBLIC);
     let unknown = random_id();
     assert_eq!(
         get(&db, &format!("/img/p/{unknown}")).await.status(),

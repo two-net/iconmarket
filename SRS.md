@@ -301,7 +301,7 @@ Routing priority (FR-UI-12):
 | Endpoint | Purpose | Access |
 | --- | --- | --- |
 | `POST /webhook/line` | LINE webhook | Valid LINE signature required |
-| `GET /img/p/{imageId}` | Product and shop images, and PromptPay QR codes, used in Flex and image messages | Public; ID is random, at least 128 bits |
+| `GET /img/p/{imageId}` | Product and shop images, PromptPay QR codes and announcement photos, used in Flex and image messages | Public; ID is random, at least 128 bits |
 | `GET /img/s/{token}` | Payment-slip images shown to the seller | Random single-purpose token, expires after `image.slipLinkHours` |
 | `GET /health` | Liveness/readiness including database status | Public; no sensitive data |
 
@@ -460,7 +460,7 @@ No other endpoints are exposed.
 | Shop application, item held, user report | Admins | `notification.adminAlerts` | on |
 | Daily sales summary | Seller | `notification.dailySummary` | off (C) |
 | "ของใหม่วันนี้" digest | Village LINE group | `notification.groupDigest` | off (C) |
-| Announcement | All followers | Sent manually by an admin (FR-ADM-07) | — |
+| Announcement | All followers except the admin who sends it | Sent manually by an admin (FR-ADM-07) | — |
 
 | ID | Requirement | Pri |
 | --- | --- | --- |
@@ -527,7 +527,7 @@ No other endpoints are exposed.
 | FR-ADM-04 | "ผู้ใช้": find a user by display name, phone or order number; suspend or unsuspend with a reason. A suspended user is told why and cannot order, sell or use the AI, but can still view their orders and help. | M |
 | FR-ADM-05 | "หมวดหมู่": add, rename, reorder and deactivate categories. A category that has products can be deactivated but not deleted. | M |
 | FR-ADM-06 | "สถิติ": users (total, new in 7 days), shops (approved, open now), orders today / 7 days / 30 days by status, value of completed orders, AI calls today vs. limits, pushes this month. | S |
-| FR-ADM-07 | "ประกาศ": compose a text (with optional image), see the recipient count and a warning that it uses push quota, confirm, then send to all following users. | C |
+| FR-ADM-07 | "ประกาศ": compose a text (with optional image), see a preview with the recipient count and a warning that it uses push quota (with the quota LINE reports left this month, and a stronger warning when that is not enough), confirm, then send to all following users except the sending admin. | C |
 | FR-ADM-08 | Every admin action shall be written to the audit log (who, what, target, when, reason). | M |
 | FR-ADM-09 | Admins cannot change order items or amounts. | M |
 
@@ -562,7 +562,7 @@ Entity names and physical types are the implementer's choice; the information be
 | Shop | A seller's shop | id, owner (unique), name, description, photo, status, open flag, opening hours, pickup and delivery flags, delivery fee, minimum order, PromptPay ID, phone, show-phone flag, pickup address/location, timestamps |
 | Category | Product grouping | id, name (unique), sort order, active flag |
 | Product | Item for sale | id, shop, category, name, description, price, unit, stock (null = unlimited), status, ready date (pre-order, FR-PROD-11), timestamps, deleted-at |
-| Image | Stored image | id (random), owner type (product / shop / slip / payment QR), owner id, order, content type, width, height, size, binary data, created-at |
+| Image | Stored image | id (random), owner type (product / shop / slip / payment QR / announcement), owner id, order, content type, width, height, size, binary data, created-at |
 | CartItem | A line in a buyer's cart | user, product (unique together), quantity, added-at |
 | Order | One checkout at one shop | id, order number (unique), checkout key (unique — the pending action that created it), buyer, shop, status, fulfillment, delivery address snapshot, note, subtotal, delivery fee, total, payment method, payment status, status timestamps, cancel reason |
 | OrderItem | A line of an order | order, product, name snapshot, unit snapshot, unit-price snapshot, ready-date snapshot, quantity, line total |
@@ -576,6 +576,7 @@ Entity names and physical types are the implementer's choice; the information be
 | AiCallLog | AI usage | user, feature, provider, model, input tokens, output tokens, latency, outcome, created-at |
 | WebhookEvent | Inbox and de-duplication | LINE webhook event id (unique), user key, type, payload (JSON), received-at, status, attempts, processed-at, error |
 | PushLog | Outgoing pushes | type, recipient, retry key, status, error, sent-at |
+| Announcement | An admin's announcement (C) | admin, text, created-at, sent-at, recipient count |
 | AuditLog | Admin and sensitive actions | actor, action, target type and id, details (JSON), created-at |
 | Counter | Daily counters (order sequence, AI usage, join-code attempts) | key (unique, e.g., *order:20261022*), value |
 
@@ -622,7 +623,9 @@ Applied automatically by the daily retention job.
 | PromptPay QR images | Until the order reaches a final status | — |
 | Images of deleted products and shops | 30 days after deletion | `retention.deletedImageDays` |
 | Audit log | 365 days | `retention.auditLogDays` |
+| Announcements sent, with their photos | As long as their audit entry | `retention.auditLogDays` |
 | Sessions and pending actions | Until they expire | `session.timeoutMinutes`, `session.pendingActionMinutes` |
+| Announcements never confirmed, with their photos | Until their confirmation expires | `session.pendingActionMinutes` |
 | Orders, order items, order events | Kept; anonymized on account deletion | — |
 
 ---

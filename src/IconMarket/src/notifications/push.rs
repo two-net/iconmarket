@@ -58,10 +58,14 @@ const RETRY_WINDOW: TimeDelta = TimeDelta::hours(23);
 
 /// Pushes the retry job sends per run; any more are sent by the next
 const RETRIES_PER_RUN: u64 = 100;
+/// Push log rows written by one statement: an announcement queues one for every follower, and
+/// PostgreSQL takes at most 65,535 parameters, nine a row
+const ROWS_PER_INSERT: usize = 1000;
 
 /// A notification of Table 4.8-A. Each feature builds its own, with buttons for what the
 /// recipient can do about it (FR-NOT-03), using
-/// [`templates::notice`](super::templates::notice). Announcements are added by #49.
+/// [`templates::notice`](super::templates::notice), but for an admin's announcement, which is
+/// theirs to word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// To the seller: a new order (FR-ORD-03)
@@ -114,6 +118,9 @@ pub enum Kind {
     DailySummary,
     /// To the village group: "ของใหม่วันนี้" (FR-NOT-07)
     GroupDigest,
+    /// To every follower but the admin who sent it: an admin's announcement (FR-ADM-07), the
+    /// only marketing push (NFR-COST-01)
+    Announcement,
 }
 
 impl Kind {
@@ -143,6 +150,7 @@ impl Kind {
             Self::UserReport => "admin.user_report",
             Self::DailySummary => "seller.daily_summary",
             Self::GroupDigest => "group.digest",
+            Self::Announcement => "announcement",
         }
     }
 
@@ -169,7 +177,8 @@ impl Kind {
             | Self::ShopSuspended
             | Self::ShopUnsuspended
             | Self::AccountSuspended
-            | Self::AccountUnsuspended => true,
+            | Self::AccountUnsuspended
+            | Self::Announcement => true,
         }
     }
 }
@@ -180,6 +189,17 @@ pub fn reaches(user: &user::Model) -> bool {
     user.is_following && user.line_user_id.is_some()
 }
 
+/// How many users a notification [`To::Followers`] with `except` reaches as things stand: what
+/// an admin is told an announcement will cost before sending it (FR-ADM-07).
+pub async fn followers(db: &impl ConnectionTrait, except: i64) -> Result<u64, DbErr> {
+    user::Entity::find()
+        .filter(user::Column::IsFollowing.eq(true))
+        .filter(user::Column::LineUserId.is_not_null())
+        .filter(user::Column::Id.ne(except))
+        .count(db)
+        .await
+}
+
 /// Who a notification is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum To {
@@ -187,6 +207,9 @@ pub enum To {
     User(i64),
     /// Every admin
     Admins,
+    /// Every user who follows the OA, whatever their status, but the one with `users.id`
+    /// `except`: an announcement's admin (FR-ADM-07)
+    Followers { except: i64 },
 }
 
 /// One notification, as added.
@@ -268,7 +291,7 @@ impl Outbox {
             return Ok(Queued::default());
         }
 
-        let rows = requests.into_iter().map(|request| {
+        let mut rows = requests.into_iter().map(|request| {
             let push_type: Vec<_> = request.kinds.iter().map(|kind| kind.as_str()).collect();
             let push_type = push_type.join(",");
             pending(
@@ -279,12 +302,17 @@ impl Outbox {
                 now,
             )
         });
-        let mut pushes: Vec<Push> = push_log::Entity::insert_many(rows)
-            .exec_with_returning(db)
-            .await?
-            .into_iter()
-            .filter_map(Push::from_row)
-            .collect();
+        let mut pushes: Vec<Push> = Vec::new();
+        loop {
+            let chunk: Vec<_> = rows.by_ref().take(ROWS_PER_INSERT).collect();
+            if chunk.is_empty() {
+                break;
+            }
+            let inserted = push_log::Entity::insert_many(chunk)
+                .exec_with_returning(db)
+                .await?;
+            pushes.extend(inserted.into_iter().filter_map(Push::from_row));
+        }
         pushes.sort_by_key(|push| push.id);
         Ok(Queued(pushes))
     }
@@ -394,6 +422,8 @@ struct Followers {
     users: HashMap<i64, String>,
     /// In ID order
     admins: Vec<String>,
+    /// Everyone, in ID order, if a notification is for [`To::Followers`]; empty otherwise
+    everyone: Vec<(i64, String)>,
 }
 
 impl Followers {
@@ -402,12 +432,18 @@ impl Followers {
             .iter()
             .filter_map(|notice| match notice.to {
                 To::User(id) => Some(id),
-                To::Admins => None,
+                To::Admins | To::Followers { .. } => None,
             })
             .collect();
         let mut wanted = Condition::any().add(user::Column::Id.is_in(ids));
         if notices.iter().any(|notice| notice.to == To::Admins) {
             wanted = wanted.add(user::Column::IsAdmin.eq(true));
+        }
+        let all = notices
+            .iter()
+            .any(|notice| matches!(notice.to, To::Followers { .. }));
+        if all {
+            wanted = wanted.add(user::Column::IsFollowing.eq(true));
         }
         // A deleted account has no LINE user ID (FR-ONB-07)
         let rows: Vec<(i64, String, bool)> = user::Entity::find()
@@ -429,11 +465,16 @@ impl Followers {
             .filter(|(_, _, is_admin)| *is_admin)
             .map(|(_, line_user_id, _)| line_user_id.clone())
             .collect();
-        let users = rows
+        let everyone: Vec<(i64, String)> = rows
             .into_iter()
             .map(|(id, line_user_id, _)| (id, line_user_id))
             .collect();
-        Ok(Self { users, admins })
+        let users = everyone.iter().cloned().collect();
+        Ok(Self {
+            users,
+            admins,
+            everyone: if all { everyone } else { Vec::new() },
+        })
     }
 
     fn of_notice(&self, to: To) -> Vec<&str> {
@@ -445,6 +486,12 @@ impl Followers {
                 .into_iter()
                 .collect(),
             To::Admins => self.admins.iter().map(String::as_str).collect(),
+            To::Followers { except } => self
+                .everyone
+                .iter()
+                .filter(|(id, _)| *id != except)
+                .map(|(_, line_user_id)| line_user_id.as_str())
+                .collect(),
         }
     }
 }

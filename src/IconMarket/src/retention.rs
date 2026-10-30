@@ -12,12 +12,15 @@
 //! | PromptPay QR codes (FR-PAY-04) | until the order is final | — |
 //! | Images of deleted products and shops | `deletedImageDays` | the deletion |
 //! | Audit log | `auditLogDays` | the action |
+//! | Announcements sent, with their photos (FR-ADM-07) | `auditLogDays`, as their audit entries | the sending |
 //!
 //! Orders, their items and events are kept for good and only anonymized (DR-04). Sessions and
-//! pending actions are deleted as they expire, by the scheduler's `delete-expired` job.
+//! pending actions are deleted as they expire, by the scheduler's `delete-expired` job, as are
+//! announcements never confirmed.
 //!
 //! Each rule is one statement, committed on its own, that deletes only what is past its cutoff:
-//! a run cut short or run again deletes nothing it shouldn't.
+//! a run cut short or run again deletes nothing it shouldn't. Announcements take two, their
+//! photos first, so one cut short leaves only announcements without photos for the next run.
 
 #[cfg(test)]
 mod tests;
@@ -29,6 +32,7 @@ use sea_orm::{
     QuerySelect, QueryTrait, RelationTrait,
 };
 
+use crate::admin::announcements;
 use crate::config::RetentionConfig;
 use crate::persistence::entity::image::OwnerType;
 use crate::persistence::entity::{
@@ -50,6 +54,8 @@ pub struct Deleted {
     /// Images of deleted products and shops
     pub deleted_owner_images: u64,
     pub audit_logs: u64,
+    /// Announcements sent, with their photos
+    pub announcements: u64,
 }
 
 /// Deletes what, at `now`, has been kept longer than `config` allows (§5.4). A row exactly at
@@ -96,6 +102,7 @@ pub async fn apply(
         .exec(db)
         .await?
         .rows_affected;
+    let announcements = announcements::delete_sent(db, before(config.audit_log_days)).await?;
 
     Ok(Deleted {
         webhook_events,
@@ -106,6 +113,7 @@ pub async fn apply(
         payment_qr_images,
         deleted_owner_images,
         audit_logs,
+        announcements,
     })
 }
 

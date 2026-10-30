@@ -32,6 +32,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{Instrument, debug, info, info_span, warn};
 use url::Url;
 
+use crate::admin::announcements;
 use crate::catalog::browse::digest;
 use crate::catalog::shops::summary;
 use crate::config::{Config, NotificationConfig, OrderConfig, RetentionConfig};
@@ -53,7 +54,8 @@ const RETENTION_AT: NaiveTime = NaiveTime::from_hms_opt(3, 0, 0).expect("a valid
 /// own in the dispatcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Job {
-    /// Deletes expired sessions and pending actions (§5.4)
+    /// Deletes expired sessions and pending actions (§5.4), with the drafts of flows that ended
+    /// and the announcements never confirmed
     DeleteExpired,
     /// Sends the pushes left to send: failed tries, and those a crash or shutdown cut off
     /// (FR-LINE-12, FR-NOT-05)
@@ -118,12 +120,18 @@ impl Job {
     async fn run(self, context: Context) -> anyhow::Result<()> {
         match self {
             Self::DeleteExpired => {
-                let deleted = dispatcher::delete_expired(&context.db, Utc::now()).await?;
+                let now = Utc::now();
+                let deleted = dispatcher::delete_expired(&context.db, now).await?;
+                // Those whose confirm buttons expired, as the pending actions just deleted
+                let lifetime = TimeDelta::minutes(context.pending_action_minutes.into());
+                let announcements =
+                    announcements::delete_unsent(&context.db, now - lifetime).await?;
                 debug!(
                     sessions = deleted.sessions,
                     pending_actions = deleted.pending_actions,
                     draft_images = deleted.draft_images,
-                    "expired sessions, pending actions and draft images deleted"
+                    announcements,
+                    "expired sessions, pending actions, draft images and unsent announcements deleted"
                 );
             }
             Self::RetryPushes => {
@@ -151,6 +159,7 @@ impl Job {
                         payment_qr_images = deleted.payment_qr_images,
                         deleted_owner_images = deleted.deleted_owner_images,
                         audit_logs = deleted.audit_logs,
+                        announcements = deleted.announcements,
                         "retention applied"
                     );
                 }
@@ -221,6 +230,8 @@ struct Context {
     templates: Arc<Templates>,
     order: OrderConfig,
     notification: NotificationConfig,
+    /// `session.pendingActionMinutes`, after which an announcement never confirmed is deleted
+    pending_action_minutes: u32,
 }
 
 /// When a job runs.
@@ -292,6 +303,7 @@ pub async fn start(
         templates: Arc::new(Templates::new(&config.app)),
         order: config.order,
         notification: config.notification,
+        pending_action_minutes: config.session.pending_action_minutes,
     };
     let jobs: Vec<Job> = Job::ALL
         .into_iter()

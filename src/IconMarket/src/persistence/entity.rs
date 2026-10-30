@@ -26,6 +26,7 @@ use sea_orm::EntityTrait;
 
 pub mod ai_call_log;
 pub mod ai_message;
+pub mod announcement;
 pub mod audit_log;
 pub mod cart_item;
 pub mod category;

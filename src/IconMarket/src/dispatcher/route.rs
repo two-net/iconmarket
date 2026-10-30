@@ -16,9 +16,9 @@
 //! event's transaction, which also queues what it notifies; its reply and notifications are
 //! sent once that commits.
 //!
-//! Many destinations are built by later issues. Until then each is an arm here that logs which
-//! issue builds it and answers with the reply the dispatcher gives when nothing else applies;
-//! each issue replaces its arm with a call into its module.
+//! A destination built by a later issue, such as voice messages, is until then an arm here that
+//! logs which issue builds it and answers with the reply the dispatcher gives when nothing else
+//! applies; the issue replaces its arm with a call into its module.
 
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::{DatabaseTransaction, DbErr};
@@ -33,6 +33,7 @@ use super::postback::Postback;
 use super::worker::Context;
 use super::{Finished, Turn};
 use crate::admin::accounts;
+use crate::admin::announcements::{self, AnnouncementFlow};
 use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::admin::{review, statistics};
@@ -546,8 +547,8 @@ fn step_name(step: &Step) -> &'static str {
 /// settings (#24), adding products (#25), changing them (#26), searching (#28), the quantity
 /// for the cart (#29), the reasons of the review queue and finding and suspending users (#31),
 /// checkout (#32), the reasons for rejecting or cancelling an order (#33), sending a payment
-/// slip (#41), the messages relayed on an order (#44) and what its buyer tells the shop on
-/// rating it (#45).
+/// slip (#41), the messages relayed on an order (#44), what its buyer tells the shop on
+/// rating it (#45) and announcements (#49).
 async fn answer_flow(
     context: &Context,
     turn: &mut Turn<'_>,
@@ -642,6 +643,13 @@ async fn answer_flow(
             Some(session) => Some(rating::answer(turn, session, input).await),
             None => None,
         },
+        AnnouncementFlow::NAME => match stored.read::<AnnouncementFlow>() {
+            Some(session) => {
+                let line = &context.line;
+                Some(announcements::answer(turn, config, line, session, input).await)
+            }
+            None => None,
+        },
         _ => None,
     };
     match answered {
@@ -693,6 +701,9 @@ async fn tapped(
         action if action.starts_with(accounts::PREFIX) => {
             return accounts::tapped(turn, postback).await;
         }
+        action if action.starts_with(announcements::PREFIX) => {
+            return announcements::tapped(turn, postback).await;
+        }
         action if action.starts_with(settings::PREFIX) => {
             return settings::tapped(turn, &context.config, postback).await;
         }
@@ -724,8 +735,8 @@ async fn tapped(
     }
 }
 
-/// A function of the main menu (FR-UI-05), by the module that owns it, or the issue that builds
-/// it. `postback` is its button's, or that of "ดูเพิ่มเติม" under its list.
+/// A function of the main menu (FR-UI-05), by the module that owns it. `postback` is its
+/// button's, or that of "ดูเพิ่มเติม" under its list.
 async fn menu_item(
     context: &Context,
     turn: &Turn<'_>,
@@ -733,28 +744,25 @@ async fn menu_item(
     postback: &Postback,
 ) -> Result<Vec<Message>, DbErr> {
     use Item::*;
-    let issue = match item {
-        Buy => return browse::tapped(turn, &context.config, postback).await,
-        Search => return search::start(turn).await,
-        MyShop => return shops::tapped(turn, &context.config, &context.ai, postback).await,
-        ApproveShops => return approvals::tapped(turn, &context.config, postback).await,
-        ReviewQueue => return review::tapped(turn, &context.config, postback).await,
-        Users => return accounts::tapped(turn, postback).await,
-        Categories => return categories::tapped(turn, postback).await,
-        Help => return help::tapped(turn, &context.config, &context.ai, postback).await,
-        OpenClose | ShopSettings => {
-            return settings::tapped(turn, &context.config, postback).await;
-        }
-        AddProduct => return products::tapped(turn, &context.config, &context.ai, postback).await,
-        MyProducts => return manage::tapped(turn, &context.config, postback).await,
-        Cart => return cart::tapped(turn, postback).await,
-        MyOrders => return lists::mine(turn, postback).await,
-        ShopOrders => return lists::shop(turn, postback).await,
-        Sales => return sales::tapped(turn, &context.config).await,
-        Stats => return statistics::tapped(turn, &context.config).await,
-        Announcements => 49,
-    };
-    Ok(not_built(item.action(), issue, fallback(turn)))
+    match item {
+        Buy => browse::tapped(turn, &context.config, postback).await,
+        Search => search::start(turn).await,
+        MyShop => shops::tapped(turn, &context.config, &context.ai, postback).await,
+        ApproveShops => approvals::tapped(turn, &context.config, postback).await,
+        ReviewQueue => review::tapped(turn, &context.config, postback).await,
+        Users => accounts::tapped(turn, postback).await,
+        Categories => categories::tapped(turn, postback).await,
+        Help => help::tapped(turn, &context.config, &context.ai, postback).await,
+        OpenClose | ShopSettings => settings::tapped(turn, &context.config, postback).await,
+        AddProduct => products::tapped(turn, &context.config, &context.ai, postback).await,
+        MyProducts => manage::tapped(turn, &context.config, postback).await,
+        Cart => cart::tapped(turn, postback).await,
+        MyOrders => lists::mine(turn, postback).await,
+        ShopOrders => lists::shop(turn, postback).await,
+        Sales => sales::tapped(turn, &context.config).await,
+        Stats => statistics::tapped(turn, &context.config).await,
+        Announcements => announcements::tapped(turn, postback).await,
+    }
 }
 
 /// A global keyword (FR-UI-12 step 4).

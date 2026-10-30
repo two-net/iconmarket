@@ -3121,3 +3121,77 @@ async fn an_ai_outage_leaves_the_rest_working_end_to_end() {
     );
     assert_eq!(cart_of(&s, alice).await, [(red.id, 2)]);
 }
+
+/// Acceptance (FR-ADM-07): an admin writes an announcement from "ประกาศ" and confirms its
+/// preview; nothing is pushed before that, and then it goes after the reply, by push, to the
+/// followers only.
+#[tokio::test]
+async fn an_announcement_reaches_the_followers_once_confirmed() {
+    let s = setup().await;
+    let t = &s.templates;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut admin = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    admin.is_admin = Set(true);
+    admin.menu_roles = Set(Some(MenuRoles::Admin));
+    admin.update(&s.db).await.unwrap();
+    onboarded(&s.db, BOB).await;
+    let blocked = user::ActiveModel {
+        is_following: Set(false),
+        ..testing::new_user("U-blocked")
+    };
+    blocked.insert(&s.db).await.unwrap();
+    let text = "ตลาดนัดพรุ่งนี้ 7 โมงเช้า หน้าวัดค่ะ";
+
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "announcements"),
+            said("a2", ALICE, text),
+            said("a3", ALICE, "ข้าม"),
+        ],
+    )
+    .await;
+    let running = s.run();
+    settled(&s.db, 3).await;
+    assert!(pushes(&s).is_empty());
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    let preview = replies[&token("a3")].clone();
+    assert_eq!(preview[0], json!(t.announcement(text)));
+    let confirm = preview[1]["quickReply"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|item| {
+            let data = item["action"]["data"].as_str()?;
+            data.starts_with("confirm?").then(|| data.to_owned())
+        })
+        .expect("a confirm button");
+
+    store(&s.db, [tapped("a4", ALICE, &confirm)]).await;
+    running.wakeup.notify();
+    settled(&s.db, 4).await;
+    requested(&s, |path, body| path == PUSH && body["to"] == BOB).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    assert_eq!(replies[&token("a4")], json!([t.announcement_sending(1)]));
+    assert_eq!(
+        pushes(&s),
+        [(BOB.to_owned(), json!([t.announcement(text)]))]
+    );
+    // The reply first, then the push (FR-LINE-07)
+    let paths: Vec<_> = s
+        .line
+        .requests()
+        .iter()
+        .map(|request| request.path.clone())
+        .collect();
+    let replied = paths.iter().rposition(|path| path == REPLY).unwrap();
+    let pushed = paths.iter().position(|path| path == PUSH).unwrap();
+    assert!(replied < pushed, "{paths:?}");
+}

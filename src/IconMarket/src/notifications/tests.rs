@@ -202,6 +202,74 @@ async fn no_push_is_attempted_to_a_user_who_does_not_follow_the_oa() {
     assert_eq!(s.logs().await.len(), 1);
 }
 
+/// FR-ADM-07, FR-NOT-02, FR-NOT-04: an announcement goes to every user who follows the OA, but
+/// the admin who sent it, in the same request as anything else the step tells them; no one who
+/// blocked the OA or deleted their account gets it. What [`followers`] counts is who it reaches.
+#[tokio::test]
+async fn an_announcement_goes_to_every_follower_but_its_sender() {
+    let s = setup().await;
+    let sender = s.user(ADMIN_1, true, true).await;
+    let seller = s.user(SELLER, false, true).await;
+    s.user(BUYER, false, false).await;
+    s.user(ADMIN_2, true, true).await;
+    let deleted = user::ActiveModel {
+        line_user_id: Set(None),
+        status: Set(user::Status::Deleted),
+        ..testing::new_user("unused")
+    };
+    deleted.insert(&s.db).await.unwrap();
+    assert_eq!(followers(&s.db, sender).await.unwrap(), 2);
+
+    let mut outbox = Outbox::default();
+    let announcement = To::Followers { except: sender };
+    outbox.add(Kind::Announcement, announcement, text("ตลาดนัดพรุ่งนี้ค่ะ"));
+    outbox.add(Kind::NewOrder, To::User(seller), text("ออเดอร์ใหม่ค่ะ"));
+    s.notify(outbox, &switches()).await;
+
+    assert_eq!(
+        s.pushes(),
+        [
+            push(SELLER, &["ตลาดนัดพรุ่งนี้ค่ะ", "ออเดอร์ใหม่ค่ะ"]),
+            push(ADMIN_2, &["ตลาดนัดพรุ่งนี้ค่ะ"]),
+        ]
+    );
+    let types: Vec<_> = s
+        .logs()
+        .await
+        .into_iter()
+        .map(|log| log.push_type)
+        .collect();
+    assert_eq!(types, ["announcement,order.new", "announcement"]);
+
+    // Every switch off changes nothing: an announcement has none
+    let mut outbox = Outbox::default();
+    outbox.add(Kind::Announcement, announcement, text("ประกาศค่ะ"));
+    let queued = s.queue_at(outbox, &all_off(), Utc::now()).await;
+    assert_eq!(queued.len(), 2);
+}
+
+/// FR-ADM-07: a village's worth of followers is queued in one step, however many statements
+/// that takes.
+#[tokio::test]
+async fn an_announcement_to_thousands_is_queued_in_one_step() {
+    let s = setup().await;
+    let sender = s.user(ADMIN_1, true, true).await;
+    let users = (0..2500_u32).map(|n| testing::new_user(&format!("U{n:032x}")));
+    user::Entity::insert_many(users).exec(&s.db).await.unwrap();
+
+    let mut outbox = Outbox::default();
+    let announcement = To::Followers { except: sender };
+    outbox.add(Kind::Announcement, announcement, text("ประกาศค่ะ"));
+    let queued = s.queue_at(outbox, &switches(), Utc::now()).await;
+
+    assert_eq!(queued.len(), 2500);
+    assert_eq!(followers(&s.db, sender).await.unwrap(), 2500);
+    let logs = s.logs().await;
+    assert_eq!(logs.len(), 2500);
+    assert_eq!(logs[0].recipient, format!("U{:032x}", 0));
+    assert_eq!(logs[2499].recipient, format!("U{:032x}", 2499));
+}
+
 /// AC (#15): turning off `notification.orderStatusToBuyer` stops buyer status pushes.
 #[tokio::test]
 async fn turning_off_order_status_to_buyer_stops_buyer_status_pushes() {

@@ -1,5 +1,6 @@
-//! A stored image: a product or shop photo, a payment slip (FR-PROD-04), or the PromptPay QR
-//! code of an order (FR-PAY-04). The bytes live in PostgreSQL, the only data store (CON-03).
+//! A stored image: a product or shop photo, a payment slip (FR-PROD-04), the PromptPay QR code
+//! of an order (FR-PAY-04), or the photo of an announcement (FR-ADM-07). The bytes live in
+//! PostgreSQL, the only data store (CON-03).
 
 use sea_orm::entity::prelude::*;
 
@@ -12,8 +13,8 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub owner_type: OwnerType,
-    /// The product, shop, payment slip or order, or the user who sent a draft; not a foreign
-    /// key, as it points at one of several tables
+    /// The product, shop, payment slip, order or announcement, or the user who sent a draft; not
+    /// a foreign key, as it points at one of several tables
     #[sea_orm(indexed)]
     pub owner_id: i64,
     /// Display order among the owner's images
@@ -43,6 +44,8 @@ pub enum OwnerType {
     /// The PromptPay QR code for an order's exact amount, sent to its buyer as it is accepted
     /// (FR-PAY-04), and deleted once the order is final
     PaymentQr,
+    /// The photo of an admin's announcement (FR-ADM-07), kept with it
+    Announcement,
 }
 
 #[derive(Clone, Copy, Debug, EnumIter, DeriveRelation)]

@@ -148,6 +148,7 @@ fn add_entities<T: FromEntities>(models: T) -> T {
         .add(join_attempt::Entity)
         .add(job::Entity)
         .add(line_group::Entity)
+        .add(announcement::Entity)
         .add(schema_version::Entity)
 }
 

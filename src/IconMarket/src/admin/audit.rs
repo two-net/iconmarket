@@ -60,6 +60,9 @@ pub enum Action {
     PaymentConfirmed,
     /// An order recorded as refunded
     RefundConfirmed,
+    // Announcements (FR-ADM-07)
+    /// Queued for every follower
+    AnnouncementSent,
 }
 
 impl Action {
@@ -88,6 +91,7 @@ impl Action {
             Self::OrderCancelled => "order.cancelled",
             Self::PaymentConfirmed => "payment.confirmed",
             Self::RefundConfirmed => "payment.refunded",
+            Self::AnnouncementSent => "announcement.sent",
         }
     }
 }
@@ -100,6 +104,7 @@ pub enum Target {
     Shop(i64),
     Product(i64),
     Order(i64),
+    Announcement(i64),
 }
 
 impl Target {
@@ -111,6 +116,7 @@ impl Target {
             Self::Shop(id) => ("shop", id),
             Self::Product(id) => ("product", id),
             Self::Order(id) => ("order", id),
+            Self::Announcement(id) => ("announcement", id),
         }
     }
 }

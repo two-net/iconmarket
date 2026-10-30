@@ -49,7 +49,8 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 # No `ansi` (it reads NO_COLOR) and no `env-filter` (it reads RUST_LOG): config comes only from the file (CFG-02)
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "smallvec", "std", "tracing-log"] }
-url = "2.5.8"
+# `serde` keeps the link to an announcement's photo in its pending action (FR-ADM-07)
+url = { version = "2.5.8", features = ["serde"] }
 # Root certificates for outbound HTTPS, compiled in rather than read from the system
 webpki-roots = "1.0.11"
 

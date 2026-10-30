@@ -10,7 +10,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, PaginatorTrait, QueryOrder};
 use serde_json::json;
 
 use super::*;
-use crate::persistence::entity::{order_event, order_item, session};
+use crate::persistence::entity::{announcement, order_event, order_item, session};
 use crate::persistence::testing::{
     self, Market, at, market, new_event, new_order, new_product, new_shop, new_user,
 };
@@ -268,6 +268,7 @@ async fn log_rows_past_their_limit_are_deleted() {
             payment_qr_images: 0,
             deleted_owner_images: 0,
             audit_logs: 1,
+            announcements: 0,
         }
     );
     assert_eq!(
@@ -524,4 +525,46 @@ async fn images_of_deleted_products_and_shops_are_deleted_after_deleted_image_da
     // The shops and products themselves are kept (DR-04)
     assert_eq!(shop::Entity::find().count(&db).await.unwrap(), 3);
     assert_eq!(product::Entity::find().count(&db).await.unwrap(), 4);
+}
+
+/// FR-ADM-07, §5.4: an announcement sent is kept, with its photo, as long as its audit entry;
+/// one never sent is the scheduler's `delete-expired` job's to delete.
+#[tokio::test]
+async fn announcements_go_with_the_audit_log() {
+    let (_container, pool) = testing::migrated().await;
+    let db = orm(pool);
+    let market = market(&db).await;
+
+    let mut announcements = Vec::new();
+    for sent_at in [Some(past(365)), Some(days_ago(365)), None] {
+        let announcement = announcement::ActiveModel {
+            admin_id: Set(market.buyer.id),
+            text: Set("ตลาดนัดพรุ่งนี้".to_owned()),
+            created_at: Set(past(365)),
+            sent_at: Set(sent_at),
+            recipients: Set(sent_at.map(|_| 3)),
+            ..Default::default()
+        };
+        announcements.push(announcement.insert(&db).await.unwrap());
+    }
+    let [old, recent, unsent] = <[_; 3]>::try_from(announcements).unwrap();
+    image(&db, OwnerType::Announcement, old.id).await;
+    let kept = BTreeSet::from([
+        image(&db, OwnerType::Announcement, recent.id).await,
+        image(&db, OwnerType::Announcement, unsent.id).await,
+    ]);
+
+    let deleted = apply_twice(&db).await;
+    assert_eq!(
+        deleted,
+        Deleted {
+            announcements: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        ids::<announcement::Entity>(&db, announcement::Column::Id).await,
+        [recent.id, unsent.id]
+    );
+    assert_eq!(images(&db).await, kept);
 }

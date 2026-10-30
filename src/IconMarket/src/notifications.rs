@@ -19,7 +19,7 @@ mod tests;
     reason = "the features that notify are built by later issues"
 )]
 pub use push::{
-    Kind, Outbox, PushStats, Queued, Retried, To, log_reply_pushed, queue_group, reaches, retry,
-    send, stats,
+    Kind, Outbox, PushStats, Queued, Retried, To, followers, log_reply_pushed, queue_group,
+    reaches, retry, send, stats,
 };
 pub use rich_menus::{RichMenus, provision_rich_menus, relink_rich_menus};

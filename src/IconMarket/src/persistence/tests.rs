@@ -24,11 +24,12 @@ use super::*;
 use crate::config::{AdminConfig, CatalogConfig};
 use crate::thai::Money;
 
-/// The entities of §5.1, the schema versions (MIG-09), the jobs (FR-JOB-03) and the LINE groups
-/// (FR-NOT-07), by table name.
-const TABLES: [&str; 24] = [
+/// The entities of §5.1, the schema versions (MIG-09), the jobs (FR-JOB-03), the LINE groups
+/// (FR-NOT-07) and the announcements (FR-ADM-07), by table name.
+const TABLES: [&str; 25] = [
     "ai_call_logs",
     "ai_messages",
+    "announcements",
     "audit_logs",
     "cart_items",
     "categories",
@@ -119,6 +120,7 @@ fn enums_are_stored_by_their_srs_names() {
     assert_eq!(product::Status::Held.to_value(), "HELD");
     assert_eq!(shop::Status::Closed.to_value(), "CLOSED");
     assert_eq!(image::OwnerType::Draft.to_value(), "DRAFT");
+    assert_eq!(image::OwnerType::Announcement.to_value(), "ANNOUNCEMENT");
     assert_eq!(user::MenuRoles::SellerAdmin.to_value(), "SELLER_ADMIN");
 }
 
@@ -152,6 +154,7 @@ fn personal_data_is_marked() {
     let unmarked = [
         unmarked::<ai_call_log::Entity>(&[]),
         unmarked::<ai_message::Entity>(&[]),
+        unmarked::<announcement::Entity>(&[]),
         unmarked::<audit_log::Entity>(&[]),
         unmarked::<cart_item::Entity>(&[]),
         unmarked::<category::Entity>(&[]),
