@@ -207,6 +207,7 @@ pub fn privacy_facts(config: &Config) -> PrivacyFacts<'_> {
         ai_providers,
         ai_message_days: config.retention.ai_message_days,
         slip_days: slips.then_some(config.retention.slip_days),
+        voice: config.ai.primary.is_some() && config.ai.features.voice,
     }
 }
 

@@ -9,7 +9,8 @@
 //! the `mock` provider, which needs no network and no key (FR-AIP-05).
 //!
 //! The [`assistant`] answers free text with the tools of Table 4.9-A, run as the user, and
-//! proposes changes for them to confirm (FR-AI-01 – FR-AI-04).
+//! proposes changes for them to confirm (FR-AI-01 – FR-AI-04). [`voice`] writes down what a
+//! voice message says, to be handled as if typed (FR-AI-15).
 
 #![allow(
     dead_code,
@@ -29,6 +30,7 @@ pub mod testing;
 mod tests;
 mod untrusted;
 mod validate;
+pub mod voice;
 
 use crate::config::AiFeatures;
 
@@ -118,6 +120,7 @@ impl Feature {
             },
             Self::Voice => Capabilities {
                 audio_input: true,
+                structured_output: true,
                 ..none
             },
         }

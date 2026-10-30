@@ -166,7 +166,7 @@ impl Setup {
         templates::main_menu([Tab::Buyer], false)
     }
 
-    /// The fallback reply (FR-UI-12 step 6), which functions not built yet give too.
+    /// The fallback reply (FR-UI-12 step 6).
     fn fallback(&self) -> Vec<Message> {
         vec![self.templates.fallback(), self.menu()]
     }
@@ -219,6 +219,17 @@ fn sent(id: &str, from: &str, message: Value) -> Value {
 
 fn said(id: &str, from: &str, text: &str) -> Value {
     sent(id, from, json!({ "id": id, "type": "text", "text": text }))
+}
+
+/// A voice message, as LINE sends one.
+fn spoke(id: &str, from: &str) -> Value {
+    let audio = json!({
+        "id": id,
+        "type": "audio",
+        "duration": 6150,
+        "contentProvider": { "type": "line" },
+    });
+    sent(id, from, audio)
 }
 
 fn tapped(id: &str, from: &str, data: &str) -> Value {
@@ -1468,6 +1479,206 @@ async fn the_review_queue_and_a_suspension_end_to_end() {
             .collect::<Vec<_>>(),
         [("user.suspended", ALICE)]
     );
+}
+
+/// What LINE serves as message `id`'s voice clip.
+fn clip_served(s: &Setup, id: &str) {
+    let clip = include_bytes!("../../ai/provider/fixtures/media/voice.m4a");
+    s.line.script(
+        &format!("/v2/bot/message/{id}/content"),
+        [Answer::bytes("audio/x-m4a", clip)],
+    );
+}
+
+/// Whether LINE was asked for any message's content.
+fn content_fetched(s: &Setup) -> bool {
+    let requests = s.line.requests();
+    requests
+        .iter()
+        .any(|request| request.path.ends_with("/content"))
+}
+
+/// The AI calls counted today, everyone's (FR-AI-09).
+async fn calls_counted(s: &Setup) -> u64 {
+    ai::calls_today(&s.db, Utc::now(), chrono_tz::Asia::Bangkok)
+        .await
+        .unwrap()
+}
+
+/// FR-AI-15, FR-LINE-09, FR-AI-09, FR-AI-11, end to end: a voice message is written down, and
+/// from then on is handled as typed text: the assistant answers it from the words alone, the
+/// message counts once and its words are remembered; a spoken keyword works as a typed one.
+#[tokio::test]
+async fn a_voice_message_is_understood_like_text_end_to_end() {
+    use crate::ai::Part;
+    use crate::ai::testing::{self as scripted, Turn as Scripted};
+
+    let s = setup().await;
+    let alice = onboarded(&s.db, ALICE).await;
+    clip_served(&s, "v1");
+    clip_served(&s, "v2");
+    let says = [
+        Scripted::Json(json!({ "heard": "มีไข่ไก่ไหม" })),
+        Scripted::Text("ยังไม่มีค่ะ"),
+        Scripted::Json(json!({ "heard": "เมนู" })),
+    ];
+    let (ai, model) = scripted::scripted(&s.pool, says, false, &[]);
+    let mut context = s.context(&s.pool, 20);
+    context.ai = ai;
+    store(&s.db, [spoke("v1", ALICE), spoke("v2", ALICE)]).await;
+    let running = s.run_with(context, 1);
+    settled(&s.db, 2).await;
+    replied(&s, 2).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    assert_eq!(replies[&token("v1")][0]["text"], "ยังไม่มีค่ะ");
+    assert_eq!(replies[&token("v2")], json!([s.menu()]));
+
+    // The clip reaches the voice call alone, and the assistant has its words
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    let clips = |messages: &[ai::Message]| {
+        let parts = messages.iter().flat_map(|message| &message.parts);
+        parts.filter(|part| matches!(part, Part::Audio(_))).count()
+    };
+    assert_eq!(clips(&requests[0].messages), 1);
+    assert_eq!(clips(&requests[1].messages), 0);
+    // As any typed message: delimited as data (FR-AI-06)
+    let asked = requests[1].messages.last().unwrap().text();
+    assert!(asked.starts_with("<message>"), "{asked}");
+    assert!(asked.contains("มีไข่ไก่ไหม"), "{asked}");
+
+    assert_eq!(calls_counted(&s).await, 2);
+    let remembered = ai_message::Entity::find()
+        .filter(ai_message::Column::UserId.eq(alice))
+        .all(&s.db)
+        .await
+        .unwrap();
+    assert!(
+        remembered.iter().any(|row| row.content == "มีไข่ไก่ไหม"),
+        "{remembered:?}"
+    );
+}
+
+/// FR-AI-09: a seller's voice message goes to the listing assistant and on to the assistant,
+/// and takes three calls, but counts once.
+#[tokio::test]
+async fn a_sellers_voice_message_counts_once_end_to_end() {
+    use crate::ai::testing::{self as scripted, Turn as Scripted};
+
+    let s = setup().await;
+    let alice = onboarded(&s.db, ALICE).await;
+    let mut seller = user::Entity::find_by_id(alice)
+        .one(&s.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    seller.menu_roles = Set(Some(MenuRoles::Seller));
+    seller.update(&s.db).await.unwrap();
+    testing::new_shop(alice).insert(&s.db).await.unwrap();
+    clip_served(&s, "v1");
+    let says = [
+        Scripted::Json(json!({ "heard": "วันนี้อากาศดีนะ" })),
+        Scripted::Json(json!({ "intent": "other" })),
+        Scripted::Text("ค่ะ"),
+    ];
+    let (ai, model) = scripted::scripted(&s.pool, says, false, &[]);
+    let mut context = s.context(&s.pool, 20);
+    context.ai = ai;
+    store(&s.db, [spoke("v1", ALICE)]).await;
+    let running = s.run_with(context, 1);
+    settled(&s.db, 1).await;
+    replied(&s, 1).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    assert_eq!(replies[&token("v1")][0]["text"], "ค่ะ");
+    assert_eq!(model.requests().len(), 3);
+    assert_eq!(calls_counted(&s).await, 1);
+}
+
+/// FR-AI-15, FR-UI-09, FR-AI-08: during a flow, and before onboarding, a voice message is not
+/// heard: nothing is downloaded, the AI isn't asked, and the flow still takes its answer.
+#[tokio::test]
+async fn a_voice_message_is_heard_only_outside_flows_end_to_end() {
+    use crate::ai::testing::{self as scripted};
+
+    let s = setup().await;
+    let t = &s.templates;
+    onboarded(&s.db, ALICE).await;
+    let seller = testing::new_user("U-seller").insert(&s.db).await.unwrap();
+    let shop = testing::new_shop(seller.id).insert(&s.db).await.unwrap();
+    let sweets = testing::new_category("ขนม/ของหวาน")
+        .insert(&s.db)
+        .await
+        .unwrap();
+    testing::new_product(shop.id, sweets.id, "ขนมครก", Some(5))
+        .insert(&s.db)
+        .await
+        .unwrap();
+    let (ai, model) = scripted::scripted(&s.pool, [], false, &[]);
+    let mut context = s.context(&s.pool, 20);
+    context.ai = ai;
+    store(
+        &s.db,
+        [
+            tapped("a1", ALICE, "search"),
+            spoke("a2", ALICE),
+            said("a3", ALICE, "ครก"),
+            event(
+                "b1",
+                "follow",
+                user(BOB),
+                json!({ "follow": { "isUnblocked": false } }),
+            ),
+            spoke("b2", BOB),
+        ],
+    )
+    .await;
+    let running = s.run_with(context, 2);
+    settled(&s.db, 5).await;
+    replied(&s, 5).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    assert_eq!(replies[&token("a2")], json!([t.unsupported(), s.menu()]));
+    // The search is still there to take its keyword
+    assert!(
+        replies[&token("a3")].to_string().contains("ขนมครก"),
+        "{}",
+        replies[&token("a3")]
+    );
+    assert_eq!(replies[&token("b2")], json!([s.notice(&config(20), false)]));
+    assert!(model.requests().is_empty());
+    assert!(!content_fetched(&s));
+    assert_eq!(calls_counted(&s).await, 0);
+}
+
+/// FR-AI-15, FR-UI-09, FR-AIP-04: while voice is off, as it is for a model that takes no audio,
+/// a voice message gets the friendly reply.
+#[tokio::test]
+async fn with_voice_off_a_voice_message_gets_the_friendly_reply() {
+    use crate::ai::Feature;
+    use crate::ai::testing::{self as scripted};
+
+    let s = setup().await;
+    let t = &s.templates;
+    onboarded(&s.db, ALICE).await;
+    let (ai, model) = scripted::scripted(&s.pool, [], false, &[Feature::Voice]);
+    let mut context = s.context(&s.pool, 20);
+    context.ai = ai;
+    store(&s.db, [spoke("v1", ALICE)]).await;
+    let running = s.run_with(context, 1);
+    settled(&s.db, 1).await;
+    replied(&s, 1).await;
+    running.stop().await;
+
+    let replies: HashMap<_, _> = s.replies().into_iter().collect();
+    assert_eq!(replies[&token("v1")], json!([t.unsupported(), s.menu()]));
+    assert!(model.requests().is_empty());
+    assert!(!content_fetched(&s));
 }
 
 /// NFR-REL-05: once stopped, the worker takes no more events.

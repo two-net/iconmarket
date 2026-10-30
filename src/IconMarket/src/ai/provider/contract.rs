@@ -200,7 +200,7 @@ impl Case {
                     text("ฟังข้อความเสียงนี้ แล้วบอกว่าลูกค้าต้องการอะไร"),
                     Part::Audio(media("voice.m4a", "audio/m4a")),
                 ])],
-                Output::Text,
+                Output::Json(heard()),
             ),
             Self::Truncated => (
                 vec![Message::user(
@@ -296,6 +296,14 @@ pub fn slip() -> Schema {
             "succeeded",
             Schema::boolean().describe("สลิปบอกว่าโอนสำเร็จหรือไม่"),
         )
+}
+
+/// What voice messages take from a clip, as `ai::voice` asks for it
+pub fn heard() -> Schema {
+    let heard = Schema::string()
+        .max_length(2000)
+        .describe("what the user said, word for word");
+    Schema::object().optional("heard", heard)
 }
 
 fn media(name: &str, media_type: &str) -> Media {

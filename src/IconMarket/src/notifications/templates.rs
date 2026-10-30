@@ -193,12 +193,21 @@ impl Templates {
         ))
     }
 
-    /// Stickers, videos, files, and voice messages while voice is off (FR-UI-09). The main
-    /// menu follows.
+    /// Stickers, videos, files, and voice messages while voice is off or a flow awaits an answer
+    /// (FR-UI-09, FR-AI-15). The main menu follows.
     pub fn unsupported(&self) -> Message {
         let kha = self.kha();
         Message::text(format!(
             "ขอโทษ{kha} ข้อความแบบนี้ยังใช้ไม่ได้ พิมพ์เป็นข้อความ หรือเลือกจากเมนูด้านล่างได้เลย{kha}"
+        ))
+    }
+
+    /// A voice message that was too long, is no longer at LINE, or had no clear speech
+    /// (FR-AI-15). The main menu follows.
+    pub fn voice_not_heard(&self) -> Message {
+        let kha = self.kha();
+        Message::text(format!(
+            "ขอโทษ{kha} ฟังข้อความเสียงนี้ไม่ได้ พิมพ์เป็นข้อความ หรือเลือกจากเมนูด้านล่างได้เลย{kha}"
         ))
     }
 
@@ -6443,6 +6452,8 @@ pub struct PrivacyFacts<'a> {
     /// How long payment slips are kept once their order ends (`retention.slipDays`); `None`
     /// while PromptPay is off, as there are no slips then
     pub slip_days: Option<u32>,
+    /// Whether voice messages go to the AI (`ai.features.voice`)
+    pub voice: bool,
 }
 
 /// What the privacy notice says about the user's data (NFR-PRIV-02): what is collected and why,
@@ -6465,10 +6476,20 @@ pub fn privacy_lines(facts: &PrivacyFacts<'_>) -> [String; 4] {
     }
     if !ai.is_empty() {
         let (names, days) = (ai.join(" และ "), facts.ai_message_days);
-        collected.push_str(", ข้อความและรูปที่ส่งถึงผู้ช่วย AI");
+        let sent = if facts.voice {
+            "ข้อความ รูป และเสียง"
+        } else {
+            "ข้อความและรูป"
+        };
+        collected.push_str(&format!(", {sent}ที่ส่งถึงผู้ช่วย AI"));
         kept.push_str(&format!(", ข้อความที่คุยกับผู้ช่วย AI เก็บ {days} วัน"));
+        if facts.voice {
+            kept.push_str(&format!(
+                ", ไฟล์เสียงไม่ถูกเก็บในระบบ แต่คำที่ถอดจากเสียงเก็บ {days} วัน"
+            ));
+        }
         receives.push_str(&format!(
-            ", {names} ผู้ให้บริการ AI ซึ่งได้รับเฉพาะข้อความและรูปที่จำเป็นต่อการตอบ"
+            ", {names} ผู้ให้บริการ AI ซึ่งได้รับเฉพาะ{sent}ที่จำเป็นต่อการตอบ"
         ));
     }
     collected.push_str(" เพื่อใช้ซื้อขายและส่งของกันในหมู่บ้าน");
@@ -8618,6 +8639,7 @@ mod tests {
             ai_providers: vec![AiProvider::Claude],
             ai_message_days: 30,
             slip_days: Some(90),
+            voice: false,
         }
     }
 
@@ -8709,10 +8731,59 @@ mod tests {
             updated: true,
             ..privacy_notice(PrivacyFacts {
                 ai_providers: vec![AiProvider::Claude, AiProvider::Gemini],
+                voice: true,
                 ..privacy_facts(&longest, Some(&url))
             })
         };
         limits::check(&[t.privacy_notice(&notice)]).unwrap();
+    }
+
+    /// NFR-PRIV-02: voice messages are in the notice only while they are heard, so that those
+    /// who haven't turned them on send nobody to accept it again.
+    #[test]
+    fn the_privacy_notice_mentions_voice_only_while_it_is_on() {
+        let off = privacy_lines(&privacy_facts("ประกาศ", None));
+        for line in &off {
+            assert!(!line.contains("เสียง"), "{line}");
+        }
+        assert!(off[0].contains("ข้อความและรูปที่ส่งถึงผู้ช่วย AI"));
+        assert!(off[2].contains("ได้รับเฉพาะข้อความและรูปที่จำเป็นต่อการตอบ"));
+
+        let on = privacy_lines(&PrivacyFacts {
+            voice: true,
+            ..privacy_facts("ประกาศ", None)
+        });
+        assert!(on[0].contains("ข้อความ รูป และเสียงที่ส่งถึงผู้ช่วย AI"));
+        assert!(on[1].contains("ไฟล์เสียงไม่ถูกเก็บในระบบ"));
+        assert!(on[1].contains("คำที่ถอดจากเสียงเก็บ 30 วัน"));
+        assert!(on[2].contains("Anthropic (Claude) ผู้ให้บริการ AI"));
+        assert!(on[2].contains("ได้รับเฉพาะข้อความ รูป และเสียงที่จำเป็นต่อการตอบ"));
+
+        // Without a provider nothing goes anywhere to mention
+        let neither = privacy_lines(&PrivacyFacts {
+            ai_providers: vec![],
+            voice: true,
+            ..privacy_facts("ประกาศ", None)
+        });
+        for line in &neither {
+            assert!(!line.contains("เสียง"), "{line}");
+        }
+    }
+
+    /// FR-AI-15: the user is asked to type or use the menu, politely either way.
+    #[test]
+    fn a_voice_message_not_heard_asks_to_type_or_use_the_menu() {
+        let kha = text(&templates(PoliteParticle::Kha).voice_not_heard()).to_owned();
+        assert!(
+            kha.starts_with("ขอโทษค่ะ") && kha.ends_with("ได้เลยค่ะ"),
+            "{kha}"
+        );
+        let khrap = text(&templates(PoliteParticle::Khrap).voice_not_heard()).to_owned();
+        assert!(
+            khrap.starts_with("ขอโทษครับ") && khrap.ends_with("ได้เลยครับ"),
+            "{khrap}"
+        );
+        assert!(kha.contains("พิมพ์เป็นข้อความ") && kha.contains("เลือกจากเมนู"));
     }
 
     /// FR-ONB-01, FR-ONB-08

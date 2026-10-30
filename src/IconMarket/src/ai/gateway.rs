@@ -423,6 +423,24 @@ mod tests {
         assert!(mock.requests().is_empty());
     }
 
+    /// FR-AIP-04: what was heard comes back as JSON, so a model that takes audio but can't
+    /// answer in it can't hear voice messages either.
+    #[tokio::test]
+    async fn voice_messages_need_structured_output_too() {
+        let audio_only = Capabilities {
+            audio_input: true,
+            ..Capabilities::default()
+        };
+        let adapter = Adapter::Mock(Mock::scripted([]).with_capabilities(audio_only));
+        let gateway = Gateway::for_test(
+            &config(None),
+            Some(adapter),
+            testing::unreachable(),
+            Duration::from_secs(1),
+        );
+        assert!(!gateway.is_enabled(Feature::Voice));
+    }
+
     #[tokio::test]
     async fn features_turned_off_in_config_stay_off() {
         let mut config = config(None);

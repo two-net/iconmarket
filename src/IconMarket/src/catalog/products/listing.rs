@@ -113,7 +113,7 @@ pub(super) async fn drafted(
         Vec::new()
     };
     let message = message(text, &categories, None, photos);
-    let answer = interpret(turn, ai, &categories, None, message).await;
+    let answer = interpret(turn, ai, &categories, None, message, false).await;
     let (session, ask) = match answer {
         Ok(answer) => fill(turn, config, draft, &answer).await?,
         Err(unavailable) => {
@@ -152,11 +152,13 @@ impl Typed {
 /// A seller's `text` that no flow or keyword took (FR-UI-12 step 5): a new product, drafted from
 /// it, or a change to the price or stock of one of the shop's, to confirm. Anything else is left
 /// to routing, and so is the text of someone who can't manage a shop; they aren't asked about.
+/// `counted` if the message already counted against the daily limits, as a voice message has.
 pub async fn typed(
     turn: &Turn<'_>,
     config: &Config,
     ai: &ai::Gateway,
     text: &str,
+    counted: bool,
 ) -> Result<Typed, DbErr> {
     if authorize(turn.db, &turn.actor, access::Action::ManageShop)
         .await?
@@ -170,7 +172,7 @@ pub async fn typed(
     let categories = categories::active(turn.db).await?;
     let products = changeable(turn, shop.id).await?;
     let message = message(text, &categories, Some(&products), Vec::new());
-    let answer = match interpret(turn, ai, &categories, Some(&products), message).await {
+    let answer = match interpret(turn, ai, &categories, Some(&products), message, counted).await {
         Ok(answer) => answer,
         Err(unavailable) => return Ok(Typed::Listing(vec![unavailable.message(turn.templates)])),
     };
@@ -376,14 +378,16 @@ async fn step_by_step(
 }
 
 /// Asks the AI about the seller's `message` (FR-PROD-02), as the seller: their call counts
-/// against their daily limit (FR-AI-09). With `products`, the shop's, it also tells what the
-/// message is about. The answer matches the [`schema`] (FR-AI-05).
+/// against their daily limit (FR-AI-09), unless the message is `counted` already. With
+/// `products`, the shop's, it also tells what the message is about. The answer matches the
+/// [`schema`] (FR-AI-05).
 async fn interpret(
     turn: &Turn<'_>,
     ai: &ai::Gateway,
     categories: &[category::Model],
     products: Option<&[product::Model]>,
     message: ai::Message,
+    counted: bool,
 ) -> Result<Value, Unavailable> {
     let intents = if products.is_some() {
         format!("\n\n{INTENTS}")
@@ -397,7 +401,12 @@ async fn interpret(
         messages: vec![message],
         output: Output::Json(schema(categories, products)),
     };
-    match ai.complete(call).await {
+    let result = if counted {
+        ai.follow_up(call).await
+    } else {
+        ai.complete(call).await
+    };
+    match result {
         Ok(ai::Answer::Json(answer)) => Ok(answer),
         // Never: what asks for JSON is answered with JSON (FR-AI-05)
         Ok(_) => Err(Unavailable::Failed),

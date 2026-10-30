@@ -235,7 +235,7 @@ Every registered user can buy; roles are additive.
 | FR-UI-06 | Numeric input shall accept Arabic and Thai digits (๐–๙), thousands separators and the word บาท (e.g., `๒๐`, `1,200 บาท`). | M |
 | FR-UI-07 | Money shall be displayed as `฿1,250` (whole amounts) or `฿12.50`; dates and times as `22 ต.ค. 2569 14:30`. | M |
 | FR-UI-08 | Bot text shall be polite, short and plain, using the polite particle set in `app.politeParticle`. | S |
-| FR-UI-09 | Unsupported input (stickers, video, files, or audio when voice is off) shall get a friendly reply with the main menu. | M |
+| FR-UI-09 | Unsupported input (stickers, video, files, or audio when voice is off or during a guided flow) shall get a friendly reply with the main menu. A guided flow stays as it was. | M |
 
 #### 3.1.2 Rich Menus
 
@@ -290,7 +290,7 @@ Routing priority (FR-UI-12):
 | ID | Requirement | Pri |
 | --- | --- | --- |
 | FR-AIP-01 | The system shall support the providers `claude`, `gemini`, `gpt` and `grok`, selected by `ai.provider`, with `ai.model` and `ai.apiKey` read from the config file. | M |
-| FR-AIP-02 | All AI use shall go through one provider-neutral interface offering: system instructions, multi-turn messages, image input, tool/function calling or schema-constrained structured output, an output-token limit, temperature and timeout. One adapter per provider implements it. | M |
+| FR-AIP-02 | All AI use shall go through one provider-neutral interface offering: system instructions, multi-turn messages, image and audio input, tool/function calling or schema-constrained structured output, an output-token limit, temperature and timeout. One adapter per provider implements it. | M |
 | FR-AIP-03 | Changing provider or model shall require only a config change and a restart — no code change, schema change or data migration. | M |
 | FR-AIP-04 | Each adapter shall declare its capabilities (e.g., image input, audio input, tool calling). At startup, AI features that need a capability the configured provider/model lacks shall be disabled with a logged warning. | M |
 | FR-AIP-05 | A `mock` provider with deterministic responses (no network, no key) shall exist for development and automated tests. | S |
@@ -481,7 +481,7 @@ No other endpoints are exposed.
 | FR-AI-03 | The AI shall never execute a data-changing action. A proposal only creates a pending action and a confirmation card built by the system from validated database data; the change happens only when the user taps confirm. | M |
 | FR-AI-04 | Prices, totals, stock, order numbers and statuses shown to users shall always be rendered by the system from database values, never taken from AI-generated text. | M |
 | FR-AI-05 | AI output (tool names, arguments, drafts) shall be validated against schemas. Invalid output gets one retry with an error hint, then a fallback reply with the main menu. | M |
-| FR-AI-06 | User-generated content given to the AI (messages, product and shop text, slip images) shall be clearly delimited as data. Instructions inside it shall not change rules, roles or permissions, and authorization shall never depend on AI output. | M |
+| FR-AI-06 | User-generated content given to the AI (messages, voice messages, product and shop text, slip images) shall be clearly delimited as data. Instructions inside it shall not change rules, roles or permissions, and authorization shall never depend on AI output. | M |
 | FR-AI-07 | Replies shall be in polite, simple Thai of at most about 300 characters (cards excluded). The assistant shall understand colloquial Thai, common misspellings and regional dialect words. Off-topic requests are briefly declined and steered back to the market. | M |
 | FR-AI-08 | Data minimization: phone numbers, house numbers, locations and PromptPay IDs shall not be sent to the AI unless a feature needs them; LINE user IDs are replaced by internal IDs. | M |
 | FR-AI-09 | Limits: `ai.limits.perUserDailyCalls` and `ai.limits.globalDailyCalls`, reset at midnight `Asia/Bangkok`. When a limit is reached the user is told the assistant is resting and offered the menus. | M |
@@ -490,7 +490,7 @@ No other endpoints are exposed.
 | FR-AI-12 | Listing drafts (FR-PROD-02) shall use only active categories and shall not invent facts (ingredients, sizes, origin, health claims) that are neither stated by the seller nor visible in the photo. Moderation returns "allow" or "review" with a reason. | S |
 | FR-AI-13 | Inside guided flows, when simple parsing fails, the AI may interpret numbers written in words (e.g., *ยี่สิบห้าบาท* → 25); the value is always echoed back for confirmation. | S |
 | FR-AI-14 | How-to questions are answered only from the built-in help content. | S |
-| FR-AI-15 | Voice (`ai.features.voice`): if the model accepts audio, voice messages are understood like text; otherwise the user is asked to type or use the menu. | C |
+| FR-AI-15 | Voice (`ai.features.voice`): if the model accepts audio, a voice message outside a guided flow is written down by the AI and routed like typed text (FR-UI-12), counting once against the limits (FR-AI-09). The clip is never stored. During a guided flow, whose steps act on an answer at once and may ask for what FR-AI-08 protects, or if the model doesn't accept audio or the clip can't be heard, the user is asked to type or use the menu. | C |
 | FR-AI-16 | Every AI call shall be logged: provider, model, feature, input and output tokens, latency and outcome. Prompt and response content is logged only when `ai.logContent` is true. | M |
 | FR-AI-17 | Admin changes are not available through the AI in v1 (menus only); admins may use read tools. | M |
 
@@ -616,7 +616,8 @@ Applied automatically by the daily retention job.
 | Data | Kept for | Config key |
 | --- | --- | --- |
 | Processed webhook inbox events | 14 days | `retention.webhookEventDays` |
-| AI conversation memory | 30 days | `retention.aiMessageDays` |
+| AI conversation memory, including what was heard in voice messages | 30 days | `retention.aiMessageDays` |
+| Voice-message clips | Not stored | — |
 | AI call logs | 90 days | `retention.aiCallLogDays` |
 | Push logs | 90 days | `retention.pushLogDays` |
 | Payment-slip images | 90 days after the order reaches a final status | `retention.slipDays` |

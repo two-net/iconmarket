@@ -87,7 +87,8 @@ listing = true
 moderation = true
 # Slip reading (FR-PAY-06)
 slipReading = false
-# Voice messages (FR-AI-15)
+# Voice messages (FR-AI-15), for a model that takes audio; not during guided flows, where users
+# are asked to type. The privacy notice then says so: change privacy.noticeVersion too
 voice = false
 # Visual search (FR-SRCH-10)
 visualSearch = false
@@ -187,7 +188,8 @@ prohibitedKeywords = []
 
 [privacy]
 # Required. Change it whenever the notice changes, including a change of ai.provider, which
-# the notice names: everyone is then asked to accept it again
+# the notice names, and of ai.features.voice, which it mentions: everyone is then asked to
+# accept it again
 noticeVersion = "1"
 # Required, at most 3000 characters. Notice shown before consent, e.g. who runs the market and
 # how to reach them. The system adds what is collected and why, how long it is kept, who

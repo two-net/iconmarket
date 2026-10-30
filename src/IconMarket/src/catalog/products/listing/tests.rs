@@ -235,7 +235,9 @@ impl Setup {
     async fn says(&self, user_id: i64, text: &str) -> Option<Vec<Message>> {
         let mut read = None;
         self.handle(user_id, async |turn| {
-            read = typed(turn, &self.config, &self.ai, text).await?.reply();
+            read = typed(turn, &self.config, &self.ai, text, false)
+                .await?
+                .reply();
             Ok(read.clone().unwrap_or_default())
         })
         .await;

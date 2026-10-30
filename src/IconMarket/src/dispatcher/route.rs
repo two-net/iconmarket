@@ -11,14 +11,11 @@
 //! 5. the AI: for a seller, the listing assistant, if enabled; then the assistant, if enabled;
 //! 6. a short help text and the main menu.
 //!
-//! A photo no flow step takes goes on by FR-UI-14, and what the dispatcher can't take gets a
-//! friendly reply with the main menu (FR-UI-09). Everything routed here is handled in the
-//! event's transaction, which also queues what it notifies; its reply and notifications are
-//! sent once that commits.
-//!
-//! A destination built by a later issue, such as voice messages, is until then an arm here that
-//! logs which issue builds it and answers with the reply the dispatcher gives when nothing else
-//! applies; the issue replaces its arm with a call into its module.
+//! A photo no flow step takes goes on by FR-UI-14, and a voice message outside a flow is written
+//! down by the AI and goes on from step 4 as if typed (FR-AI-15). What the dispatcher can't take
+//! gets a friendly reply with the main menu (FR-UI-09), which leaves a flow as it is. Everything
+//! routed here is handled in the event's transaction, which also queues what it notifies; its
+//! reply and notifications are sent once that commits.
 
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::{DatabaseTransaction, DbErr};
@@ -37,6 +34,7 @@ use crate::admin::announcements::{self, AnnouncementFlow};
 use crate::admin::approvals::{self, RejectionFlow};
 use crate::admin::categories::{self, CategoryFlow};
 use crate::admin::{review, statistics};
+use crate::ai::voice::{self, Heard};
 use crate::ai::{Feature, assistant};
 use crate::catalog::browse;
 use crate::catalog::browse::digest;
@@ -118,6 +116,7 @@ pub enum Input {
         message_id: String,
     },
     Location(Location),
+    /// Downloaded the same way, with [`voice::hear`], only once it is sure to be heard
     Audio {
         message_id: String,
     },
@@ -434,8 +433,9 @@ fn decide(input: &Input, state: State) -> Step {
         },
         Input::Image { .. } => Step::Image,
         Input::Location(_) => Step::Location,
-        // Understood like text once heard, flows included (FR-AI-15)
-        Input::Audio { .. } if state.voice => Step::Voice,
+        // Understood like text once heard, but never by a flow: its steps act on an answer at
+        // once, and some ask for what the AI isn't given (FR-AI-08, FR-AI-15)
+        Input::Audio { .. } if state.voice && !state.in_flow => Step::Voice,
         Input::Audio { .. } | Input::Unsupported => Step::Unsupported,
     }
 }
@@ -444,7 +444,7 @@ fn decide(input: &Input, state: State) -> Step {
 async fn route(
     context: &Context,
     turn: &mut Turn<'_>,
-    input: Input,
+    mut input: Input,
 ) -> Result<Vec<Message>, DbErr> {
     let config = &context.config;
     let state = State {
@@ -455,6 +455,19 @@ async fn route(
         voice: context.ai.is_enabled(Feature::Voice),
     };
     let mut step = decide(&input, state);
+    // Whether the AI read the message already, so it counts no more (FR-AI-09)
+    let mut counted = false;
+    if step == Step::Voice {
+        let Input::Audio { message_id } = &input else {
+            unreachable!("only audio is heard");
+        };
+        match voice::hear(turn, config, &context.ai, &context.line, message_id).await? {
+            Heard::Said(text) => input = Input::Text(text),
+            Heard::Reply(messages) => return Ok(messages),
+        }
+        counted = true;
+        step = decide(&input, state);
+    }
     if step == Step::Flow {
         if let Some(messages) = answer_flow(context, turn, &input).await? {
             return Ok(messages);
@@ -470,11 +483,9 @@ async fn route(
     if matches!(step, Step::Listing | Step::Assistant) {
         assistant::loading(turn, config, &context.line).await;
     }
-    // Whether the AI read the message already, so it counts no more (FR-AI-09)
-    let mut counted = false;
     if step == Step::Listing {
         if let Input::Text(text) = &input {
-            match listing::typed(turn, config, &context.ai, text).await? {
+            match listing::typed(turn, config, &context.ai, text, counted).await? {
                 Typed::Listing(messages) => return Ok(messages),
                 Typed::Other => counted = true,
                 Typed::Unread => {}
@@ -515,7 +526,7 @@ async fn route(
         Step::Fallback => fallback(turn),
         Step::Image => return image(context, turn, &input).await,
         Step::Location => vec![templates.location_not_expected()],
-        Step::Voice => not_built("voice messages", 50, fallback(turn)),
+        Step::Voice => unreachable!("heard before this"),
         Step::Unsupported => vec![templates.unsupported(), menu::main_menu(&turn.actor)],
     })
 }
@@ -810,12 +821,6 @@ fn fallback(turn: &Turn<'_>) -> Vec<Message> {
     vec![turn.templates.fallback(), menu::main_menu(&turn.actor)]
 }
 
-/// The reply of a function a later issue builds, `reply` until then.
-fn not_built(what: &str, issue: u32, reply: Vec<Message>) -> Vec<Message> {
-    debug!(what, issue, "not built yet");
-    reply
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,11 +979,12 @@ mod tests {
         );
         assert_eq!(decide(&Input::Unsupported, in_flow), Step::Unsupported);
         assert_eq!(decide(&audio(), in_flow), Step::Unsupported);
+        // FR-AI-15: a flow takes no voice message, heard or not
         let voice = State {
             voice: true,
             ..in_flow
         };
-        assert_eq!(decide(&audio(), voice), Step::Voice);
+        assert_eq!(decide(&audio(), voice), Step::Unsupported);
     }
 
     /// FR-UI-12 steps 4 – 6.

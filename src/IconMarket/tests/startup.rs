@@ -273,6 +273,42 @@ async fn an_empty_database_is_migrated_and_seeded_before_requests_are_accepted()
     assert!(from_sea_orm.is_empty(), "{from_sea_orm:#?}");
 }
 
+/// FR-AIP-04, FR-AI-15: a model that takes no audio can't hear voice messages, so they are turned
+/// off with a warning, and the app starts all the same. Checked on the real binary: its one
+/// global subscriber sees every line, where a test's own can miss them.
+#[tokio::test]
+async fn a_model_without_audio_input_turns_voice_messages_off_with_a_warning() {
+    let (_postgres, host, db_port) = postgres().await;
+    let port = free_port();
+    let config = config(port, &host, db_port, "postgres", &[ADMIN]).replace(
+        "[ai]\nenabled = false\n",
+        r#"[ai]
+enabled = true
+provider = "claude"
+model = "claude-opus-5"
+apiKey = "ai-key-value"
+
+[ai.features]
+voice = true
+"#,
+    );
+    assert!(config.contains("voice = true"), "{config}");
+
+    let mut app = App::start(port, &config);
+    app.wait_until_healthy();
+    let log = app.stop();
+    let warned: Vec<&Value> = log
+        .iter()
+        .filter(|line| line["message"] == "AI feature turned off: the model lacks what it needs")
+        .collect();
+    assert_eq!(warned.len(), 1, "{log:#?}");
+    assert_eq!(warned[0]["level"], "WARN");
+    assert_eq!(warned[0]["feature"], "voice");
+    assert_eq!(warned[0]["missing"], "audio input");
+    assert_eq!(warned[0]["provider"], "claude");
+    position(&log, "accepting requests");
+}
+
 /// MIG-06, MIG-08
 #[tokio::test]
 async fn a_database_user_who_cannot_create_tables_stops_startup() {
