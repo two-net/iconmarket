@@ -164,7 +164,7 @@ fn block(part: &Part) -> Option<Value> {
             },
         })),
         Part::Audio(media) => {
-            // The gateway turns off the features that send audio (FR-AIP-04)
+            // The gateway never asks a model without audio (FR-AIP-04)
             warn!(media = ?media, "Claude takes no audio; the clip is left out");
             None
         }

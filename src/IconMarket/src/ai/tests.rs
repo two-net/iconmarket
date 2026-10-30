@@ -500,6 +500,459 @@ async fn every_call_is_logged_with_its_usage() {
     assert!(call.created_at >= before);
 }
 
+/// A primary and a fallback to tell apart in the log by their models
+fn primary(steps: impl IntoIterator<Item = Step>) -> Mock {
+    Mock::scripted(steps).with_model("primary")
+}
+
+fn fallback(steps: impl IntoIterator<Item = Step>) -> Mock {
+    Mock::scripted(steps).with_model("fallback")
+}
+
+fn with_fallback(db: &PgPool, primary: &Mock, fallback: &Mock, config: &AiConfig) -> Gateway {
+    Gateway::with_fallback_for_test(
+        config,
+        Adapter::Mock(primary.clone()),
+        Adapter::Mock(fallback.clone()),
+        db.clone(),
+        TIMEOUT,
+    )
+}
+
+/// Every try logged, oldest first: the model that was asked, and how it ended
+async fn tries(db: &PgPool) -> Vec<(String, String)> {
+    logged(db)
+        .await
+        .into_iter()
+        .map(|call| (call.model, call.outcome))
+        .collect()
+}
+
+fn pairs(tries: &[(&str, &str)]) -> Vec<(String, String)> {
+    tries
+        .iter()
+        .map(|(model, outcome)| ((*model).to_owned(), (*outcome).to_owned()))
+        .collect()
+}
+
+/// AC (FR-AIP-06, FR-AI-16): with the primary forced to fail, the fallback answers, and each
+/// call is logged with the provider actually used. Configured as an operator would: the primary
+/// at `ai.baseUrl`, which fails, and the fallback at its own.
+#[tokio::test]
+async fn a_failing_primary_is_answered_by_the_fallback() {
+    let (_postgres, db) = testing::migrated().await;
+    let fake = Fake::start().await;
+    fake.answer(500, json!({}));
+    fake.answer(503, json!({}));
+    let mut config = config(50, 2000);
+    config.primary = Some(contract::endpoint(
+        AiProvider::Claude,
+        "claude-opus-5",
+        "ai-key-value",
+    ));
+    config.base_url = Some(fake.url.clone());
+    config.fallback = Some(AiEndpoint {
+        provider: AiProvider::Mock,
+        model: "fallback-model".to_owned(),
+        api_key: None,
+    });
+    let gateway = Gateway::new(&config, Bangkok, db.clone());
+
+    let answer = gateway.complete(ask(None)).await;
+
+    let Ok(Answer::Tools { text, .. }) = answer else {
+        panic!("not answered: {answer:?}");
+    };
+    assert_eq!(text, "(mock) อยากได้ไข่ไก่ร้านป้าแดง ไม่เกิน 50 บาท");
+    let calls: Vec<(String, String, String)> = logged(&db)
+        .await
+        .into_iter()
+        .map(|call| (call.provider, call.model, call.outcome))
+        .collect();
+    let row = |provider: &str, model: &str, outcome: &str| {
+        (provider.to_owned(), model.to_owned(), outcome.to_owned())
+    };
+    assert_eq!(
+        calls,
+        [
+            row("claude", "claude-opus-5", "server_error"),
+            row("claude", "claude-opus-5", "server_error"),
+            row("mock", "fallback-model", "ok"),
+        ]
+    );
+}
+
+/// FR-AIP-06: however the primary ends without an answer, once its own retries are spent
+/// (FR-AI-05, FR-AI-10), the fallback gets the call.
+#[tokio::test]
+async fn every_failure_goes_to_the_fallback() {
+    let (_postgres, db) = testing::migrated().await;
+    let refused = |status| {
+        Step::Fail(Error::Refused {
+            status,
+            message: String::new(),
+        })
+    };
+    let invalid = || tool_call("serch_products", json!({}));
+    let cases = [
+        (vec![refused(400)], vec!["refused"]),
+        (vec![refused(401)], vec!["refused"]),
+        (
+            vec![Step::Fail(Error::Network("reset".to_owned()))],
+            vec!["network"],
+        ),
+        (
+            vec![Step::Fail(Error::Malformed("not JSON".to_owned()))],
+            vec!["malformed"],
+        ),
+        // A filter's refusal too: moderation would otherwise pass what it wouldn't look at
+        (
+            vec![Step::Fail(Error::Declined("refusal (other)".to_owned()))],
+            vec!["refused"],
+        ),
+        (
+            vec![
+                Step::Fail(Error::RateLimited),
+                Step::Fail(Error::RateLimited),
+            ],
+            vec!["rate_limited", "rate_limited"],
+        ),
+        (
+            vec![
+                Step::Fail(Error::Server { status: 503 }),
+                Step::Fail(Error::Server { status: 502 }),
+            ],
+            vec!["server_error", "server_error"],
+        ),
+        (vec![Step::Hang], vec!["timeout"]),
+        (vec![invalid(), invalid()], vec!["invalid", "invalid"]),
+    ];
+
+    let mut expected = Vec::new();
+    for (steps, outcomes) in cases {
+        let tried = steps.len();
+        let (first, second) = (primary(steps), fallback([reply("ได้เลยค่ะ")]));
+        let gateway = with_fallback(&db, &first, &second, &config(50, 2000));
+
+        let answer = gateway.complete(ask(None)).await;
+
+        assert!(answer.is_ok(), "{outcomes:?}: {answer:?}");
+        assert_eq!(first.requests().len(), tried, "{outcomes:?}");
+        assert_eq!(second.requests().len(), 1, "{outcomes:?}");
+        expected.extend(outcomes.iter().map(|outcome| ("primary", *outcome)));
+        expected.push(("fallback", "ok"));
+    }
+    assert_eq!(tries(&db).await, pairs(&expected));
+}
+
+/// FR-AI-10: the fallback retries a transient error as the primary did, each once.
+#[tokio::test]
+async fn retries_stay_with_each_provider() {
+    let (_postgres, db) = testing::migrated().await;
+    let first = primary([
+        Step::Fail(Error::RateLimited),
+        Step::Fail(Error::RateLimited),
+    ]);
+    let second = fallback([Step::Fail(Error::Server { status: 503 }), reply("ได้เลยค่ะ")]);
+
+    let answer = with_fallback(&db, &first, &second, &config(50, 2000))
+        .complete(ask(None))
+        .await;
+
+    assert!(answer.is_ok(), "{answer:?}");
+    assert_eq!(
+        tries(&db).await,
+        pairs(&[
+            ("primary", "rate_limited"),
+            ("primary", "rate_limited"),
+            ("fallback", "server_error"),
+            ("fallback", "ok"),
+        ])
+    );
+}
+
+/// FR-AIP-06, FR-AI-10: a timeout goes to the fallback at once, and neither provider is asked
+/// again after one. With both failed the user gets the apology.
+#[tokio::test]
+async fn a_timeout_goes_straight_to_the_fallback() {
+    let (_postgres, db) = testing::migrated().await;
+    let first = primary([Step::Hang, reply("ช้าไป")]);
+    let second = fallback([Step::Hang, reply("ช้าไป")]);
+
+    let result = with_fallback(&db, &first, &second, &config(50, 2000))
+        .complete(ask(None))
+        .await;
+
+    assert_eq!(result, Err(Unavailable::Failed));
+    assert_eq!(first.requests().len(), 1);
+    assert_eq!(second.requests().len(), 1);
+    assert_eq!(
+        tries(&db).await,
+        pairs(&[("primary", "timeout"), ("fallback", "timeout")])
+    );
+}
+
+/// FR-AI-05: the primary's hint is about an answer the fallback never gave, so the fallback is
+/// asked what the primary was, and hinted about its own answers only.
+#[tokio::test]
+async fn the_fallback_never_sees_the_primarys_hint() {
+    let (_postgres, db) = testing::migrated().await;
+    let invalid = |name| tool_call(name, json!({}));
+    let first = primary([invalid("serch_products"), invalid("serch_products")]);
+    let second = fallback([invalid("sarch_products"), reply("ได้เลยค่ะ")]);
+
+    let answer = with_fallback(&db, &first, &second, &config(50, 2000))
+        .complete(ask(None))
+        .await;
+
+    assert!(answer.is_ok(), "{answer:?}");
+    let (asked, hinted) = (first.requests(), second.requests());
+    assert_eq!(hinted[0].messages, asked[0].messages);
+    let hint = hinted[1].messages.last().unwrap().text();
+    assert!(hint.contains("`sarch_products`"), "{hint}");
+    assert!(!hint.contains("`serch_products`"), "{hint}");
+}
+
+/// FR-AI-09: however many tries it takes at either provider, a call counts once, a follow-up not
+/// at all, and at a limit neither provider is called.
+#[tokio::test]
+async fn a_fallback_counts_once() {
+    let (_postgres, db) = testing::migrated().await;
+    let somchai = new_user(&db, SOMCHAI).await;
+    let down = || Step::Fail(Error::Network("connection refused".to_owned()));
+    let first = primary([down(), down(), reply("หนึ่ง")]);
+    let second = fallback([reply("สอง"), reply("สาม")]);
+    let gateway = with_fallback(&db, &first, &second, &config(2, 2000));
+
+    assert!(gateway.complete(ask(Some(somchai))).await.is_ok());
+    assert!(gateway.follow_up(ask(Some(somchai))).await.is_ok());
+    assert!(gateway.complete(ask(Some(somchai))).await.is_ok());
+    assert_eq!(
+        gateway.complete(ask(Some(somchai))).await,
+        Err(Unavailable::Resting)
+    );
+
+    assert_eq!(first.requests().len(), 3);
+    assert_eq!(second.requests().len(), 2);
+}
+
+/// FR-AIP-04, FR-AIP-06: a clip or photo isn't given to a fallback that can't take it, which
+/// would answer without it; calls without either still go to it.
+#[tokio::test]
+async fn audio_and_images_stay_from_a_fallback_without_them() {
+    let (_postgres, db) = testing::migrated().await;
+    let media = |media_type: &str| Media {
+        media_type: media_type.to_owned(),
+        bytes: vec![1, 2, 3],
+    };
+    let sending = |feature, part| Call {
+        feature,
+        user_id: None,
+        system: "อ่านสิ่งที่ส่งมา".to_owned(),
+        messages: vec![Message {
+            role: Role::User,
+            parts: vec![part],
+        }],
+        output: Output::Text,
+    };
+    let text_only = Capabilities {
+        image_input: false,
+        audio_input: false,
+        ..Capabilities::ALL
+    };
+
+    for call in [
+        sending(Feature::Voice, Part::Audio(media("audio/m4a"))),
+        // Listing takes photos when the model does, so the feature alone doesn't say
+        sending(Feature::Listing, Part::Image(media("image/jpeg"))),
+    ] {
+        let down = primary([Step::Fail(Error::Network("reset".to_owned()))]);
+        let second = fallback([reply("ไม่ได้ถาม")]).with_capabilities(text_only);
+        let result = with_fallback(&db, &down, &second, &config(50, 2000))
+            .complete(call)
+            .await;
+        assert_eq!(result, Err(Unavailable::Failed));
+        assert!(second.requests().is_empty());
+    }
+
+    let down = primary([Step::Fail(Error::Network("reset".to_owned()))]);
+    let second = fallback([reply("ได้เลยค่ะ")]).with_capabilities(text_only);
+    let answer = with_fallback(&db, &down, &second, &config(50, 2000))
+        .complete(ask(None))
+        .await;
+    assert!(answer.is_ok(), "{answer:?}");
+    assert_eq!(second.requests().len(), 1);
+}
+
+/// The adapters behind two fake providers, each with its own key
+async fn adapters(primary: AiProvider, fallback: AiProvider) -> (Fake, Adapter, Fake, Adapter) {
+    let (fake, other) = (Fake::start().await, Fake::start().await);
+    let adapter = |provider, model, key: &str, fake: &Fake| {
+        let endpoint = contract::endpoint(provider, model, key);
+        Adapter::new(&endpoint, Some(&fake.url)).unwrap()
+    };
+    let model = |provider| match provider {
+        AiProvider::Claude => "claude-opus-5",
+        _ => "gemini-3.8-flash",
+    };
+    let first = adapter(primary, model(primary), "primary-key", &fake);
+    let second = adapter(fallback, model(fallback), "fallback-key", &other);
+    (fake, first, other, second)
+}
+
+/// Real HTTP takes longer than the mock, more so with every test running
+fn real(db: &PgPool, primary: Adapter, fallback: Adapter) -> Gateway {
+    let config = config(50, 2000);
+    let timeout = Duration::from_secs(5);
+    Gateway::with_fallback_for_test(&config, primary, fallback, db.clone(), timeout)
+}
+
+/// What the model is told after `answer`: the call so far, then its tools' results.
+fn after_tools(mut call: Call, answer: &Answer) -> Call {
+    let Answer::Tools { calls, .. } = answer else {
+        panic!("no calls: {answer:?}");
+    };
+    let results = calls.iter().map(|call| Part::ToolResult {
+        call_id: call.id.clone(),
+        content: json!({ "found": 2 }),
+    });
+    call.messages.push(answer.assistant_turn());
+    call.messages.push(Message {
+        role: Role::Tool,
+        parts: results.collect(),
+    });
+    call
+}
+
+/// FR-AIP-06: a provider takes over a conversation mid-tools from another's turn, rebuilt for
+/// its API, with its own key, and the log tells them apart (FR-AI-16). Fakes stand in for the
+/// real APIs, which no test here reaches.
+#[tokio::test]
+async fn a_fallback_takes_over_a_tool_loop() {
+    let (_postgres, db) = testing::migrated().await;
+    let (claude, first, gemini, second) = adapters(AiProvider::Claude, AiProvider::Gemini).await;
+    let gateway = real(&db, first, second);
+    claude.answer(
+        200,
+        json!({
+            "stop_reason": "tool_use",
+            "content": [
+                { "type": "thinking", "thinking": "", "signature": "sig" },
+                { "type": "tool_use", "id": "toolu_1", "name": "search_products", "input": { "keywords": "ไข่ไก่" } },
+            ],
+            "usage": { "input_tokens": 100, "output_tokens": 10 },
+        }),
+    );
+    claude.answer(529, json!({ "error": { "type": "overloaded_error" } }));
+    claude.answer(529, json!({ "error": { "type": "overloaded_error" } }));
+    gemini.answer(
+        200,
+        json!({
+            "candidates": [{ "content": { "role": "model", "parts": [{ "text": "เจอแล้วค่ะ" }] }, "finishReason": "STOP" }],
+            "usageMetadata": { "promptTokenCount": 100, "candidatesTokenCount": 10 },
+        }),
+    );
+
+    let tools = gateway.complete(ask(None)).await.unwrap();
+    let answer = gateway.follow_up(after_tools(ask(None), &tools)).await;
+
+    let Ok(Answer::Tools { text, .. }) = answer else {
+        panic!("not answered: {answer:?}");
+    };
+    assert_eq!(text, "เจอแล้วค่ะ");
+
+    let exchanges = gemini.exchanges();
+    let [exchange] = exchanges.as_slice() else {
+        panic!("{exchanges:?}");
+    };
+    let contents = &exchange.request["contents"];
+    assert_eq!(
+        contents[1]["parts"],
+        json!([{
+            "functionCall": { "id": "toolu_1", "name": "search_products", "args": { "keywords": "ไข่ไก่" } },
+            "thoughtSignature": "skip_thought_signature_validator",
+        }])
+    );
+    assert_eq!(
+        contents[2]["parts"],
+        json!([{
+            "functionResponse": { "id": "toolu_1", "name": "search_products", "response": { "found": 2 } },
+        }])
+    );
+    assert_eq!(exchange.headers["x-goog-api-key"], "fallback-key");
+    for exchange in claude.exchanges() {
+        assert_eq!(exchange.headers["x-api-key"], "primary-key");
+    }
+
+    let calls: Vec<(String, String)> = logged(&db)
+        .await
+        .into_iter()
+        .map(|call| (call.provider, call.outcome))
+        .collect();
+    assert_eq!(
+        calls,
+        pairs(&[
+            ("claude", "ok"),
+            ("claude", "server_error"),
+            ("claude", "server_error"),
+            ("gemini", "ok"),
+        ])
+    );
+}
+
+/// Gemini may give calls no IDs. Each it makes up stays its own across rounds, or the provider
+/// taking over would be sent the same one twice.
+#[tokio::test]
+async fn two_gemini_rounds_reach_claude_with_unique_ids() {
+    let (_postgres, db) = testing::migrated().await;
+    let (gemini, first, claude, second) = adapters(AiProvider::Gemini, AiProvider::Claude).await;
+    let gateway = real(&db, first, second);
+    let round = json!({
+        "candidates": [{
+            "content": { "role": "model", "parts": [
+                { "functionCall": { "name": "search_products", "args": { "keywords": "ไข่ไก่" } } },
+            ] },
+            "finishReason": "STOP",
+        }],
+    });
+    gemini.answer(200, round.clone());
+    gemini.answer(200, round);
+    gemini.answer(500, json!({}));
+    gemini.answer(500, json!({}));
+    claude.answer(
+        200,
+        json!({
+            "stop_reason": "end_turn",
+            "content": [{ "type": "text", "text": "เจอแล้วค่ะ" }],
+            "usage": { "input_tokens": 100, "output_tokens": 10 },
+        }),
+    );
+
+    let first_round = gateway.complete(ask(None)).await.unwrap();
+    let call = after_tools(ask(None), &first_round);
+    let second_round = gateway.follow_up(call.clone()).await.unwrap();
+    let call = after_tools(call, &second_round);
+    let answer = gateway.follow_up(call).await;
+    assert!(answer.is_ok(), "{answer:?}");
+
+    let exchanges = claude.exchanges();
+    let blocks: Vec<&Value> = exchanges[0].request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().unwrap())
+        .collect();
+    let ids = |kind: &str, field: &str| -> Vec<String> {
+        blocks
+            .iter()
+            .filter(|block| block["type"] == kind)
+            .map(|block| block[field].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids("tool_use", "id"), ["local-1", "local-2"]);
+    assert_eq!(ids("tool_result", "tool_use_id"), ["local-1", "local-2"]);
+}
+
 /// A log line sink for the tests below
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<u8>>>);

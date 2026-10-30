@@ -81,6 +81,15 @@ impl Mock {
         }
     }
 
+    /// The same mock, named `model`, to tell two mocks apart in the logs
+    #[cfg(test)]
+    pub fn with_model(self, model: &str) -> Self {
+        Self {
+            model: model.to_owned(),
+            ..self
+        }
+    }
+
     /// Every request a scripted mock has received, in order
     #[cfg(test)]
     pub fn requests(&self) -> Vec<Request> {

@@ -18,9 +18,9 @@ use testcontainers_modules::testcontainers::ContainerAsync;
 use super::*;
 use crate::admin::statistics;
 use crate::ai::request::Request;
-use crate::ai::testing::{Turn as Says, scripted};
+use crate::ai::testing::{Turn as Says, scripted, scripted_with_fallback};
 use crate::catalog::shops::sales;
-use crate::config::{self, SessionConfig};
+use crate::config::{self, AiEndpoint, AiProvider, SessionConfig};
 use crate::dispatcher::postback::Postback;
 use crate::dispatcher::{Input, flow};
 use crate::line::{Action, Body, limits};
@@ -829,6 +829,48 @@ async fn without_an_answer_the_menus_are_offered() {
     let (reply, _) = s.asks(s.buyer(), "ไข่", says).await;
     assert_eq!(reply[0], s.templates.assistant_found());
     assert_eq!(text(&reply[1]), "ที่ผู้ช่วยหาให้");
+}
+
+/// FR-AIP-06: when the primary fails after its tools ran, the fallback goes on from what they
+/// found, and the message still counts once (FR-AI-09).
+#[tokio::test]
+async fn the_fallback_takes_over_after_the_tools_ran() {
+    let s = setup().await;
+    let says = [
+        calls("search_products", json!({ "keywords": ["ไข่ไก่"] })),
+        Says::Fail,
+    ];
+    let (ai, model, fallback) = scripted_with_fallback(&s.pool, says, [Says::Text("มีไข่ไก่ค่ะ")]);
+
+    let reply = s
+        .handle(s.buyer(), async |turn| {
+            answer(turn, &s.config, &ai, "มีไข่ไหม", false).await
+        })
+        .await;
+
+    assert_eq!(text(&reply[0]), "มีไข่ไก่ค่ะ");
+    assert_eq!(text(&reply[1]), "ที่ผู้ช่วยหาให้");
+    assert_eq!(model.requests().len(), 2);
+    let asked = fallback.requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].messages, model.requests()[1].messages);
+    assert_eq!(told(&asked[0]).len(), 1);
+    assert_eq!(s.counted(s.buyer()).await, 1);
+}
+
+/// FR-LINE-08: the animation lasts as long as the fallback may take too (FR-AIP-06).
+#[test]
+fn the_animation_covers_the_fallback() {
+    let mut config = config::sample();
+    assert_eq!(config.ai.timeout_seconds, 20);
+    assert_eq!(loading_seconds(&config.ai), 30);
+
+    config.ai.fallback = Some(AiEndpoint {
+        provider: AiProvider::Mock,
+        model: "fallback-model".to_owned(),
+        api_key: None,
+    });
+    assert_eq!(loading_seconds(&config.ai), 50);
 }
 
 /// FR-AI-07: a reply longer than about 300 characters is cut at a space.

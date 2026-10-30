@@ -71,7 +71,7 @@ The AI assistant understands free-form Thai, drafts product listings from photos
 | Quick Reply | Tappable suggestion buttons shown above the keyboard. |
 | Postback | A button tap that sends structured data to IconMarket instead of visible chat text. |
 | LINE user ID | The identifier LINE assigns to a user for this OA's provider. |
-| AI provider | External LLM service — Claude, Gemini, GPT or Grok. Exactly one is active, chosen in configuration. |
+| AI provider | External LLM service — Claude, Gemini, GPT or Grok. Exactly one is active, chosen in configuration; an optional secondary one takes over calls it leaves unanswered (FR-AIP-06). |
 | Guided flow | A multi-step conversation (e.g., "add product", "checkout") whose progress is stored server-side. |
 | Pending action | A server-side record of a proposed change that waits for the user's confirmation tap. |
 | Open order | An order in status `PENDING`, `ACCEPTED`, `READY` or `DELIVERING`. |
@@ -105,7 +105,7 @@ The AI assistant understands free-form Thai, drafts product listings from photos
 
 ### 2.1 Product Perspective
 
-IconMarket is a new, self-contained product. Users interact only with the LINE app; IconMarket runs behind the LINE platform with one PostgreSQL database and one external AI provider.
+IconMarket is a new, self-contained product. Users interact only with the LINE app; IconMarket runs behind the LINE platform with one PostgreSQL database and one external AI provider, with an optional secondary one.
 
 ```
    Villagers using the LINE app (buyers · sellers · admins)
@@ -174,7 +174,7 @@ Every registered user can buy; roles are additive.
 
 - **Clients:** LINE app on iOS and Android (primary). Desktop LINE is best-effort; because rich-menu support may be limited there, every menu function is also reachable by typing `เมนู`.
 - **Server:** one IconMarket application instance and one PostgreSQL database (a currently supported major version) on a single modest host.
-- **Network:** a public HTTPS endpoint with a valid certificate for the webhook and image links; outbound HTTPS to the LINE API and to the configured AI provider.
+- **Network:** a public HTTPS endpoint with a valid certificate for the webhook and image links; outbound HTTPS to the LINE API and to the configured AI provider(s).
 - **LINE OA settings (operator):** Messaging API enabled; webhook URL set and webhook use turned on; webhook redelivery on; OA Manager auto-reply and greeting messages off (IconMarket sends its own).
 
 ### 2.5 Design and Implementation Constraints
@@ -182,7 +182,7 @@ Every registered user can buy; roles are additive.
 | ID | Constraint |
 | --- | --- |
 | CON-01 | The LINE Official Account (Messaging API) is the **only** user interface for buyers, sellers and admins. No web app, mobile app, LIFF app or admin web console in v1. |
-| CON-02 | AI is provided by exactly one of **Claude, Gemini, GPT or Grok**, selected in configuration. Business logic shall not depend on which provider is active. |
+| CON-02 | AI is provided by exactly one of **Claude, Gemini, GPT or Grok**, selected in configuration, with an optional secondary provider (FR-AIP-06). Business logic shall not depend on which provider is active. |
 | CON-03 | **PostgreSQL** is the only data store — business data, images, sessions, event inbox and logs. |
 | CON-04 | Data access uses an **ORM in code-first mode**; entity models in code are the single source of truth for the schema. |
 | CON-05 | **Auto-migration:** the schema is created and updated automatically at application startup (§5.3). |
@@ -292,9 +292,9 @@ Routing priority (FR-UI-12):
 | FR-AIP-01 | The system shall support the providers `claude`, `gemini`, `gpt` and `grok`, selected by `ai.provider`, with `ai.model` and `ai.apiKey` read from the config file. | M |
 | FR-AIP-02 | All AI use shall go through one provider-neutral interface offering: system instructions, multi-turn messages, image and audio input, tool/function calling or schema-constrained structured output, an output-token limit, temperature and timeout. One adapter per provider implements it. | M |
 | FR-AIP-03 | Changing provider or model shall require only a config change and a restart — no code change, schema change or data migration. | M |
-| FR-AIP-04 | Each adapter shall declare its capabilities (e.g., image input, audio input, tool calling). At startup, AI features that need a capability the configured provider/model lacks shall be disabled with a logged warning. | M |
+| FR-AIP-04 | Each adapter shall declare its capabilities (e.g., image input, audio input, tool calling). At startup, AI features that need a capability the configured provider/model lacks shall be disabled with a logged warning. A secondary provider (FR-AIP-06) turns no feature on. | M |
 | FR-AIP-05 | A `mock` provider with deterministic responses (no network, no key) shall exist for development and automated tests. | S |
-| FR-AIP-06 | An optional secondary provider (`ai.fallback.provider`, `ai.fallback.model`, `ai.fallback.apiKey`) may be tried when the primary fails or times out. | C |
+| FR-AIP-06 | An optional secondary provider (`ai.fallback.provider`, `ai.fallback.model`, `ai.fallback.apiKey`) is tried when the primary ends without a valid answer: any error, including a model's refusal, a timeout, or output still invalid after its hint. It gets the original request, at its provider's own API, under the same retry and hint rules (FR-AI-05, FR-AI-10), and the call counts once (FR-AI-09). It isn't tried with audio, images or a feature it can't accept (FR-AIP-04). | C |
 
 ### 3.4 HTTP Endpoints
 
@@ -480,18 +480,18 @@ No other endpoints are exposed.
 | FR-AI-02 | The AI may call **read** tools directly and **proposal** tools for changes. The system executes every tool call with the requesting user's permissions and attaches system-rendered cards for the entities returned. | M |
 | FR-AI-03 | The AI shall never execute a data-changing action. A proposal only creates a pending action and a confirmation card built by the system from validated database data; the change happens only when the user taps confirm. | M |
 | FR-AI-04 | Prices, totals, stock, order numbers and statuses shown to users shall always be rendered by the system from database values, never taken from AI-generated text. | M |
-| FR-AI-05 | AI output (tool names, arguments, drafts) shall be validated against schemas. Invalid output gets one retry with an error hint, then a fallback reply with the main menu. | M |
+| FR-AI-05 | AI output (tool names, arguments, drafts) shall be validated against schemas. Invalid output gets one retry with an error hint, then the secondary provider if there is one (FR-AIP-06), then a fallback reply with the main menu. | M |
 | FR-AI-06 | User-generated content given to the AI (messages, voice messages, product and shop text, slip images) shall be clearly delimited as data. Instructions inside it shall not change rules, roles or permissions, and authorization shall never depend on AI output. | M |
 | FR-AI-07 | Replies shall be in polite, simple Thai of at most about 300 characters (cards excluded). The assistant shall understand colloquial Thai, common misspellings and regional dialect words. Off-topic requests are briefly declined and steered back to the market. | M |
 | FR-AI-08 | Data minimization: phone numbers, house numbers, locations and PromptPay IDs shall not be sent to the AI unless a feature needs them; LINE user IDs are replaced by internal IDs. | M |
 | FR-AI-09 | Limits: `ai.limits.perUserDailyCalls` and `ai.limits.globalDailyCalls`, reset at midnight `Asia/Bangkok`. When a limit is reached the user is told the assistant is resting and offered the menus. | M |
-| FR-AI-10 | On timeout (`ai.timeoutSeconds`) or error, the system retries once only for fast-failing transient errors (e.g., rate limit, 5xx) — never after a timeout — then replies with a short apology and the main menu. All core flows shall work with `ai.enabled` set to false. | M |
+| FR-AI-10 | On timeout (`ai.timeoutSeconds`) or error, the system retries once only for fast-failing transient errors (e.g., rate limit, 5xx) — never after a timeout — then tries the secondary provider if there is one (FR-AIP-06), then replies with a short apology and the main menu. All core flows shall work with `ai.enabled` set to false. | M |
 | FR-AI-11 | Conversation memory: AI turns are stored per user and kept for `retention.aiMessageDays`. `เริ่มใหม่` cancels the current guided flow and clears the user's AI context. | M |
 | FR-AI-12 | Listing drafts (FR-PROD-02) shall use only active categories and shall not invent facts (ingredients, sizes, origin, health claims) that are neither stated by the seller nor visible in the photo. Moderation returns "allow" or "review" with a reason. | S |
 | FR-AI-13 | Inside guided flows, when simple parsing fails, the AI may interpret numbers written in words (e.g., *ยี่สิบห้าบาท* → 25); the value is always echoed back for confirmation. | S |
 | FR-AI-14 | How-to questions are answered only from the built-in help content. | S |
 | FR-AI-15 | Voice (`ai.features.voice`): if the model accepts audio, a voice message outside a guided flow is written down by the AI and routed like typed text (FR-UI-12), counting once against the limits (FR-AI-09). The clip is never stored. During a guided flow, whose steps act on an answer at once and may ask for what FR-AI-08 protects, or if the model doesn't accept audio or the clip can't be heard, the user is asked to type or use the menu. | C |
-| FR-AI-16 | Every AI call shall be logged: provider, model, feature, input and output tokens, latency and outcome. Prompt and response content is logged only when `ai.logContent` is true. | M |
+| FR-AI-16 | Every AI call shall be logged, try by try: the provider and model actually called, feature, input and output tokens, latency and outcome. Prompt and response content is logged only when `ai.logContent` is true. | M |
 | FR-AI-17 | Admin changes are not available through the AI in v1 (menus only); admins may use read tools. | M |
 
 **Table 4.9-A — AI tools** (names are illustrative)
@@ -682,8 +682,8 @@ Key names are normative; dots denote nesting. ✔ = required.
 | `ai.provider` | `claude`, `gemini`, `gpt`, `grok` or `mock` | ✔ if enabled |  | Active provider |
 | `ai.model` | string | ✔ if enabled |  | Model name at that provider |
 | `ai.apiKey` | string | ✔ if enabled |  | Provider API key |
-| `ai.baseUrl` | URL |  | provider default | Endpoint override |
-| `ai.timeoutSeconds` | integer |  | `20` | Per request |
+| `ai.baseUrl` | URL |  | provider default | Endpoint override for `ai.provider`; the fallback always uses its provider's own |
+| `ai.timeoutSeconds` | integer |  | `20` | Per request: each try at a provider |
 | `ai.maxOutputTokens` | integer |  | `1024` |  |
 | `ai.temperature` | number |  | `0.3` |  |
 | `ai.historyTurns` | integer |  | `10` | Conversation turns sent as context |
@@ -771,7 +771,7 @@ Suggested default categories: อาหาร, ขนม/ของหวาน, 
 | --- | --- | --- |
 | NFR-PERF-01 | Webhook requests are acknowledged within 1 s for 99 % of requests. | M |
 | NFR-PERF-02 | Replies that do not involve the AI are delivered within 2 s of receipt (95th percentile). | M |
-| NFR-PERF-03 | AI-assisted replies are delivered within 10 s (95th percentile); a single AI request never exceeds `ai.timeoutSeconds`; the loading animation is shown meanwhile (FR-LINE-08). | S |
+| NFR-PERF-03 | AI-assisted replies are delivered within 10 s (95th percentile); a single AI request, each try at a provider, never exceeds `ai.timeoutSeconds`; the loading animation is shown meanwhile (FR-LINE-08). | S |
 | NFR-PERF-04 | An uploaded image is processed and acknowledged within 5 s (95th percentile). | S |
 | NFR-PERF-05 | A product search takes at most 300 ms of database time at the target data volume. | S |
 
@@ -815,7 +815,7 @@ Suggested default categories: อาหาร, ขนม/ของหวาน, 
 | ID | Requirement | Pri |
 | --- | --- | --- |
 | NFR-PRIV-01 | Consent is collected against a versioned notice (FR-ONB-02); changing `privacy.noticeVersion` asks every user to consent again at their next interaction. | M |
-| NFR-PRIV-02 | The notice states what is collected and why, how long it is kept, who receives it (LINE; the configured AI provider, by name; the other party of an order) and how to exercise rights. | M |
+| NFR-PRIV-02 | The notice states what is collected and why, how long it is kept, who receives it (LINE; the configured AI provider(s), by name; the other party of an order) and how to exercise rights. | M |
 | NFR-PRIV-03 | Rights can be exercised in the chat: access and correction ("ข้อมูลของฉัน"), deletion and withdrawal of consent ("ลบบัญชี"). | M |
 | NFR-PRIV-04 | Minimization: phone and location are optional; the AI receives only what it needs (FR-AI-08); contact data is shown only for relevant orders (FR-ORD-11). | M |
 | NFR-PRIV-05 | Logs use internal IDs, not names, phone numbers, addresses or message content (except AI content when `ai.logContent` is true). | M |
@@ -849,7 +849,7 @@ Suggested default categories: อาหาร, ขนม/ของหวาน, 
 | --- | --- | --- |
 | NFR-COST-01 | Push usage is minimized: reply first (FR-LINE-07), configurable notifications (Table 4.8-A), one push request per recipient per step (FR-NOT-04), and no marketing pushes other than admin announcements. | M |
 | NFR-COST-02 | AI usage is bounded by daily limits (FR-AI-09); token usage is logged to estimate cost (FR-AI-16); common commands are handled by keywords without the AI. | M |
-| NFR-COST-03 | No paid infrastructure beyond one server, one PostgreSQL database, the LINE OA plan and the AI provider. | M |
+| NFR-COST-03 | No paid infrastructure beyond one server, one PostgreSQL database, the LINE OA plan and the AI provider(s). | M |
 
 ---
 

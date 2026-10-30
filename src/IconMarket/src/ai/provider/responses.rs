@@ -240,7 +240,7 @@ fn input(provider: &str, model: &str, messages: &[Message]) -> Vec<Value> {
                             "image_url": format!("data:{};base64,{}", media.media_type, STANDARD.encode(&media.bytes)),
                         })),
                         Part::Audio(media) => {
-                            // The gateway turns off the features that send audio (FR-AIP-04)
+                            // The gateway never asks a model without audio (FR-AIP-04)
                             warn!(media = ?media, provider, "no audio input; the clip is left out");
                         }
                         Part::ToolResult { call_id, content } => items.push(json!({

@@ -40,7 +40,7 @@ pub use self::memory::clear;
 use self::shown::Shown;
 use self::tools::Toolbox;
 use crate::ai::{self, Answer, Call, DATA_RULE, Feature, Gateway, Output, Part, Role};
-use crate::config::{Config, PoliteParticle};
+use crate::config::{AiConfig, Config, PoliteParticle};
 use crate::dispatcher::Turn;
 use crate::line::{self, Message};
 use crate::users::access::{self, authorize};
@@ -191,10 +191,21 @@ pub async fn loading(turn: &Turn<'_>, config: &Config, line: &line::Client) {
     let Some(chat_id) = turn.actor.user.line_user_id.as_deref() else {
         return;
     };
-    let seconds = config.ai.timeout_seconds.saturating_add(10);
-    if let Err(e) = line.start_loading(chat_id, seconds).await {
+    if let Err(e) = line
+        .start_loading(chat_id, loading_seconds(&config.ai))
+        .await
+    {
         debug!(error = %e, "no loading animation");
     }
+}
+
+/// How long the [`loading`] animation is asked to last: a request that times out, another if
+/// the fallback takes over (FR-AIP-06), and a little more for what follows.
+fn loading_seconds(ai: &AiConfig) -> u32 {
+    let requests = if ai.fallback.is_some() { 2 } else { 1 };
+    ai.timeout_seconds
+        .saturating_mul(requests)
+        .saturating_add(10)
 }
 
 /// The system instructions: the rules, then who and when (FR-AI-01), then how data is given

@@ -56,6 +56,49 @@ pub fn scripted(
     images: bool,
     off: &[Feature],
 ) -> (Gateway, Model) {
+    let capabilities = Capabilities {
+        image_input: images,
+        ..Capabilities::ALL
+    };
+    let mock = Mock::scripted(steps(turns)).with_capabilities(capabilities);
+    let mut config = config();
+    for feature in off {
+        match feature {
+            Feature::Assistant => config.features.assistant = false,
+            Feature::Listing => config.features.listing = false,
+            Feature::Moderation => config.features.moderation = false,
+            Feature::SlipReading => config.features.slip_reading = false,
+            Feature::Voice => config.features.voice = false,
+            Feature::VisualSearch => config.features.visual_search = false,
+        }
+    }
+    let adapter = Adapter::Mock(mock.clone());
+    let gateway = Gateway::for_test(&config, Some(adapter), db.clone(), TIMEOUT);
+    (gateway, Model(mock))
+}
+
+/// A gateway with every feature on whose model answers with `turns` in turn, and whose fallback
+/// (FR-AIP-06) with `fallback_turns`: the gateway and both models, each accepting everything.
+/// Its daily limits are counted in `db`.
+pub fn scripted_with_fallback(
+    db: &PgPool,
+    turns: impl IntoIterator<Item = Turn>,
+    fallback_turns: impl IntoIterator<Item = Turn>,
+) -> (Gateway, Model, Model) {
+    let primary = Mock::scripted(steps(turns));
+    let fallback = Mock::scripted(steps(fallback_turns)).with_model("fallback-model");
+    let gateway = Gateway::with_fallback_for_test(
+        &config(),
+        Adapter::Mock(primary.clone()),
+        Adapter::Mock(fallback.clone()),
+        db.clone(),
+        TIMEOUT,
+    );
+    (gateway, Model(primary), Model(fallback))
+}
+
+/// What the mock does for each of `turns`
+fn steps(turns: impl IntoIterator<Item = Turn>) -> Vec<Step> {
     let reply = |text: String, tool_calls| {
         Step::Reply(Response {
             text,
@@ -65,7 +108,7 @@ pub fn scripted(
         })
     };
     let mut calls = 0;
-    let steps: Vec<Step> = turns
+    turns
         .into_iter()
         .map(|turn| match turn {
             Turn::Json(value) => reply(value.to_string(), Vec::new()),
@@ -86,26 +129,7 @@ pub fn scripted(
             }
             Turn::Fail => Step::Fail(Error::Network("connection refused".to_owned())),
         })
-        .collect();
-    let capabilities = Capabilities {
-        image_input: images,
-        ..Capabilities::ALL
-    };
-    let mock = Mock::scripted(steps).with_capabilities(capabilities);
-    let mut config = config();
-    for feature in off {
-        match feature {
-            Feature::Assistant => config.features.assistant = false,
-            Feature::Listing => config.features.listing = false,
-            Feature::Moderation => config.features.moderation = false,
-            Feature::SlipReading => config.features.slip_reading = false,
-            Feature::Voice => config.features.voice = false,
-            Feature::VisualSearch => config.features.visual_search = false,
-        }
-    }
-    let adapter = Adapter::Mock(mock.clone());
-    let gateway = Gateway::for_test(&config, Some(adapter), db.clone(), TIMEOUT);
-    (gateway, Model(mock))
+        .collect()
 }
 
 /// The mock provider with every feature on, and limits no test reaches.

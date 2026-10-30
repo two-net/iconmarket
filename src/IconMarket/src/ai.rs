@@ -2,7 +2,8 @@
 //! logic never depends on which provider is active (CON-02). It offers one provider-neutral
 //! interface (FR-AIP-02), turns off features the configured model can't serve (FR-AIP-04),
 //! enforces the daily limits (FR-AI-09), validates what the model returns (FR-AI-05), retries
-//! only what is worth retrying (FR-AI-10) and logs every call (FR-AI-16).
+//! only what is worth retrying (FR-AI-10), turns to the fallback provider when the primary leaves
+//! a call unanswered (FR-AIP-06) and logs every call (FR-AI-16).
 //!
 //! Each provider is one adapter in [`provider`], so adding or changing one touches nothing
 //! outside this module (NFR-MNT-02, FR-AIP-03): Claude, Gemini, GPT and Grok (FR-AIP-01), and

@@ -63,7 +63,7 @@ impl Gemini {
         let url = self.http.url(&["v1beta", "models", &method]);
         let body = self.body(request);
         let answer = self.http.post(url, &body, request.timeout).await;
-        read(&self.model, answer?)
+        read(&self.model, answer?, calls_so_far(&request.messages))
     }
 
     fn body(&self, request: &Request) -> Value {
@@ -256,7 +256,16 @@ fn mime_type(media: &Media) -> &str {
     }
 }
 
-fn read(model: &str, answer: Value) -> Result<Response, Error> {
+/// The calls in the conversation, from which the IDs of new ones without any are numbered: a
+/// result is matched to its call by ID, and other providers want no ID twice.
+fn calls_so_far(messages: &[Message]) -> usize {
+    let parts = messages.iter().flat_map(|message| &message.parts);
+    parts
+        .filter(|part| matches!(part, Part::ToolCall(_)))
+        .count()
+}
+
+fn read(model: &str, answer: Value, calls_before: usize) -> Result<Response, Error> {
     if let Some(reason) = answer
         .pointer("/promptFeedback/blockReason")
         .and_then(Value::as_str)
@@ -288,7 +297,7 @@ fn read(model: &str, answer: Value) -> Result<Response, Error> {
         if let Some(call) = part.get("functionCall") {
             let id = match call["id"].as_str() {
                 Some(id) => id.to_owned(),
-                None => format!("{LOCAL_ID}{}", tool_calls.len() + 1),
+                None => format!("{LOCAL_ID}{}", calls_before + tool_calls.len() + 1),
             };
             tool_calls.push(ToolCall {
                 id,
@@ -538,7 +547,7 @@ mod tests {
             }],
             "usageMetadata": { "promptTokenCount": 100, "candidatesTokenCount": 10, "thoughtsTokenCount": 40 },
         });
-        let response = read("gemini-2.5-pro", answer.clone()).unwrap();
+        let response = read("gemini-2.5-pro", answer.clone(), 0).unwrap();
         assert_eq!(response.text, "ดูให้นะคะ");
         assert_eq!(
             response.tool_calls,
@@ -565,13 +574,14 @@ mod tests {
     fn blocked_withheld_and_cut_off_answers_are_errors() {
         let blocked = json!({ "promptFeedback": { "blockReason": "PROHIBITED_CONTENT" } });
         assert_eq!(
-            read("m", blocked).unwrap_err().to_string(),
+            read("m", blocked, 0).unwrap_err().to_string(),
             "the model declined to answer: the prompt was blocked (PROHIBITED_CONTENT)"
         );
         let finished = |reason: &str| {
             read(
                 "m",
                 json!({ "candidates": [{ "content": { "parts": [] }, "finishReason": reason }] }),
+                0,
             )
         };
         assert!(matches!(finished("SAFETY"), Err(Error::Declined(_))));
@@ -582,8 +592,33 @@ mod tests {
         };
         assert_eq!(why, "the model stopped with MALFORMED_FUNCTION_CALL");
         assert!(matches!(
-            read("m", json!({ "candidates": [] })),
+            read("m", json!({ "candidates": [] }), 0),
             Err(Error::Malformed(_))
         ));
+    }
+
+    /// A result is matched to its call by ID, so one round's `local-1` can't be another's.
+    #[test]
+    fn ids_it_makes_up_stay_unique_across_rounds() {
+        let call = |name: &str| json!({ "functionCall": { "name": name, "args": {} } });
+        let round = |parts: Value, calls: &[Message]| {
+            let answer = json!({ "candidates": [{ "content": { "parts": parts } }] });
+            let tool_calls = read("m", answer, calls_so_far(calls)).unwrap().tool_calls;
+            Message {
+                role: Role::Assistant,
+                parts: tool_calls.into_iter().map(Part::ToolCall).collect(),
+            }
+        };
+
+        let first = round(json!([call("get_cart")]), &[]);
+        let second = round(
+            json!([call("search_products"), call("get_shop")]),
+            std::slice::from_ref(&first),
+        );
+
+        let messages = [first, second];
+        assert_eq!(name_of("local-1", &messages), "get_cart");
+        assert_eq!(name_of("local-2", &messages), "search_products");
+        assert_eq!(name_of("local-3", &messages), "get_shop");
     }
 }

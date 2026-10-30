@@ -66,8 +66,10 @@ apiKey = "change-me"
 #   gemini  https://generativelanguage.googleapis.com
 #   gpt     https://api.openai.com/v1
 #   grok    https://api.x.ai/v1
+# For this provider only: the fallback always calls its own provider's API
 baseUrl = ""
-# Per request
+# Per request. A call that falls back can take twice this, and LINE's reply token lasts about a
+# minute, so keep it under 30 with a fallback
 timeoutSeconds = 20
 # The visible answer. Models that think get room for their thinking on top
 maxOutputTokens = 1024
@@ -98,8 +100,10 @@ perUserDailyCalls = 50
 globalDailyCalls = 2000
 
 [ai.fallback]
-# Secondary provider, tried when the primary fails or times out (FR-AIP-06); empty
-# turns it off. When set, model and apiKey are required (apiKey not for mock)
+# Secondary provider, tried when the primary leaves a call unanswered: an error, a refusal, a
+# timeout or invalid output (FR-AIP-06). Empty turns it off. When set, model and apiKey are
+# required (apiKey not for mock). It turns no feature on, and isn't tried with audio or images it
+# doesn't take. The privacy notice then names it: change privacy.noticeVersion too
 provider = ""
 model = ""
 apiKey = ""
