@@ -58,7 +58,7 @@ lineUserIds = ["U0123456789abcdef0123456789abcdef"]
 /// from that directory and with `env` added to the environment.
 fn command(config: &str, env: &[(&str, &str)]) -> (TempDir, Command) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("iconmarket.toml");
+    let path = dir.path().join("config.toml");
     fs::write(&path, config).unwrap();
     let mut command = Command::new(BIN);
     command

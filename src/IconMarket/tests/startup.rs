@@ -119,7 +119,7 @@ struct App {
 impl App {
     fn start(port: u16, config: &str) -> App {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("iconmarket.toml");
+        let path = dir.path().join("config.toml");
         fs::write(&path, config).unwrap();
         let mut child = Command::new(BIN)
             .arg(&path)

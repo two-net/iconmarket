@@ -2,7 +2,7 @@
 
 # The binary is compiled by the rust job in .github/workflows/ci.yml
 FROM debian:trixie-slim
-# Mount the config file at /app/iconmarket.toml; it holds credentials, so it is never baked in
+# Mount the config file at /app/config.toml; it holds credentials, so it is never baked in
 WORKDIR /app
 
 # Artifact downloads drop the executable bit, so restore it here

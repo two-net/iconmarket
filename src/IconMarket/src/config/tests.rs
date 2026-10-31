@@ -1,6 +1,6 @@
 use super::*;
 
-const SAMPLE: &str = include_str!("../../iconmarket.sample.toml");
+const SAMPLE: &str = include_str!("../../config.sample.toml");
 
 /// Only the required keys.
 const MINIMAL: &str = r#"
@@ -485,7 +485,7 @@ fn first_argument_overrides_the_default_path() {
         PathBuf::from(DEFAULT_PATH)
     );
     assert_eq!(
-        path_from_args(["icon-market".into(), "/etc/iconmarket.toml".into()]),
-        PathBuf::from("/etc/iconmarket.toml")
+        path_from_args(["icon-market".into(), "/etc/iconmarket/config.toml".into()]),
+        PathBuf::from("/etc/iconmarket/config.toml")
     );
 }

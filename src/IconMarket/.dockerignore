@@ -2,4 +2,4 @@ target
 !target/release/icon-market
 **/.DS_Store
 # Mounted at run time, never baked into the image
-iconmarket.toml
+config.toml

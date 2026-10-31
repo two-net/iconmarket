@@ -1,6 +1,6 @@
 /target
-# Holds credentials (CFG-09); iconmarket.sample.toml is the committed template
-/iconmarket.toml
+# Holds credentials (CFG-09); config.sample.toml is the committed template
+/config.toml
 # Holds AI keys for recording the contract fixtures (src/ai/provider/contract.rs)
 /ai-recording.toml
 # Fonts render.py downloads to draw the rich-menu images

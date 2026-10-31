@@ -34,7 +34,7 @@ use reader::{
 };
 
 /// Read from the working directory unless the first command-line argument names another file.
-pub const DEFAULT_PATH: &str = "iconmarket.toml";
+pub const DEFAULT_PATH: &str = "config.toml";
 
 #[derive(Debug)]
 pub struct Config {
@@ -396,7 +396,7 @@ pub fn load(path: &Path) -> anyhow::Result<Loaded> {
 /// The sample file's config, for tests to adjust.
 #[cfg(test)]
 pub fn sample() -> Config {
-    load_str(include_str!("../iconmarket.sample.toml"))
+    load_str(include_str!("../config.sample.toml"))
         .unwrap_or_else(|invalid| panic!("the sample file is invalid:{invalid}"))
         .config
 }

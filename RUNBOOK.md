@@ -110,7 +110,7 @@ Pick one provider and create an API key (A-02). Each bills you for what you use,
 | OpenAI | `gpt` | Dashboard, see the [quickstart](https://developers.openai.com/api/docs/quickstart) | |
 | xAI | `grok` | [API keys page](https://console.x.ai/team/default/api-keys) | Load credits first |
 
-Before choosing, see the `[ai]` section of the [sample config](https://github.com/two-net/iconmarket/blob/main/src/IconMarket/iconmarket.sample.toml), which lists what each provider can do. Take the model name from the provider's own documentation: the sample's examples may have dated.
+Before choosing, see the `[ai]` section of the [sample config](https://github.com/two-net/iconmarket/blob/main/src/IconMarket/config.sample.toml), which lists what each provider can do. Take the model name from the provider's own documentation: the sample's examples may have dated.
 
 Changing provider later takes only a config change and a restart (FR-AIP-03), plus a new privacy notice version ([§14](#14-config-changes)). A second provider as a fallback is optional, and uses the `[ai.fallback]` keys.
 
@@ -188,14 +188,14 @@ All of the app's configuration, credentials included, lives in this one file (CF
 
 ```sh
 mkdir -p /etc/iconmarket
-curl -fsSL https://raw.githubusercontent.com/two-net/iconmarket/<version>/src/IconMarket/iconmarket.sample.toml -o /etc/iconmarket/iconmarket.toml
-chown 10001:10001 /etc/iconmarket/iconmarket.toml
-chmod 600 /etc/iconmarket/iconmarket.toml
+curl -fsSL https://raw.githubusercontent.com/two-net/iconmarket/<version>/src/IconMarket/config.sample.toml -o /etc/iconmarket/config.toml
+chown 10001:10001 /etc/iconmarket/config.toml
+chmod 600 /etc/iconmarket/config.toml
 ```
 
 Uid 10001 is the service account the container runs as. Mode 600 means only it, and root, can read the file (CFG-09). It holds credentials in plain text, so never commit it, paste it into a chat or send it by email.
 
-Edit the file with `nano /etc/iconmarket/iconmarket.toml`. Every key has a comment. These must be changed:
+Edit the file with `nano /etc/iconmarket/config.toml`. Every key has a comment. These must be changed:
 
 | Key | Set it to |
 | --- | --- |
@@ -209,7 +209,7 @@ Edit the file with `nano /etc/iconmarket/iconmarket.toml`. Every key has a comme
 **The app can't detect a value you forgot.** `change-me` is a valid string as far as it knows. Check with:
 
 ```sh
-grep -n change-me /etc/iconmarket/iconmarket.toml
+grep -n change-me /etc/iconmarket/config.toml
 ```
 
 That must print nothing. `admin.lineUserIds` keeps its placeholder, `U00000000000000000000000000000000`, which the `grep` doesn't match; [§11](#11-first-admin) replaces it. Leave `database.host` as `localhost` and `logging.file` empty.
@@ -252,7 +252,7 @@ docker run -d --name iconmarket \
   --stop-timeout 15 \
   --network host \
   --log-driver journald \
-  -v /etc/iconmarket/iconmarket.toml:/app/iconmarket.toml:ro \
+  -v /etc/iconmarket/config.toml:/app/config.toml:ro \
   -v "$page":/app/static/index.html:ro \
   "$image"
 
@@ -325,7 +325,7 @@ Add your OA as a friend in LINE and send it `สวัสดี`. You should get
 The config file must list an admin, but a LINE user ID can only be found through a running instance. That's why [§7](#7-config-file) left the placeholder in.
 
 1. In LINE, send `#myid` to the OA. This works before you accept the privacy notice. You get two messages, and the second is your ID: `U` followed by 32 hex digits. Press and hold to copy it.
-2. In `/etc/iconmarket/iconmarket.toml`, replace the placeholder:
+2. In `/etc/iconmarket/config.toml`, replace the placeholder:
 
    ```toml
    lineUserIds = ["U0123456789abcdef0123456789abcdef"]
@@ -347,8 +347,8 @@ Accept the privacy notice in LINE. Your rich menu now has an admin tab.
 
 First set up backups: do [§16.1](#161-nightly-dump) and [§16.2](#162-copy-off-the-server) now. Then go through this list.
 
-- [ ] `grep -n change-me /etc/iconmarket/iconmarket.toml` prints nothing, and the placeholder admin ID is gone.
-- [ ] `ls -l /etc/iconmarket/iconmarket.toml` shows `-rw-------` and owner `10001`.
+- [ ] `grep -n change-me /etc/iconmarket/config.toml` prints nothing, and the placeholder admin ID is gone.
+- [ ] `ls -l /etc/iconmarket/config.toml` shows `-rw-------` and owner `10001`.
 - [ ] The config file isn't in any git repository.
 - [ ] `curl -fsS https://<host>/health` shows `"status":"ok"`.
 - [ ] From another network, `curl -m 5 http://<host>:8080/health` fails. If it answers, the firewall is open.
@@ -378,7 +378,7 @@ lineUserIds = ["U0123456789abcdef0123456789abcdef", "Ufedcba9876543210fedcba9876
 
 ## 14. Config changes
 
-Edit `/etc/iconmarket/iconmarket.toml`, then:
+Edit `/etc/iconmarket/config.toml`, then:
 
 ```sh
 docker restart iconmarket
@@ -409,8 +409,8 @@ Pick a quiet time. The app is down for several seconds, and LINE resends what it
 
    ```sh
    old=<running-version> new=<version>
-   diff <(curl -fsSL https://raw.githubusercontent.com/two-net/iconmarket/$old/src/IconMarket/iconmarket.sample.toml) \
-        <(curl -fsSL https://raw.githubusercontent.com/two-net/iconmarket/$new/src/IconMarket/iconmarket.sample.toml)
+   diff <(curl -fsSL https://raw.githubusercontent.com/two-net/iconmarket/$old/src/IconMarket/config.sample.toml) \
+        <(curl -fsSL https://raw.githubusercontent.com/two-net/iconmarket/$new/src/IconMarket/config.sample.toml)
    ```
 
 3. Take a backup. You need it if the new version can't be rolled back.
@@ -515,7 +515,7 @@ dir="$HOME/iconmarket-backups"
 export RSYNC_RSH="ssh -i $HOME/.ssh/iconmarket"
 
 rsync -a --exclude='*.tmp' "root@$host:/var/backups/iconmarket/" "$dir/"
-rsync -a "root@$host:/etc/iconmarket/iconmarket.toml" "$dir/"
+rsync -a "root@$host:/etc/iconmarket/config.toml" "$dir/"
 rsync -a "root@$host:/usr/local/bin/iconmarket-start" "$dir/"
 
 cd "$dir"
@@ -555,7 +555,7 @@ The newest dump should be from today, or from last night if today's hasn't run y
 
    ```sh
    cd ~/iconmarket-backups
-   scp -i ~/.ssh/iconmarket iconmarket.toml iconmarket-start iconmarket-<date>.dump root@<host>:/root/
+   scp -i ~/.ssh/iconmarket config.toml iconmarket-start iconmarket-<date>.dump root@<host>:/root/
    ```
 
 3. On the new server, put them in place. Also create `/usr/local/bin/iconmarket-wait` as in [§8](#8-start-script).
@@ -563,7 +563,7 @@ The newest dump should be from today, or from last night if today's hasn't run y
    ```sh
    cd /root
    mkdir -p /etc/iconmarket
-   install -o 10001 -g 10001 -m 600 iconmarket.toml /etc/iconmarket/iconmarket.toml
+   install -o 10001 -g 10001 -m 600 config.toml /etc/iconmarket/config.toml
    install -m 755 iconmarket-start /usr/local/bin/iconmarket-start
    ```
 
