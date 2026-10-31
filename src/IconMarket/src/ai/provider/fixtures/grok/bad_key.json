@@ -1,0 +1,46 @@
+{
+  "model": "grok-4.7",
+  "recorded": "2026-10-31",
+  "request": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "สวัสดีค่ะ",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": "สวัสดีค่ะ มีอะไรให้ช่วยไหมคะ",
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "text": "ซื้อของในตลาดนี้จ่ายเงินได้ทางไหนบ้างคะ",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "instructions": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "max_output_tokens": 1024,
+    "model": "grok-4.7",
+    "reasoning": {
+      "effort": "low"
+    },
+    "store": false,
+    "temperature": 0.3
+  },
+  "status": 400,
+  "response": {
+    "code": "invalid-argument",
+    "error": "Incorrect API key provided. You can obtain an API key from https://console.x.ai."
+  }
+}

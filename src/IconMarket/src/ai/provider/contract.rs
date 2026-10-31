@@ -47,6 +47,9 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 
 const SYSTEM: &str = "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ \
                       เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ";
+/// For [`Case::Truncated`]. Models that think get [`super::profile::THINKING_ALLOWANCE`] on top
+/// of the limit, and with [`SYSTEM`]'s short replies they finish well inside it.
+const WRITER: &str = "คุณเป็นนักเขียนเรียงความ เขียนให้ครบตามความยาวที่ขอเสมอ";
 
 pub const PROVIDERS: [AiProvider; 4] = [
     AiProvider::Claude,
@@ -71,7 +74,7 @@ pub enum Case {
     Image,
     /// A voice message, for models that hear them
     Audio,
-    /// A long essay asked for with a tiny output limit
+    /// A long essay asked of a writer with a tiny output limit
     Truncated,
     /// A key the provider rejects
     BadKey,
@@ -210,7 +213,12 @@ impl Case {
             ),
         };
         Request {
-            system: SYSTEM.to_owned(),
+            system: if self == Self::Truncated {
+                WRITER
+            } else {
+                SYSTEM
+            }
+            .to_owned(),
             messages,
             output,
             max_output_tokens: if self == Self::Truncated { 5 } else { 1024 },

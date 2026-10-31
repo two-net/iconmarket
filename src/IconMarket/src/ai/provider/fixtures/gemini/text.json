@@ -1,0 +1,77 @@
+{
+  "model": "gemini-3.8-flash",
+  "recorded": "2026-10-31",
+  "request": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "สวัสดีค่ะ"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "สวัสดีค่ะ มีอะไรให้ช่วยไหมคะ"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "text": "ซื้อของในตลาดนี้จ่ายเงินได้ทางไหนบ้างคะ"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 3072,
+      "thinkingConfig": {
+        "thinkingLevel": "low"
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ"
+        }
+      ]
+    }
+  },
+  "status": 200,
+  "response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "สามารถชำระเงินได้ผ่านการโอนเงินเข้าบัญชีธนาคาร, สแกน QR Code พร้อมเพย์ และเก็บเงินปลายทาง (ขึ้นอยู่กับแต่ละร้านค้า) ค่ะ สะดวกช่องทางไหนเลือกได้เลยนะคะ",
+              "thoughtSignature": "EmkKZwFpFH0T+rcCobmcUWHnUc3pKsiPxSXm0XMg3YLkQn4ETsGRWiTlO3I1Q3s+5xjau+YC8JTPzne1vBTaWv8fhRDUve3YJ1xtg88fCFRroIBCnzJiGoRjTw9s36uqSTHI76J/6EhBxYU="
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "tpnlauGIDsLu694Pn-WWiAE",
+    "usageMetadata": {
+      "candidatesTokenCount": 49,
+      "promptTokenCount": 64,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 64
+        }
+      ],
+      "serviceTier": "standard",
+      "totalTokenCount": 113
+    }
+  }
+}

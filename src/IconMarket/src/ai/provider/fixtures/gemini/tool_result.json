@@ -1,0 +1,131 @@
+{
+  "model": "gemini-3.8-flash",
+  "recorded": "2026-10-31",
+  "request": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "หาไข่ไก่ราคาไม่เกิน 50 บาทให้หน่อยค่ะ"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "keywords": "ไข่ไก่",
+                "maxPrice": 50
+              },
+              "id": "call_364198",
+              "name": "search_products"
+            },
+            "thoughtSignature": "EmkKZwFpFH0TmPaG0FNJQAggZmFp6OteVTYatJx4lo1cXQtAds4MpxnRIQ11BtzlTvowiQPKNJdHXmBosP0Eb3BcoocLmbSbxtQRr6tYU4MN3wwCki0nNSXpKNUyoDkWhvE3sbVm/OmOHT8="
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "call_364198",
+              "name": "search_products",
+              "response": {
+                "products": [
+                  {
+                    "name": "ไข่ไก่เบอร์ 2 แผง 30 ฟอง",
+                    "price": 45,
+                    "shop": "ร้านป้าแดง"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 3072,
+      "thinkingConfig": {
+        "thinkingLevel": "low"
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ"
+        }
+      ]
+    },
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "AUTO"
+      }
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "ค้นหาสินค้าที่มีขายในตลาด",
+            "name": "search_products",
+            "parametersJsonSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "keywords": {
+                  "description": "คำค้นสินค้า",
+                  "maxLength": 50,
+                  "type": "string"
+                },
+                "maxPrice": {
+                  "description": "ราคาสูงสุด เป็นบาท",
+                  "minimum": 0,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "keywords"
+              ],
+              "type": "object"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "status": 200,
+  "response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "พบสินค้าไข่ไก่ราคาไม่เกิน 50 บาท ดังนี้ค่ะ\n\n* **ไข่ไก่เบอร์ 2 (แผง 30 ฟอง)** ราคา 45 บาท จากร้านป้าแดงค่ะ",
+              "thoughtSignature": "EmkKZwFpFH0Tbjo6F5g2OsHgOxr5qbRgwBkiTlyDtmCG5e2ihaMvg6wJlmnANEbNbZ0xxNGEwgxCpgILtzlAfjTq3+SVVpRnK0HIpM6+nxAonCFGEq1kRAJcF4A3/44qN9ozWJmjN90Z64k="
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "uZnlaoubLff7694Pt_ad2A8",
+    "usageMetadata": {
+      "candidatesTokenCount": 48,
+      "promptTokenCount": 211,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 211
+        }
+      ],
+      "serviceTier": "standard",
+      "totalTokenCount": 259
+    }
+  }
+}

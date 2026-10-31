@@ -2770,7 +2770,11 @@ async fn an_order_placed_is_pushed_when_its_reply_fails() {
     let deadline = Instant::now() + Duration::from_secs(20);
     let logs = loop {
         let logs = push_log::Entity::find().all(&s.db).await.unwrap();
-        if !logs.is_empty() {
+        // The row goes in as pending, and how the push went follows
+        if logs
+            .iter()
+            .any(|log| log.status != push_log::Status::Pending)
+        {
             break logs;
         }
         assert!(Instant::now() < deadline, "never logged");

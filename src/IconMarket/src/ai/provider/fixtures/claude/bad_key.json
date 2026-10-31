@@ -1,0 +1,50 @@
+{
+  "model": "claude-opus-5",
+  "recorded": "2026-10-31",
+  "request": {
+    "max_tokens": 3072,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "สวัสดีค่ะ",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "สวัสดีค่ะ มีอะไรให้ช่วยไหมคะ",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "text": "ซื้อของในตลาดนี้จ่ายเงินได้ทางไหนบ้างคะ",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-opus-5",
+    "output_config": {
+      "effort": "low"
+    },
+    "system": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ"
+  },
+  "status": 401,
+  "response": {
+    "error": {
+      "message": "invalid x-api-key",
+      "type": "authentication_error"
+    },
+    "request_id": "req_011CgZvhrqemUaSoZZ6iiFoG",
+    "type": "error"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "model": "gemini-3.8-flash",
+  "recorded": "2026-10-31",
+  "request": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "หาไข่ไก่ราคาไม่เกิน 50 บาทให้หน่อยค่ะ"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 3072,
+      "thinkingConfig": {
+        "thinkingLevel": "low"
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ"
+        }
+      ]
+    },
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "AUTO"
+      }
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "ค้นหาสินค้าที่มีขายในตลาด",
+            "name": "search_products",
+            "parametersJsonSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "keywords": {
+                  "description": "คำค้นสินค้า",
+                  "maxLength": 50,
+                  "type": "string"
+                },
+                "maxPrice": {
+                  "description": "ราคาสูงสุด เป็นบาท",
+                  "minimum": 0,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "keywords"
+              ],
+              "type": "object"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "status": 200,
+  "response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "keywords": "ไข่ไก่",
+                  "maxPrice": 50
+                },
+                "id": "call_364198",
+                "name": "search_products"
+              },
+              "thoughtSignature": "EmkKZwFpFH0TmPaG0FNJQAggZmFp6OteVTYatJx4lo1cXQtAds4MpxnRIQ11BtzlTvowiQPKNJdHXmBosP0Eb3BcoocLmbSbxtQRr6tYU4MN3wwCki0nNSXpKNUyoDkWhvE3sbVm/OmOHT8="
+            }
+          ],
+          "role": "model"
+        },
+        "finishMessage": "Model generated function call(s).",
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "uJnlaqraDLvv694PpcfL-AE",
+    "usageMetadata": {
+      "candidatesTokenCount": 25,
+      "promptTokenCount": 140,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 140
+        }
+      ],
+      "serviceTier": "standard",
+      "totalTokenCount": 165
+    }
+  }
+}

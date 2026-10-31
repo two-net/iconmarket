@@ -1,0 +1,129 @@
+{
+  "model": "grok-4.7",
+  "recorded": "2026-10-31",
+  "request": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "สวัสดีค่ะ",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": "สวัสดีค่ะ มีอะไรให้ช่วยไหมคะ",
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "text": "ซื้อของในตลาดนี้จ่ายเงินได้ทางไหนบ้างคะ",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "instructions": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "max_output_tokens": 1024,
+    "model": "grok-4.7",
+    "reasoning": {
+      "effort": "low"
+    },
+    "store": false,
+    "temperature": 0.3
+  },
+  "status": 200,
+  "response": {
+    "background": false,
+    "completed_at": 1793432095,
+    "created_at": 1793432091,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "5606e9dc-5017-9e23-9ded-90cef4fc639e",
+    "incomplete_details": null,
+    "instructions": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "max_output_tokens": 1024,
+    "max_tool_calls": null,
+    "metadata": {
+      "system_fingerprint": "fp_c60958d81f66f847"
+    },
+    "model": "grok-4.7",
+    "object": "response",
+    "output": [
+      {
+        "encrypted_content": "ZyDmGEjUBXDOF1JGiBbe95G2jBN/jiZpGHl4pp+ZaZuPskz2YrNxJ9xvtCsGDe9c4GTrf9hjrwAbuNVBlPtsab1jIGZsWPbvIxLn/P0/bEVwiF/DvomAWfTBQ2jVVtnSUDNgG6eGPG+3ITD3TFI4rgqnECxwNtqWdGzDTgC+2FuHLT67+eKEAJpUuYbcpqY5BTG74WONVTjKLlFeKUOWIzNIevhQwKoc+vOTiZA/FtqvCilH/htY/k8FdJO7Tbsm2Dta7p692wJhr985W2LR0kCMOJmyeBxQ8LA+T4BddzAehS9/1vkExqcif8cwk3Tj1xXPcCzSCN3Aii4uzjiFQRZFL+fDZgIZUCXGYL027t0Q/tDL8QRPgOz19MtdArakmmq3cNynWTXAJC820RO+3gWTFz733pam4gGfW9Zj78xLnkpKsSI2CMEhxUdrg07GvygAJxrBvQIeke0eouOspJ2f+l3vgZsGVPcO8JwnN7UjhF0qYre3L27atMbfO3fStfbjTY6fX11BI+VIw690nIy0XDO23Om4SkgAytApzyUEeo2EYirOQ0591dPdQyzRqYZ+ngeyvm6LvTZwTBaDCcSpCij8qBvEpj/9tZVVrz+jMBfz9KVPnRWgGXvSx7PEEar9u8XaVDsyvfeoRuj9Gb+Wqg8Vm3Z5hSwXdna6T/Mqc98ZaIJA7D0DDZ6scntYC5z+FTy5QFw3Sn1PCKNaSshGN/8kkTL76jKoe53+/JFEER9iyebBL7V/zW2eECScAnp8W9Lq0K1K+pD6ImYenp4F0/9w9lOhMrUiKSHFJ6WczuP7TeNLK+sQ9XtRIHBe9JSOgdzyIpbLNIJuKzrTHgQps8vK8nUCHZmGqubdfD07cyxb3SWol2n99c3lucjXJis5hFC6J9W9K7trnPZzKhf+mculvUMimTWUfg+sSguXtzTvWkTMiRLjq/ZJUdpCvqveNfyRjLgyJO+iWkVPdyencw",
+        "id": "rs_5606e9dc-5017-9e23-9ded-90cef4fc639e",
+        "status": "completed",
+        "summary": [
+          {
+            "text": "ผู้ใช้ถามเกี่ยวกับช่องทางการชำระเงินที่ใช้ได้ในตลาดนี้",
+            "type": "summary_text"
+          }
+        ],
+        "type": "reasoning"
+      },
+      {
+        "content": [
+          {
+            "annotations": [],
+            "logprobs": [],
+            "text": "โดยทั่วไปตลาดชุมชนออนไลน์รับชำระผ่านโอนเงินผ่านธนาคาร พร้อมเพย์ และเก็บเงินปลายทางค่ะ บางร้านอาจรับบัตรหรือวอลเล็ตด้วย แนะนำดูช่องทางที่ระบุในหน้าร้านหรือตอนสั่งซื้อนะคะ",
+            "type": "output_text"
+          }
+        ],
+        "id": "msg_5606e9dc-5017-9e23-9ded-90cef4fc639e",
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "reasoning": {
+      "effort": "low",
+      "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "completed",
+    "store": false,
+    "temperature": 0.3,
+    "text": {
+      "format": {
+        "type": "text"
+      }
+    },
+    "tool_choice": "auto",
+    "tools": [],
+    "top_logprobs": 0,
+    "top_p": 0.95,
+    "truncation": "disabled",
+    "usage": {
+      "context_details": {
+        "input_tokens": 1313,
+        "output_tokens": 202
+      },
+      "cost_in_usd_ticks": 18760000,
+      "input_tokens": 1313,
+      "input_tokens_details": {
+        "cached_tokens": 1280
+      },
+      "num_server_side_tools_used": 0,
+      "num_sources_used": 0,
+      "output_tokens": 195,
+      "output_tokens_details": {
+        "reasoning_tokens": 131
+      },
+      "total_tokens": 1508
+    },
+    "user": null
+  }
+}
