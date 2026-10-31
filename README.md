@@ -80,7 +80,7 @@ Run the app from `src/IconMarket`, because it finds `static/` relative to its wo
 
 ```sh
 cd src/IconMarket
-cargo test --no-fail-fast
+cargo test
 cargo clippy --all-targets
 ```
 
@@ -90,7 +90,7 @@ The database tests start their own PostgreSQL 18 containers, so Docker must be r
 export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
 ```
 
-**Five tests fail on a fresh checkout.** They replay real provider answers, and those recordings haven't been committed yet. Until they are, no release can be published, and a plain `cargo test` stops at those failures without running `tests/`, which is why the command above has `--no-fail-fast`. [VERIFICATION §2](VERIFICATION.md#2-blocker-the-ai-recordings) lists the tests and how to record the answers.
+The AI contract tests replay real provider answers, so CI needs no keys. If you change a request they cover, they fail until it's recorded again: [VERIFICATION §2](VERIFICATION.md#2-resolved-the-ai-recordings) shows how.
 
 CI runs only on version tags, not on pull requests or `main`, so run the tests yourself before merging.
 

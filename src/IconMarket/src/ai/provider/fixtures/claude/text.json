@@ -1,0 +1,80 @@
+{
+  "model": "claude-opus-5",
+  "recorded": "2026-10-31",
+  "request": {
+    "max_tokens": 3072,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "สวัสดีค่ะ",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "สวัสดีค่ะ มีอะไรให้ช่วยไหมคะ",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "text": "ซื้อของในตลาดนี้จ่ายเงินได้ทางไหนบ้างคะ",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-opus-5",
+    "output_config": {
+      "effort": "low"
+    },
+    "system": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ"
+  },
+  "status": 200,
+  "response": {
+    "container": null,
+    "content": [
+      {
+        "signature": "CAISgwYKzwIIExgCKkC3tszjOpbWyD+g+eA+poSDUactNmTXWEUJRx8UBZCvIJbn6MQ6hTmj1JxjNIW6WcDigWEqmKzzDNTipL6aLn72Mg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiRkYmI4NmEwNS01NmVkLTQ4NjEtODJjYy04NWUxNWFlMDc2MWaaAQ8KDWNsYXVkZS1vcHVzLTWoAYWzltcGwgFJCAkQABobAWz+AtqKA083BSq0BCatBegcA083BVjgBCatIAIyBBJxzyU6BBj7+wtCBDgzI4pKBDgzI4pQAFoE2QXhVmAEaAFwAdoBYAoWcHJlZml4X2JlZm9yZV9ibG9ja192MRIgmPUTYaEQJ4BvWQPpEQ9tl3BB+Id5REQ9INI1bVYuC0MiADIgwsATyGqckuIvlm89hhd2j4t6RMkCrcwJe/oeCYr7Th9IAxIM1Gok83jiN/MwiH31GgwFMl35oE5x48L3C9giMFTfMsM/1GmREZEP34ctBw1BKzzAIV85NHG/2wjoT2yi3IaQvKZvoIlkRJsc1XqlsyrgAr+zdteX+kw0+fkEZxbCP6qhPlt2a7sRMLq27JapeFtlu6t4nywc+WgsDTONVe8oT1kLd2OUKx9y2nSpsHWnxPesWHbtdb81UATTj2ptr7TYSONHnrwM6H5z5TfMdaoF0qfycfm5A7uDj45kk4XIdqvJRy/MnuTL/7dtsrOEYUmnN3EDshxmBjRt8Kl+v/1Sz/vsowci9eLlG9VaXqyzXSE5AekX/TvRDYLkF7NVmKFnDwmf+QrpTZtC4TCz3gLAaIOVsUtF2V2tQJayZWv23Z0aLlT4dE6hDb7GkktbxPIdX3qumMgneF9EO5bqm+uGgx5dNI6oXAtYe8p8zfE0gWNqfbTemxCQDudKDcEQCPCTcNqSEP9IXuwBwugY1FjwRokJ3wLAOCgQWIoXGXz5F6Rg4L1d12e8G+TxYKceU6YRyMabdRk43tWfbwr24KF6DRExB0e0cgiCJ4e1g1SPpoMYAQ==",
+        "thinking": "",
+        "type": "thinking"
+      },
+      {
+        "text": "โดยทั่วไปตลาดชุมชนออนไลน์มักรองรับการชำระเงินหลายช่องทาง เช่น โอนผ่านธนาคาร/พร้อมเพย์ บัตรเครดิต-เดบิต วอลเล็ต และเก็บเงินปลายทาง ค่ะ\n\nแต่ช่องทางที่ใช้ได้จริงอาจต่างกันตามผู้ขายแต่ละราย รบกวนตรวจสอบที่หน้าสินค้าหรือหน้าชำระเงินก่อนยืนยันคำสั่งซื้อนะคะ 🙏\n\nหากแจ้งชื่อร้านหรือสินค้าที่สนใจมา ดิฉันช่วยค้นหาและดูรายละเอียดให้ได้ค่ะ",
+        "type": "text"
+      }
+    ],
+    "diagnostics": null,
+    "id": "msg_011CgZveAc7kexmpYVxEzMT5",
+    "model": "claude-opus-5",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "inference_geo": "global",
+      "input_tokens": 210,
+      "output_tokens": 412,
+      "output_tokens_details": {
+        "thinking_tokens": 117
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  }
+}

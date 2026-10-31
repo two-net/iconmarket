@@ -1,0 +1,225 @@
+{
+  "model": "grok-4.7",
+  "recorded": "2026-10-31",
+  "request": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "ช่วยร่างประกาศขายให้หน่อย: ขนมครกใบเตย กล่องละ 20 บาท ทำสดทุกเช้า มี 30 กล่อง",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "instructions": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "max_output_tokens": 1024,
+    "model": "grok-4.7",
+    "reasoning": {
+      "effort": "low"
+    },
+    "store": false,
+    "temperature": 0.3,
+    "text": {
+      "format": {
+        "name": "answer",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "enum": [
+                "อาหาร",
+                "ขนม",
+                "ผักผลไม้",
+                "ของใช้"
+              ],
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "price": {
+              "maximum": 100000,
+              "minimum": 0,
+              "type": "number"
+            },
+            "stock": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "category",
+            "description",
+            "name",
+            "price",
+            "stock"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "json_schema"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "background": false,
+    "completed_at": 1793432104,
+    "created_at": 1793432098,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "71acfc04-2a45-9fd5-8e63-8dc214e6e77c",
+    "incomplete_details": null,
+    "instructions": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "max_output_tokens": 1024,
+    "max_tool_calls": null,
+    "metadata": {
+      "system_fingerprint": "fp_9fe65cd761"
+    },
+    "model": "grok-4.7",
+    "object": "response",
+    "output": [
+      {
+        "encrypted_content": "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",
+        "id": "rs_71acfc04-2a45-9fd5-8e63-8dc214e6e77c",
+        "status": "completed",
+        "summary": [
+          {
+            "text": "กำลังร่างประกาศขายขนมครกใบเตย กล่องละ 20 บาท ทำสดทุกเช้า มี 30 กล่อง\n\nไม่พบเครื่องมือค้นหาสินค้าในรายการฟังก์ชัน ต้องใช้รูปแบบ JSON ตามที่กำหนด",
+            "type": "summary_text"
+          }
+        ],
+        "type": "reasoning"
+      },
+      {
+        "content": [
+          {
+            "annotations": [],
+            "logprobs": [],
+            "text": "{\"category\":\"ขนม\",\"description\":\"ขนมครกใบเตย ทำสดทุกเช้า หอมใบเตย กล่องละ 20 บาท\",\"name\":\"ขนมครกใบเตย\",\"price\":20,\"stock\":30}",
+            "type": "output_text"
+          }
+        ],
+        "id": "msg_71acfc04-2a45-9fd5-8e63-8dc214e6e77c",
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "reasoning": {
+      "effort": "low",
+      "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "completed",
+    "store": false,
+    "temperature": 0.3,
+    "text": {
+      "format": {
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "enum": [
+                "อาหาร",
+                "ขนม",
+                "ผักผลไม้",
+                "ของใช้"
+              ],
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "price": {
+              "maximum": 100000,
+              "minimum": 0,
+              "type": "number"
+            },
+            "stock": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "category",
+            "description",
+            "name",
+            "price",
+            "stock"
+          ],
+          "type": "object"
+        },
+        "type": "json_schema"
+      }
+    },
+    "tool_choice": "auto",
+    "tools": [],
+    "top_logprobs": 0,
+    "top_p": 0.95,
+    "truncation": "disabled",
+    "usage": {
+      "context_details": {
+        "input_tokens": 1459,
+        "output_tokens": 399
+      },
+      "cost_in_usd_ticks": 31460000,
+      "input_tokens": 1459,
+      "input_tokens_details": {
+        "cached_tokens": 1408
+      },
+      "num_server_side_tools_used": 0,
+      "num_sources_used": 0,
+      "output_tokens": 390,
+      "output_tokens_details": {
+        "reasoning_tokens": 337
+      },
+      "total_tokens": 1849
+    },
+    "user": null
+  }
+}

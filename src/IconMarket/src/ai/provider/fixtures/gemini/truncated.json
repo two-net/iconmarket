@@ -1,0 +1,62 @@
+{
+  "model": "gemini-3.8-flash",
+  "recorded": "2026-10-31",
+  "request": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "เขียนเรียงความเรื่องตลาดในหมู่บ้าน ยาวอย่างน้อย 3000 คำ"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 2053,
+      "thinkingConfig": {
+        "thinkingLevel": "low"
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "คุณเป็นนักเขียนเรียงความ เขียนให้ครบตามความยาวที่ขอเสมอ"
+        }
+      ]
+    }
+  },
+  "status": 200,
+  "response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "# ตลาดในหมู่บ้าน: ลมหายใจแห่งวิถีชุมชน หัวใจของเศรษฐกิจฐานราก และสะพานเชื่อมความสัมพันธ์ของมนุษย์\n\n---\n\n### บทนำ: รุ่งอรุณแห่งชีวิตและเสียงเพรียกของตลาด\n\nท่ามกลางความเงียบสงัดของฟากฟ้าปลายราตรี ก่อนที่แสงแรกของดวงตะวันจะแต้มระบายขอบฟ้าทิศตะวันออกให้กลายเป็นสีทองอร่าม ในขณะที่ผู้คนส่วนใหญ่ในเมืองหลวงยังคงจมดิ่งอยู่ในห้วงนิทราภายใต้ความเย็นของเครื่องปรับอากาศ แต่ ณ ดินแดนชนบทอันห่างไกล ลมหายใจของวันใหม่ได้เริ่มต้นขึ้นแล้วอย่างกระตือรือร้น เสียงไก่ขันประสานเสียงเป็นทอด ๆ แข่งกับเสียงเครื่องยนต์มอเตอร์ไซค์เก่า ๆ ที่พ่วงรถเข็นข้างกาย แล่นฝ่าสายหมอกบางเบาที่ลอยเรี่ยผิวดิน มุ่งหน้าสู่จุดศูนย์รวมที่เปรียบเสมือนหัวใจอันเต้นเป็นจังหวะของชุมชน นั่นคือ **“ตลาดในหมู่บ้าน”**\n\nตลาดในหมู่บ้านมิได้เป็นเพียงสถานที่สำหรับการแลกเปลี่ยนสินค้าด้วยตัวเงินตามคำนิยามทางเศรษฐศาสตร์กระแสหลัก หากแต่เป็น “พื้นที่ทางสังคมและวัฒนธรรม” ที่มีชีวิต เป็นกระจกเงาสะท้อนความอุดมสมบูรณ์ของระบบนิเวศท้องถิ่น เป็นเวทีแห่งมิตรภาพที่ถักทอสายใยความผูกพันของคนหลายรุ่น และเป็นป้อมปราการด่านสุดท้ายที่คอยปกป้องวิถีชีวิตดั้งเดิมให้รอดพ้นจากคลื่นลมแห่งความแปลกแยกในยุคโลกาภิวัตน์ การเดินทางไปสัมผัสตลาดในหมู่บ้านจึงไม่ใช่เพียงการเดินไปจับจ่ายซื้อหาอาหารเพื่อประทังชีวิต หากแต่เป็นการก้าวเข้าสู่อาณาเขตแห่งจิตวิญญาณชุมชน ที่ซึ่งทุกสรรพเสียง ทุกกลิ่นอาย และทุกรอยยิ้ม ล้วนบรรจุเรื่องราว ประวัติศาสตร์ และคุณค่าอันไม่อาจประเมินเป็นมูลค่าเงินตราได้\n\n---\n\n### บทที่ 1: ภาพร่างแห่งรุ่งอรุณ แสง สี และท่วงทำนองแห่งชีวิต\n\nหากเราต้องการเข้าใจจิตวิญญาณของตลาดในหมู่บ้านอย่างลึกซึ้ง เราจำต้องตื่นขึ้นมาพร้อมกับมันในเวลาตีสี่หรือตีห้า เมื่อแสงไฟจากหลอดนีออนสีส้มและสีขาวนวลเริ่มสว่างไสวขึ้นใต้เพิงสังกะสีเก่าหรือลานกว้างใต้ร่มไม้ใหญ่ บรรยากาศของตลาดเช้าในหมู่บ้านจะเริ่มต้นด้วยความเคลื่อนไหวที่เงียบเชียบแต่มั่นคง แม่ค้าพ่อค้าซึ่งล้วนเป็นลุง ป้า น้า อา ที่คุ้นหน้าคุ้นตากันในละแวกบ้าน ต่างช่วยกันจัดวางสินค้าลงบนแคร่ไม้ไผ่ ลังพลาสติก หรือแม้กระทั่งบนเสื่อกกผืนเก่าที่ปูราบไปกับพื้นดิน\n\nท่วง",
+              "thoughtSignature": "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"
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "MAX_TOKENS",
+        "index": 0
+      }
+    ],
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "xZnlasa-AqHs694PuP6h-AE",
+    "usageMetadata": {
+      "candidatesTokenCount": 684,
+      "promptTokenCount": 35,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 35
+        }
+      ],
+      "serviceTier": "standard",
+      "thoughtsTokenCount": 1365,
+      "totalTokenCount": 2084
+    }
+  }
+}

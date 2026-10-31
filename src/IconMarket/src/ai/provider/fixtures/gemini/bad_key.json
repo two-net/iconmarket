@@ -1,0 +1,68 @@
+{
+  "model": "gemini-3.8-flash",
+  "recorded": "2026-10-31",
+  "request": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "สวัสดีค่ะ"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "parts": [
+          {
+            "text": "สวัสดีค่ะ มีอะไรให้ช่วยไหมคะ"
+          }
+        ],
+        "role": "model"
+      },
+      {
+        "parts": [
+          {
+            "text": "ซื้อของในตลาดนี้จ่ายเงินได้ทางไหนบ้างคะ"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 3072,
+      "thinkingConfig": {
+        "thinkingLevel": "low"
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ"
+        }
+      ]
+    }
+  },
+  "status": 400,
+  "response": {
+    "error": {
+      "code": 400,
+      "details": [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          "domain": "googleapis.com",
+          "metadata": {
+            "service": "generativelanguage.googleapis.com"
+          },
+          "reason": "API_KEY_INVALID"
+        },
+        {
+          "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+          "locale": "en-US",
+          "message": "API key not valid. Please pass a valid API key."
+        }
+      ],
+      "message": "API key not valid. Please pass a valid API key.",
+      "status": "INVALID_ARGUMENT"
+    }
+  }
+}

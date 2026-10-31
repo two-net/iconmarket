@@ -6,32 +6,33 @@ Checked on 31 October 2026 at the commit this file arrived in.
 
 ## 1. Where it stands
 
-**IconMarket isn't ready to go live.** Nothing can be released until the AI recordings exist, a hanging AI provider breaks a Must requirement, and the checks that need real people and real servers haven't been done.
+**IconMarket isn't ready to go live.** A hanging AI provider breaks a Must requirement, and the checks that need real people and real servers haven't been done.
 
 The non-AI service did well locally. On a 2 vCPU / 4 GB box it held 20 events per second with room to spare, and no event or order was lost in any run. That result doesn't cover AI traffic.
 
 | #53 acceptance item | Status |
 | --- | --- |
-| All AC-01 – AC-17 pass | **Open.** 16 of 17 pass in automated tests, AC-05 can't run ([§2](#2-blocker-the-ai-recordings)), and the [staging run](#staging-checklist) hasn't been done |
+| All AC-01 – AC-17 pass | **Open.** All 17 pass in automated tests, but the [staging run](#staging-checklist) hasn't been done |
 | Load-test report attached | **Local report only** ([§6](#6-load-test)). It needs a rerun on a real 2 vCPU / 4 GB server, and NFR-PERF-03 hasn't been measured |
 | Restore test completed and timed (RTO ≤ 4 h) | **Open.** The procedure passed a local drill ([§8](#8-restore-drill)). The timed restore on a rented server hasn't been done |
 | Usability findings recorded and blocking issues fixed | **Open.** The protocol is ready ([§10](#10-usability-test)). The test hasn't been run |
 
 What's left, in order:
 
-1. Record the AI fixtures ([§2](#2-blocker-the-ai-recordings)). Nothing can be released until this is done.
-2. Decide how to handle a hanging AI provider ([§3](#3-must-requirement-failing-a-hanging-ai-provider)).
-3. Create a staging OA and server, then work through the [staging checklist](#staging-checklist).
-4. Rerun the load test on that server ([§12](#12-running-it-again)).
-5. Time a restore on a temporary server ([RUNBOOK §12](RUNBOOK.md#12-go-live-checklist)).
-6. Set up the uptime monitor ([RUNBOOK §19](RUNBOOK.md#19-monitoring)).
-7. Run the usability test with 5 villagers ([§10](#10-usability-test)), and fix whatever blocks them.
+1. Decide how to handle a hanging AI provider ([§3](#3-must-requirement-failing-a-hanging-ai-provider)).
+2. Create a staging OA and server, then work through the [staging checklist](#staging-checklist).
+3. Rerun the load test on that server ([§12](#12-running-it-again)).
+4. Time a restore on a temporary server ([RUNBOOK §12](RUNBOOK.md#12-go-live-checklist)).
+5. Set up the uptime monitor ([RUNBOOK §19](RUNBOOK.md#19-monitoring)).
+6. Run the usability test with 5 villagers ([§10](#10-usability-test)), and fix whatever blocks them.
 
-## 2. Blocker: the AI recordings
+## 2. Resolved: the AI recordings
 
-**`cargo test` fails on every checkout, so no release can be published.** CI's `docker` job needs the `rust` job, so a tag whose tests fail publishes no image. v0.1.0 passed only because the repository had no tests yet.
+**Resolved on 31 October 2026: the recordings are committed, and `cargo test` passes.**
 
-Five tests fail for one reason: the contract tests replay real provider answers, and those recordings were never committed. Only the error cases written from the providers' docs are in `src/ai/provider/fixtures/`.
+Until then, `cargo test` failed on every checkout. CI's `docker` job needs the `rust` job, so a tag whose tests fail publishes no image: v0.2.0 published none, and v0.1.0 passed only because the repository had no tests yet.
+
+Five tests failed for one reason: the contract tests replay real provider answers, and those recordings had never been committed. Only the error cases written from the providers' docs were in `src/ai/provider/fixtures/`.
 
 | Failing test | Why |
 | --- | --- |
@@ -41,7 +42,7 @@ Five tests fail for one reason: the contract tests replay real provider answers,
 | `ai::provider::contract::grok_answers_as_recorded` | No `grok/text` recording |
 | `ai::tests::switching_provider_is_a_config_change` (AC-05) | No `claude/tools` recording |
 
-**To fix it,** create `ai-recording.toml` next to `Cargo.toml` with a model and key for all four providers, record, then commit the new fixtures. The file is git-ignored, and keys travel only in headers, which are never written down.
+**To record again,** create `ai-recording.toml` next to `Cargo.toml` with a model and key for all four providers, record, then commit the new fixtures. The file is git-ignored, and keys travel only in headers, which are never written down. Every line the recorder prints should end in `ok`: it saves an answer even when the line says `NOT AS EXPECTED`.
 
 ```sh
 cd src/IconMarket
@@ -50,6 +51,8 @@ cargo test
 ```
 
 The recordings weren't written by hand to get a passing run. They have to be real answers, or AC-05 and the adapter contracts prove nothing.
+
+The first recording showed that the `truncated` case couldn't work as written. Models that think get `THINKING_ALLOWANCE` on top of the output limit, so Claude, Gemini and GPT were sent 2,053 tokens rather than 5, and the assistant's short-reply system prompt kept them well inside that. The case now asks a writer instead, and all four providers were cut off in the recording.
 
 ## 3. Must requirement failing: a hanging AI provider
 
@@ -94,8 +97,9 @@ NFR-MNT-07 lists seven areas. All seven have tests, and all of those tests pass.
 | Before this work, PostgreSQL 18 | 854 | 5 | 2 |
 | Final, PostgreSQL 18 | 860 | 5 | 2 |
 | Final, PostgreSQL 17 | 860 | 5 | 2 |
+| After the recordings, PostgreSQL 18 | 865 | 0 | 2 |
 
-The 5 failures are the ones in [§2](#2-blocker-the-ai-recordings), and nothing else failed. `cargo clippy --all-targets` is clean. The two ignored tests are the recorder, which calls live APIs, and `a_search_takes_at_most_300_ms_at_the_target_volume`, which passes when run alone.
+The 5 failures were the ones in [§2](#2-resolved-the-ai-recordings), and nothing else failed. `cargo clippy --all-targets` is clean. The two ignored tests are the recorder, which calls live APIs, and `a_search_takes_at_most_300_ms_at_the_target_volume`, which passes when run alone.
 
 PostgreSQL 17 was run because the tests use 18, while [RUNBOOK §4](RUNBOOK.md#4-server) installs Debian 13's own package, which is expected to be 17. Confirm that with `psql --version` on the server.
 
@@ -116,7 +120,7 @@ Automated results come from the runs in [§4](#4-automated-tests). A pass here d
 | AC-02 | `webhook::tests::an_event_is_answered_once_however_often_line_redelivers_it` | Pass | Not run |
 | AC-03 | `orders::checkout::tests::the_last_one_goes_to_exactly_one_of_two_buyers` | Pass | Not run |
 | AC-04 | `dispatcher::worker::tests::a_buyer_asks_in_plain_thai_end_to_end`, `orders::cart::tests::a_proposed_quantity_goes_in_the_cart_once_confirmed` | Pass | Not run |
-| AC-05 | `ai::tests::switching_provider_is_a_config_change` | **Fails:** see [§2](#2-blocker-the-ai-recordings) | Not run |
+| AC-05 | `ai::tests::switching_provider_is_a_config_change` | Pass | Not run |
 | AC-06 | `dispatcher::worker::tests::with_the_ai_off_a_new_seller_and_buyer_complete_an_order_end_to_end` | Pass | Not run |
 | AC-07 | `tests/startup.rs`: `an_empty_database_is_migrated_and_seeded_before_requests_are_accepted` | Pass | Not run |
 | AC-08 | `persistence::tests::restarting_without_model_changes_changes_nothing` | Pass | Not run |

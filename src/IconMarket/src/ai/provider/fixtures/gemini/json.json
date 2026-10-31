@@ -1,0 +1,100 @@
+{
+  "model": "gemini-3.8-flash",
+  "recorded": "2026-10-31",
+  "request": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "ช่วยร่างประกาศขายให้หน่อย: ขนมครกใบเตย กล่องละ 20 บาท ทำสดทุกเช้า มี 30 กล่อง"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 3072,
+      "responseJsonSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "อาหาร",
+              "ขนม",
+              "ผักผลไม้",
+              "ของใช้"
+            ],
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 200,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 40,
+            "type": "string"
+          },
+          "price": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "number"
+          },
+          "stock": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "price",
+          "category"
+        ],
+        "type": "object"
+      },
+      "responseMimeType": "application/json",
+      "thinkingConfig": {
+        "thinkingLevel": "low"
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ"
+        }
+      ]
+    }
+  },
+  "status": 200,
+  "response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "{\"category\":\"ขนม\",\"description\":\"ทำสดใหม่ทุกเช้า หอมหวานมันอร่อย พร้อมเสิร์ฟความอร่อยค่ะ\",\"name\":\"ขนมครกใบเตย\",\"price\":20,\"stock\":30}",
+              "thoughtSignature": "Et0FCtoFAWkUfROSLa7J49d0vg3fn/hEp54EByhso/6TBvI/22DdYB8v2IOZd6+pOlacpqX5SVhjcN9kvT3aln+0MybtguZhjmzGeL/WrQYsFDpL2a49utBweUlWxG7I1iexDae/acw01hlzukuIlorzYUgtqLyh8tSTW+Z+94hlRdf/KkqSYwnIKDuPi2WnhEtToRhFflK9sJ2YZKJq1HM2WQjLZax14qHBfAT7BXidLl3onIPUdPCWFdcDX4XJyF2a6dMJfdRpteEY0ofWnWxDZDUQH6rCoYga04aVNCkUXkffTSbbAV3U9wsr1MU3IJwhJnAKFqWy9mBMhULflcOSgAQL2cD6eV8M/L8xvwinvzveXVehKDKKy5Ij8imOra0PqeQiraZ5Q6U0L8FFn/ATcgmuhGHZ1wpQmYGG1I2wUT+9hEuk/VoPmyCxMLCvUmSz+LUipiBX5nWUVe7jiLyLcXoxzGpKsOy61ia1oLjFo/3iSG6a48g0WAIE0dZGeQ03ehynFs7BRY9f6SFL6wNjUUkYnHvKEmToFfmNyThIQ6ohkDvIQqkS7jmaZobKyHBqdnz440dw/6lzQhDmAXMhKJaryipSbyoCaRf3eWQ+pUT7FbYXxkw5y2cXTYo37a+GUm2H9KEWaJVkmTUmX/lPENNx2ZgMi3Cu1iVvANDuPaeLYxhkyhDn5aqFWP9bNTihhPGTi+g1+XGDBzYbduK2yl9mnEmwZhRSiZecMPV4uzF5L3HygZkV2sbTUSUQ1hgAo8DyCj8bTaubch59U0kH9BTP6knPFf4gbR67iFAJdv8CNPkz2JSpQuA1vhb87ywyKGynnQULuID7oZmuhm1zQbNqAYIfPAhhom7+CsjFGdjQ6vFNJhImbUGYbnVMDTnut+7YDRR4jHqfSihw7INk4N1cIwMRs6K5snN1CycBWmPt4jkwbpMiwh8oNx4FQNfoxtS/u3kBetnTXDRecA=="
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "u5nlas-DJ6zu694P-YiB6QE",
+    "usageMetadata": {
+      "candidatesTokenCount": 49,
+      "promptTokenCount": 72,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 72
+        }
+      ],
+      "serviceTier": "standard",
+      "thoughtsTokenCount": 169,
+      "totalTokenCount": 290
+    }
+  }
+}

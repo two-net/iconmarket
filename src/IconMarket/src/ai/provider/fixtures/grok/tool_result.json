@@ -1,0 +1,199 @@
+{
+  "model": "grok-4.7",
+  "recorded": "2026-10-31",
+  "request": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "หาไข่ไก่ราคาไม่เกิน 50 บาทให้หน่อยค่ะ",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "encrypted_content": "J66D/K71bWCRH8XL9RL0Kdxfxr9lDCEwpH17uGUBbQay0XCDo/zZ6grFUnonZOg0XmPJv3YUplLTW1pDSMWFRnyksBtk7w0BJCFK6npP6q9wOUI8jM7VI2MhTX5ZoUFRV+4eywS/g42bvMDIGo7d3U/rlj0Wkj/YX5S+HatAEkUdQWf5Wo+0",
+        "id": "rs_b708ddbe-ece4-9eb6-ba1d-43236c7f18ba",
+        "status": "completed",
+        "summary": [],
+        "type": "reasoning"
+      },
+      {
+        "arguments": "{\"keywords\":\"ไข่ไก่\",\"maxPrice\":50.0}",
+        "call_id": "call-cacf1d29-6af5-49fd-8105-733bdf0f1b83-0",
+        "id": "fc_b708ddbe-ece4-9eb6-ba1d-43236c7f18ba_0",
+        "name": "search_products",
+        "status": "completed",
+        "type": "function_call"
+      },
+      {
+        "call_id": "call-cacf1d29-6af5-49fd-8105-733bdf0f1b83-0",
+        "output": "{\"products\":[{\"name\":\"ไข่ไก่เบอร์ 2 แผง 30 ฟอง\",\"price\":45,\"shop\":\"ร้านป้าแดง\"}]}",
+        "type": "function_call_output"
+      }
+    ],
+    "instructions": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "max_output_tokens": 1024,
+    "model": "grok-4.7",
+    "reasoning": {
+      "effort": "low"
+    },
+    "store": false,
+    "temperature": 0.3,
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "description": "ค้นหาสินค้าที่มีขายในตลาด",
+        "name": "search_products",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "keywords": {
+              "description": "คำค้นสินค้า",
+              "type": "string"
+            },
+            "maxPrice": {
+              "anyOf": [
+                {
+                  "description": "ราคาสูงสุด เป็นบาท",
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "keywords",
+            "maxPrice"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ]
+  },
+  "status": 200,
+  "response": {
+    "background": false,
+    "completed_at": 1793432098,
+    "created_at": 1793432097,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "714d1bba-35f9-9ffe-9317-ccad5a59cf70",
+    "incomplete_details": null,
+    "instructions": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "max_output_tokens": 1024,
+    "max_tool_calls": null,
+    "metadata": {
+      "system_fingerprint": "fp_c60958d81f66f847"
+    },
+    "model": "grok-4.7",
+    "object": "response",
+    "output": [
+      {
+        "encrypted_content": "bExaS4iwFX+SS2T6f1mQ9P3Okjwal0cDj77IT/ujXumFDSLh4UESZcwtmNb6WfLwRWKNR4g5M736LwWYuh74uvbOY8A",
+        "id": "rs_714d1bba-35f9-9ffe-9317-ccad5a59cf70",
+        "status": "completed",
+        "summary": [],
+        "type": "reasoning"
+      },
+      {
+        "content": [
+          {
+            "annotations": [],
+            "logprobs": [],
+            "text": "เจอไข่ไก่ราคาไม่เกิน 50 บาทค่ะ\n\n- **ไข่ไก่เบอร์ 2 แผง 30 ฟอง** ราคา 45 บาท จากร้านป้าแดง",
+            "type": "output_text"
+          }
+        ],
+        "id": "msg_714d1bba-35f9-9ffe-9317-ccad5a59cf70",
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "reasoning": {
+      "effort": "low",
+      "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "completed",
+    "store": false,
+    "temperature": 0.3,
+    "text": {
+      "format": {
+        "type": "text"
+      }
+    },
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "description": "ค้นหาสินค้าที่มีขายในตลาด",
+        "name": "search_products",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "keywords": {
+              "description": "คำค้นสินค้า",
+              "type": "string"
+            },
+            "maxPrice": {
+              "anyOf": [
+                {
+                  "description": "ราคาสูงสุด เป็นบาท",
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "keywords",
+            "maxPrice"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ],
+    "top_logprobs": 0,
+    "top_p": 0.95,
+    "truncation": "disabled",
+    "usage": {
+      "context_details": {
+        "input_tokens": 1512,
+        "output_tokens": 60
+      },
+      "cost_in_usd_ticks": 12180000,
+      "input_tokens": 1512,
+      "input_tokens_details": {
+        "cached_tokens": 1408
+      },
+      "num_server_side_tools_used": 0,
+      "num_sources_used": 0,
+      "output_tokens": 51,
+      "output_tokens_details": {
+        "reasoning_tokens": 8
+      },
+      "total_tokens": 1563
+    },
+    "user": null
+  }
+}

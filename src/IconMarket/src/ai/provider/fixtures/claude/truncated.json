@@ -1,0 +1,62 @@
+{
+  "model": "claude-opus-5",
+  "recorded": "2026-10-31",
+  "request": {
+    "max_tokens": 2053,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "เขียนเรียงความเรื่องตลาดในหมู่บ้าน ยาวอย่างน้อย 3000 คำ",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-opus-5",
+    "output_config": {
+      "effort": "low"
+    },
+    "system": "คุณเป็นนักเขียนเรียงความ เขียนให้ครบตามความยาวที่ขอเสมอ"
+  },
+  "status": 200,
+  "response": {
+    "container": null,
+    "content": [
+      {
+        "signature": "CAISsgcKwwIIExgCKkARC3nKYmVQ0TdM/FkxMF+YnFOryJgq1ftM03Gk1AAzh024eBF5ekaDzVBsI1JOGgaY51K63HA1tRhsPJmSeraoMg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiRkYmI4NmEwNS01NmVkLTQ4NjEtODJjYy04NWUxNWFlMDc2MWaaAQ8KDWNsYXVkZS1vcHVzLTWoAZizltcGwgE9CAUQABoPAX/PAtqKA083BeHeBCatIAIyBBJxzyU6BEYg2fpCBDgzI4pKBDgzI4pQAFoE2QXhVmACaAFwAdoBYAoWcHJlZml4X2JlZm9yZV9ibG9ja192MRIgnavg0zh/QUkcdqCj5C0RtedYrTvJRIFjytfgIhzQRiwiADIgwsATyGqckuIvlm89hhd2j4t6RMkCrcwJe/oeCYr7Th9IAxIMfk4YkFrzj5KPdVhOGgyBEz4AmWerXl3AshMiMKVQ+0VytZzRxrs8JnZwIDVnWvKravFDIEBe68L4ZuRdTy98RQIwxgLurBBjrKT76yqbBMZdppgvIRTwWhIbTcHiOqlVV20drl3GkMSlEXrZ06SNiNfkflOpwfLjiLngh/rRSNiT/WN9qkHiKAohPrYhTcUeWq9DWWnsqwyiLdIbu85ZGKG+o6prHT408kfzAflh5MST8161DVT4ASM4QIcff57IWin/jW37+pAi2DELNXKiv7DsrlGKkS8QrTQa6UdMDykU/4UIp1OtSOjGinrO5N0ajqC1qoi0F3CC4NZJaXYdPTQadRC7TDXA+22Krdf3FN6HOcAdWNZmYPZKQkN8vb/jSUIMj/5i6uV5m+2//EKrXo1zJTUVQwn6wOPjlYRxiKYBSklfDIid9U2Npf7CEF8BDt417p7bZaMo6pSLGH94Jtv+3QHN7SYflUFGOaN+VPrIJDVt8c8nFnMSIwuP+mm03zyI0+ZZ2PbBGeozqHp/POAz3QHpc7JzkU48HMwn8t0Pb2yrBqL7/HQY/2lce6TdcDBko9yLEaM8Oqf+wxXUjd/+mI1nlktOdzFoZqr8qcnHuEI0Ad8rl2+eCPED3U1b31e9RPr3NclQCZGQkesWPllwdbs1Lce6jUjs29kp0XO/ZnjZY6pCZbYgxp1C03aNT7hKssX77PznU3QiUn//4SQIdRISSnnsZhbDueLurNRMSaJWoROYxsKm19xS6FWEa9cLXzQfKOAFqJpOvruvcXC3eUlMsQxpm9YmxRqISfdwK+pRg4uGTovdGAE=",
+        "thinking": "",
+        "type": "thinking"
+      },
+      {
+        "text": "# ตลาดในหมู่บ้าน\n\n## บทนำ: เสียงแรกของวันที่ดังก่อนไก่ขัน\n\nในหมู่บ้านเล็ก ๆ ที่ตั้งอยู่ริมทุ่งนาและคลองส่งน้ำ มีสถานที่หนึ่งที่ตื่นก่อนใคร ตื่นก่อนแม้กระทั่งไก่ที่ขันอยู่ใต้ถุนบ้าน สถานที่นั้นคือ \"ตลาด\" ตลาดในหมู่บ้านไม่ใช่อาคารใหญ่โต ไม่มีเครื่องปรับอากาศ ไม่มีป้ายไฟนีออน ไม่มีเพลงเปิดคลอเบา ๆ จากลำโพงติดเพดาน หากแต่เป็นลานดินหรือลานปูนกว้างไม่กี่สิบเมตร มีหลังคาสังกะสีเก่าคร่ำคร่าพาดคลุมบางส่วน มีเสาไม้ที่ถูกทาสีทับแล้วทับอีกจนไม่รู้ว่าสีเดิมคือสีอะไร มีแผงไม้กระดานวางเรียงกันอย่างไม่เป็นระเบียบนัก แต่ทุกคนในหมู่บ้านรู้ดีว่าแผงไหนเป็นของใคร ใครนั่งตรงไหน ใครขายอะไร และใครจะมาสายเป็นประจำ\n\nตลาดในหมู่บ้านเป็นมากกว่าสถานที่ซื้อขายสินค้า มันคือหัวใจที่เต้นเป็นจังหวะให้ชุมชนทั้งหมู่บ้าน เป็นศูนย์กลางของข่าวสาร เป็นเวทีแลกเปลี่ยนความคิดเห็น เป็นห้องเรียนของเด็ก ๆ เป็นที่พึ่งของคนยากจน เป็นที่ระบายผลผลิตของชาวนาชาวสวน และเป็นสถานที่ซึ่งความสัมพันธ์ระหว่างมนุษย์ถูกถักทอขึ้นใหม่ทุกเช้า เรียงความนี้จึงขอพาผู้อ่านเดินเข้าไปในตลาดแห่งนั้น ตั้งแต่ก่อนฟ้าสาง จนถึงเวลาที่แผงสุดท้ายถูกเก็บ เพื่อทำความเข้าใจว่าเหตุใดตลาดเล็ก ๆ ในหมู่บ้าน จึงมีความหมายใหญ่โตเกินกว่าขนาดของมันนัก\n\n## บรรยากาศยามเช้ามืด: เมื่อความมืดยังไม่ยอมจากไป\n\nตีสี่ครึ่ง ท้องฟ้ายังเป็นสีน้ำเงินเข้มเกือบดำ ลมหนาวจากทุ่งนาพัดผ่านมาเป็นระยะ หมอกบาง ๆ ลอยต่ำเหนือพื้นดิน ชาวบ้านส่วนใหญ่ยังนอนหลับอยู่ใต้ผ้าห่ม แต่ที่ลานตลาดกลับมีแสงไฟสีส้มจากหลอดไส้ดวงเล็ก ๆ ส่องสว่างเป็นหย่อม ๆ บางแผงใช้ไฟฉายคาดหัว บางแผงใช้ตะเกียงเก่า บางแผงใช้ไฟจากแบตเตอรี่รถยนต์ที่ชาร์จมาจากบ้าน แสงเหล่านี้เรียงรายเหมือนหิ่งห้อยที่มาชุมนุมกัน\n\nเสียงแรกที่ได้ยินคือเสียงล้อรถเข็นครูดกับพื้นปูน เสียงตะกร้าพลาสติกกระทบกัน เสียงมีดอีโต้สับลงบนเขียงไม้มะขามหนา ๆ เสียงน้ำไหลจากถังที่ล้างผัก เสียงทักทายกันด้วยน้ำเสียงง่วง ๆ แต่เป็นมิตร \"มาแต่เช้าเลยนะพี่\" \"ก็ของหมดเร็วทุกวัน ไม่รีบก็ไม่ทัน\" \"เมื่อวานขายดีไหม\" \"ก็งั้น ๆ แหละ ฝนตกคนไม่ค่อยออก\"\n\nแม่ค้าปลาคือกลุ่มที่มาถึงเร็วที่สุด เพราะต้องไปรับปลาจากแพริมคลองตั้งแต่ตีสาม ปลาช่อน ปลาดุก ปลานิล ปลาตะเพียน ถูกเทลงกะละมังสังกะสีใบใหญ่ น้ำกระเซ็นเปียกพื้น ปลาบางตัวยังดิ้นแรงจนกระโดดออกมานอกกะละมัง แม่ค้าคว้ากลับเข้าไปอย่างชำนาญโดยไ",
+        "type": "text"
+      }
+    ],
+    "diagnostics": null,
+    "id": "msg_011CgZvfVFpVFnNLFjSyWc7c",
+    "model": "claude-opus-5",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": "max_tokens",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "inference_geo": "global",
+      "input_tokens": 98,
+      "output_tokens": 2053,
+      "output_tokens_details": {
+        "thinking_tokens": 173
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  }
+}

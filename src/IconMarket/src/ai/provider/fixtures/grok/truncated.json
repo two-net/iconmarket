@@ -1,0 +1,118 @@
+{
+  "model": "grok-4.7",
+  "recorded": "2026-10-31",
+  "request": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "เขียนเรียงความเรื่องตลาดในหมู่บ้าน ยาวอย่างน้อย 3000 คำ",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "instructions": "คุณเป็นนักเขียนเรียงความ เขียนให้ครบตามความยาวที่ขอเสมอ",
+    "max_output_tokens": 5,
+    "model": "grok-4.7",
+    "reasoning": {
+      "effort": "low"
+    },
+    "store": false,
+    "temperature": 0.3
+  },
+  "status": 200,
+  "response": {
+    "background": false,
+    "completed_at": null,
+    "created_at": 1793432107,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "f6ce7b4d-ba1d-9169-bd40-9ecff00d931b",
+    "incomplete_details": {
+      "reason": "max_output_tokens"
+    },
+    "instructions": "คุณเป็นนักเขียนเรียงความ เขียนให้ครบตามความยาวที่ขอเสมอ",
+    "max_output_tokens": 5,
+    "max_tool_calls": null,
+    "metadata": {
+      "system_fingerprint": "fp_9fe65cd761"
+    },
+    "model": "grok-4.7",
+    "object": "response",
+    "output": [
+      {
+        "encrypted_content": "MzqIVJt08Kutffmcf4N7qxctlyTkmqdv8BMEoqgqeR3TrcIz0y77qoEz8TEFdYdPxRWh3Hu3MvSwfzXpP6kXfmpk2C+ScHook9nBLuttOnKcUTRRaB6GuZW8SE8thoNEQq3iX3sURphRav4VHPn9y0+G/y2tmzN4N9eA5i1ESXcXr4dyQQFINAExOH5zBdYAAZNL5inYQts3oOaoUT6fhyM4K17aFTYHB/eIPEbn/l1ONM7CkGGonQLAHoOEmhBTZPj0h1ETVQ9IAtA3GfTEE2tqeVvr7zkGlKEfhtVIVMqIB8troACpq4gNQ0YecjLGWiz0Yy39jM3EpVRzWEg3sTDyAk4tWcNH/Z1RfrLKbhBexNYJ7WzAtNIrSZcXSaHpnQtV6VVxPNVswRIBCHvVI1qj9N+RKOfHdcWv6PJo6UshFx3gsXiDp5yd0bkWUAo/mdnxWbmxHy6YKtmd/6TMCc30WKI4dZhoReK3NqRkPGyvOTXjjycGO5dJY+EcYdbvBgwPQWinOeRvFXrTUHRxCzwmgzuJBj3o6tfHy6kYQxh+Jd0O/b2vXPwpNiWpXq8O4zX7G9qcUh609aJLpeMrwAkbbjoFqiEjP3/cWlx072VLfMELY+KNCrDjJxVD4gBQaO5VX9Yzn4qAK+4I0pOUxg5VaZcyCkqyX0pIMZ2TWBQezd+EKb6Q9/XS2Q6Y5FkFSQO0KglI76Y5Y+RovxqlvZnapZAKR33rRdaTlixXNwiKw1By3FF4CXnoZhTk1Myj6Lea87jEkBp3HxUklccvcMs3rqKPi4aw602ujL7BrDyceeEP1iG1cwrDunWXZ2O0pDk0obb0PDdb44o1o70eB/4X/VYojtL/Wni5cWL2PUEmeYb4Q+DQiy9nXeKrW8U4ZINmXdl75W5cDZhtP5yXod8JVvlbUYEfM7WpNvgAEE+yeLUdqwmddPatK3VNxSZrDtmxszUquujky/OgZSYuzzfAekbW/nYlRzRMKnEgtj8yQ7mhjUp7wH4ATz/o5+hOHm55wxAVCMgYniZJLsZ0Y+fTR+gvOqDeiFoVWh/YxxcOwGOeFRG1hmROVtmDNr9O2RWF1zd0tkGCEzIEhredsUNSAdyQTYHoeI86+fu1Iz3Tq2Msi0vv2hyKUW/Qk63g/55dy4B5vUkJujaHEraRYKpyGSK8RsyDkTE5fU5D+WTJc/smAdLJXtnYDXG5yOIDtICCclb7Ujkpha7vQDZcPrcFZUHfQ9wAUgJ1tDROGYOWfnPxznfl4Yj3QSOqsaSkYn5cGIKNVx48YrZF0ZALrNatXOQ684am/k+5T7wWcY+B083d9FEJyAHGLvCpYcDIFJn4mDL28kgS2xyWSRJPC/67bKynwnRRJUHzDrLO3QWu7BjQLTEmWEaETz5z5U7/vIHKhcqQXuGxkz+GLA",
+        "id": "rs_f6ce7b4d-ba1d-9169-bd40-9ecff00d931b",
+        "status": "completed",
+        "summary": [
+          {
+            "text": "กำลังวางแผนเขียนเรียงความเรื่อง \"ตลาดในหมู่บ้าน\" ให้ยาวอย่างน้อย 3000 คำ",
+            "type": "summary_text"
+          }
+        ],
+        "type": "reasoning"
+      },
+      {
+        "content": [
+          {
+            "annotations": [],
+            "logprobs": [],
+            "text": "ตลาดในหมู่บ้าน",
+            "type": "output_text"
+          }
+        ],
+        "id": "msg_f6ce7b4d-ba1d-9169-bd40-9ecff00d931b",
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "reasoning": {
+      "effort": "low",
+      "summary": "detailed"
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "incomplete",
+    "store": false,
+    "temperature": 0.3,
+    "text": {
+      "format": {
+        "type": "text"
+      }
+    },
+    "tool_choice": "auto",
+    "tools": [],
+    "top_logprobs": 0,
+    "top_p": 0.95,
+    "truncation": "disabled",
+    "usage": {
+      "context_details": {
+        "input_tokens": 1282,
+        "output_tokens": 216
+      },
+      "cost_in_usd_ticks": 21320000,
+      "input_tokens": 1282,
+      "input_tokens_details": {
+        "cached_tokens": 1152
+      },
+      "num_server_side_tools_used": 0,
+      "num_sources_used": 0,
+      "output_tokens": 216,
+      "output_tokens_details": {
+        "reasoning_tokens": 211
+      },
+      "total_tokens": 1498
+    },
+    "user": null
+  }
+}

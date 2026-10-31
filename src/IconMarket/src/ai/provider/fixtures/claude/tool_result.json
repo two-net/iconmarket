@@ -1,0 +1,111 @@
+{
+  "model": "claude-opus-5",
+  "recorded": "2026-10-31",
+  "request": {
+    "max_tokens": 3072,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "หาไข่ไก่ราคาไม่เกิน 50 บาทให้หน่อยค่ะ",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "caller": {
+              "type": "direct"
+            },
+            "id": "toolu_01Qu24mdkx5y5wNnMFTotyFY",
+            "input": {
+              "keywords": "ไข่ไก่",
+              "maxPrice": 50
+            },
+            "name": "search_products",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "content": "{\"products\":[{\"name\":\"ไข่ไก่เบอร์ 2 แผง 30 ฟอง\",\"price\":45,\"shop\":\"ร้านป้าแดง\"}]}",
+            "tool_use_id": "toolu_01Qu24mdkx5y5wNnMFTotyFY",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-opus-5",
+    "output_config": {
+      "effort": "low"
+    },
+    "system": "คุณเป็นผู้ช่วยของตลาดชุมชนออนไลน์ ตอบสั้น ๆ เป็นภาษาไทยที่สุภาพ เมื่อผู้ใช้ถามหาสินค้า ให้ใช้เครื่องมือค้นหาสินค้าก่อนตอบเสมอ",
+    "tool_choice": {
+      "type": "auto"
+    },
+    "tools": [
+      {
+        "description": "ค้นหาสินค้าที่มีขายในตลาด",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "keywords": {
+              "description": "คำค้นสินค้า",
+              "type": "string"
+            },
+            "maxPrice": {
+              "description": "ราคาสูงสุด เป็นบาท",
+              "type": "number"
+            }
+          },
+          "required": [
+            "keywords"
+          ],
+          "type": "object"
+        },
+        "name": "search_products",
+        "strict": true
+      }
+    ]
+  },
+  "status": 200,
+  "response": {
+    "container": null,
+    "content": [
+      {
+        "text": "พบสินค้าที่ตรงตามเงื่อนไขค่ะ 🥚\n\n- **ไข่ไก่เบอร์ 2 แผง 30 ฟอง** ราคา 45 บาท — ร้านป้าแดง\n\nสนใจให้ช่วยสั่งซื้อหรือค้นหาร้านอื่นเพิ่มเติมไหมคะ",
+        "type": "text"
+      }
+    ],
+    "diagnostics": null,
+    "id": "msg_011CgZvepMyx5HLkzSk36aan",
+    "model": "claude-opus-5",
+    "role": "assistant",
+    "stop_details": null,
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "inference_geo": "global",
+      "input_tokens": 750,
+      "output_tokens": 137,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  }
+}

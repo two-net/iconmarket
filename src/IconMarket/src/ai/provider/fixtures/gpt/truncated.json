@@ -1,0 +1,132 @@
+{
+  "model": "gpt-6-astra",
+  "recorded": "2026-10-31",
+  "request": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "เขียนเรียงความเรื่องตลาดในหมู่บ้าน ยาวอย่างน้อย 3000 คำ",
+            "type": "input_text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "instructions": "คุณเป็นนักเขียนเรียงความ เขียนให้ครบตามความยาวที่ขอเสมอ",
+    "max_output_tokens": 2053,
+    "model": "gpt-6-astra",
+    "reasoning": {
+      "effort": "low"
+    },
+    "store": false
+  },
+  "status": 200,
+  "response": {
+    "access_programs": null,
+    "background": false,
+    "billing": {
+      "payer": "developer"
+    },
+    "completed_at": null,
+    "created_at": 1793432042,
+    "error": null,
+    "frequency_penalty": 0.0,
+    "id": "resp_0cc0bce6874999b7016ae599eac68487d2a5d69e3f026e92f1",
+    "incomplete_details": {
+      "reason": "max_output_tokens"
+    },
+    "instructions": "คุณเป็นนักเขียนเรียงความ เขียนให้ครบตามความยาวที่ขอเสมอ",
+    "max_output_tokens": 2053,
+    "max_tool_calls": null,
+    "metadata": {},
+    "model": "gpt-6-astra",
+    "moderation": null,
+    "object": "response",
+    "output": [
+      {
+        "content": [],
+        "encrypted_content": "gAAAAABq5ZoasemyTXd1f7R1gu0qPMdIUYDJpAiAfy9WZaa6M8OfalsEWRKH1zIihkbJsfQTGna2_x_I0T7zr3At_0n4AnBopG3-1myi08uWLDYH9Al947qINwZlkeVkdvfqIUmv1Ap0B_f2BF2m-poKKmuidQxNJcyR0O4aWohVdstsZLqkvSHY0QP8Vg_Yfo1YMl3HORVXDvZVFR7iLjVYohszX4FSlzZ4moU-RjS2V5zOOQxO7UiXdBvuPV31Hyrv7_ZDxwUccY9q3YbxSgXHb7MF97DpM7mJtcBCfqz_84KwsQuLxZpvKavBmhdL5bV3CHwy-vVbLTyCpwWr3P2Opej4IUyCZKJJ9c1DE_HY3jQdK6-6kR86GX9nv4Q7ceZX9R0KlwfvX1qfvobRpLqnqs0_ZwxN-PG58OzLvg4_F1WLsO6Jq4zbYzU79bh8kgGbQ1lSyQTy-1wCmU5xN5qy5dPzeS1KpwN-iWySbrVkfbSprZ9VeE6sZPv12UhpbZCQC2omIA7Cpmq6aUFYtELO2kkNCvx_gXgCtavC1AQaM8CbwFV0PitzImTyggDoHJRHwazSVHQc61heFsDQT6tD-QlLW8Gs9y86PpctcP25ZtloV3jW65_hOEiIBDAZbl5cMlEHJOBnob4VaLIgVbk6TPAb5zN1ZXnIq8z4WBIrdtLyBkC_3MM4R64bicrk21KpdUTwZMJKI9GDNId4zCVkf8Fiwhh0BUJpDLzX55CtDNAhY6ZU_ChhG3eoX1pdlMWU7X-HOZnODKoMYWwAREJq1TH8oLQVz45geTmF0MLGdky_0GRxdPETyibLZGvYP-cnnHfvQlyAfdcvg4H1xkfo8dpc0bv8QlGrf9LK3mILVpWJRyL9dwFxKB3_W2hbpNGnAOvRdBB8IJSBT302_9n4UuIETNrGJL5T3GXzvtLUEFgYbVcR7FAspHnVkcpghsBIavtBsJaIHebRTCpxrzcuxu64hayNf7Hyhgb1vlFA83I1A6jMNSotE4S2WpGDnzRqMNYQ_U5wyuOXSr1RcnCyRbAXMTXOx6ig1WdACT6XJJkZt2gRC7s6B4l_xJcqyGSrueHPxWMVZTQaNq124Shs_6aMk0TEa7TrK59VJWpYvuZyr8Fj7Ys2xsfCWpJYJUNXalntFS7pAB2-uNHMr_KCAHQkKbVqjY2jJKGi25f6ySwG0ofw8SsGycQ35PyubGcIK-rorHhGyKEAEaBoulW8UrkZoN8myLOmca0mOqFEr1H0R9nH5V5ZSdqOIEBviuWp6t-uYoUhAjCYDL7QsrxvgcAAXPMJm7nvLhcgWUzHykAFsGt3ADvbJyjU7qeUtSAPP-QcudhnDVvf4ZUMugeVeAyF7Z2m9grBMbkGH080B_sAOC1bN2iPTslHi2unu0nLjHrzFjt6QcAR9yuJ0E9HyoUMZgcjtM-97yeC7E4ye9x9GVuODo4p_oePc5S1WqKmDbux1dExbK-RX6e0PQvPPozZvzEXgYaEdBz4o1kNR9KvaTSwqc6ffOnj9gz_G7mUI4_RUMOdXRApjvEqtITtdo69Rla7McuMpB_24UHU0uGDFCUNtk0yc1Gn3PnY8SaA_XEUiU_-NQ04dlrWkaVsoXnvfZBg3PubfI_r6tF3_MkgutjkT7Z1NKjIj1p6-Snhqz8uA37nzvHAWMBWpBO7d9MsAPz7jN7eoQYCb1FRuOUSwUbVpaajiJyo4y6iT6ptXGCTytrRCzpGL4-xgELk9PnJQgw38Ww0TMEQtBPtLqQC-qTsyzhGUGWtoLDga53aBmD6xcStXhDhYplK8cIOHbGy50kXKPWTjrruCnW84cZoWSEALn0K6eAoZcwuQ9kfnSFmLMwoRnZkGipKikeuKDOLM5biPgd5J5KGO6AmsoYTUXBAZ5pCf2BOWp6hTPxayWfOH0D-WCxAoYtfwjvcCamBfZG_KClwFRI4hIY-SlVEQpjfKDC9XWn2xBqcUeH9jbAvxwXW4AkgmM37_2QJP2B2z0_BgDqcw0PXj0HVJKFnkQRWqEVZSs6dnZgX1ZepiVu7i9-9DvbXOfU2EBVsOP0HzpbC7eDsCZgaPG7Ihg0IUVdSK3tNWSC7iTVAHB-qKtiuvshTAsloPdlRk-QHZthfG4JfoE_yUA7pguE1jcUGAWvyPfndNiPOLWDI6uPIfq4RJ1VgZYnODlHN8-O6dWO4nGJrjdYOlSLuOpAS7aX7pwgR28OVD-d-j2XYcRPGAdcgnkJn-WjX24QxYPK4Jt0w70WpIuhjqtQ1xKKJwOk4xzMJTW8ic7LCStSB7ppmDAlDcTNDR2HJ1PYz7qOCMdxShkoMxuUBW74v0wFWZAevEhQF1BXfbmw57Z-FLW5KJbqB9BCkGCKFLG4duHubW_xsT7u-gPH7EtyWyPF9miw8qRP1K7KDfApt68XE9afFujSPd7xkg1oCJCBtBsXxepV9E9sOS4oJ17wRiBC58Q3j-1CD69yp-7EsAwVAqg6qTkm8jjy6suPygi4F40s0oN9eTPP-BHuLu4xfogqR9qBN7pvr4b2Ceg3phXR8yCA5d_L-KomMBGhsOaQtQuXMER9Xe1_WDujuS1Y-6U6OKCRwy_mzfsg4IVW4VBbGDfsFJ43G1JrR_RdZk7eKw6MLX4yM8LhBt0sJlWd3-wQaDBsFxkx7Bk6FotAQnrQZDsmOm5nReVi48RofDOtGbLoi4U_hWkFdAsyHYCMhqFM9G_pPMC7kdH9dBW3rsfP0wCfNTKo1wx4JuPgTCSRgmi0zvKnNWilmR3CYwSZwsthYsjrBZGCILeIaY6y5Achs5leXVMBapy57tY1xXOAjSppC6YngNmQ86c4gpWTqfRG1NwR7_dVemkm2cs4lMqR3JaYRqvWsamUlCgTVQ858dsY8wZBdlOe5-UNlBnOYz0jl4eQ_13TVB0vYS7PzUZyNgDhX8chkYkJc-9o-TfeKyJRfN8GEpe8NP33HRBxo4wW5eqNvn59JKB9dW3pcVkgX4lHWeNnRpyICXlOKlM2c92cAGeqaGJOw3TpCuzVRFLKMb9zH5QC6tYKO9DH9Zx-jmcL_YklgABNo5qZMTv__I2WczLiEcM2kdrTJwFairsbAcItpOGmOlHIfKd2eX39WGmPDLTU2_eBwouk5M65PY32atCNIKN4Z_iirNxdHn2Kp8XfveFSDV5oWtfRZ8Azl92j0Pn8u4gDnrCqThUi-nwzY06o8MvX7yqu-HncIN8yB02yKtOKKw_jHNelRmVArrzwrhoV-KS0o_mTxOaWY4SAk6G1frtV4PQEWnZJ_Q6b9mohRf7bXMW1wTLBmV7LFrJCTC6BwOtwtA08LoxZuJ8-V8D6L0WrZQ_shzpA6lOOAdoL7A3TL88AAo_zgsDZXYx2F1bFC1-YcOcCwJ-PhJCPeluBgrpQjlLoj5PMhozbCKc5WrMcr-rkbEYZkruhQ5Lo-IFp982k1SbNDbPGeOEVUlaT7T1cab3oyCRPUEUcYdTgwS4FeqXo_kHhvbzfcPO10IL18-IKhZMsxVJTF-C5s4r3v4WxKlFknY_AJjLy9o2q5MU8QoyAq_rmTVBGDvQMPAQ2-5uLSWQJik3-ZjSrD6KYf9kzqu42lk_0SbY6v7Bi1BWJhs_K8aFfnJOIXDGMyF4CBc6k6_6q0JfnSPfNU9TkoOgYeI5Xf9VtHiiyvw2vDKwfTh2lR21d-hQ264-BGDnaVjKtGnkFi9t28gpsTzsrV-LVyHSBzT7Lr0nC08yRZLm9c2RinGk7oHFoU7V5Cs2h1i1Rs",
+        "id": "rs_0cc0bce6874999b7016ae599ebb0c087d28ce5cbb493816e81",
+        "summary": [],
+        "type": "reasoning"
+      },
+      {
+        "content": [
+          {
+            "annotations": [],
+            "logprobs": [],
+            "text": "# ตลาดในหมู่บ้าน: พื้นที่แห่งชีวิต ความสัมพันธ์ และความหวังของชุมชน\n\nเมื่อแสงอาทิตย์ยามเช้าค่อย ๆ ส่องผ่านแนวต้นไม้และหลังคาบ้าน เสียงไก่ขันดังรับกันมาจากหลายทิศทาง ผู้คนในหมู่บ้านเริ่มตื่นขึ้นเพื่อทำหน้าที่ของตนเอง บางคนเตรียมออกไปทำไร่ บางคนหุงข้าวให้ลูกหลาน และบางคนกำลังจัดของใส่ตะกร้าเพื่อไปขายยังสถานที่แห่งหนึ่งซึ่งดูเหมือนจะตื่นก่อนทุกบ้านเสมอ สถานที่นั้นคือตลาดในหมู่บ้าน แม้จะไม่ได้มีอาคารสูงใหญ่หรือร้านค้าที่ตกแต่งหรูหราเหมือนในเมือง แต่ตลาดเล็ก ๆ แห่งนี้กลับเต็มไปด้วยสีสัน เสียงหัวเราะ กลิ่นอาหาร และเรื่องราวของผู้คนที่ผูกพันกันมานาน ตลาดจึงไม่ได้เป็นเพียงพื้นที่ซื้อขายสินค้า หากยังเป็นภาพสะท้อนของวิถีชีวิต ความร่วมมือ และหัวใจของชุมชนอย่างแท้จริง\n\nหากมองอย่างผิวเผิน ตลาดอาจดูเป็นเพียงจุดที่ผู้ขายนำสินค้ามาวางและผู้ซื้อนำเงินมาแลกเปลี่ยน แต่เมื่อใช้เวลาเดินผ่านแผงต่าง ๆ อย่างช้า ๆ เราจะพบว่าการซื้อขายแต่ละครั้งมีความหมายมากกว่านั้น คำถามว่า “วันนี้สบายดีไหม” อาจเกิดขึ้นก่อนคำถามว่า “ผักกำละเท่าไร” แม่ค้าอาจถามถึงคนป่วยในบ้านของลูกค้า ขณะที่ลูกค้าก็อาจถามถึงผลการเรียนของลูกแม่ค้า ความสัมพันธ์เหล่านี้ไม่สามารถตีราคาเป็นเงินได้ และไม่ปรากฏอยู่ในบัญชีรายรับรายจ่ายของร้านใด ทว่ากลับเป็นสิ่งสำคัญที่ทำให้ตลาดในหมู่บ้านแตกต่างจากพื้นที่ซื้อขายที่ผู้คนพบกันเพียงชั่วครู่แล้วแยกจากกันโดยไม่รู้จักชื่อ\n\nตลาดในหมู่บ้านแต่ละแห่งมีประวัติความเป็นมาของตนเอง บางแห่งเริ่มจากชาวบ้านเพียงไม่กี่คนที่นำผัก ปลา และผลไม้มาแลกเปลี่ยนกันใต้ต้นไม้ใหญ่ บางแห่งเกิดขึ้นบริเวณหน้าวัด เพราะเป็นจุดที่ผู้คนเดินทางมารวมตัวกันอยู่แล้ว เมื่อมีผู้ซื้อและผู้ขายเพิ่มขึ้น พื้นที่เล็ก ๆ จึงค่อย ๆ ขยายออก มีการสร้างเพิงไม้ มุงหลังคา และจัดทางเดินให้สะดวกกว่าเดิม สิ่งปลูกสร้างอาจเปลี่ยนแปลงไปตามเวลา แต่รากฐานของตลาดยังคงอยู่ที่ความต้องการพึ่งพากันของชาวบ้าน คนที่ปลูกผักได้มากนำส่วนที่เหลือมาขาย คนที่จับปลาได้ก็นำปลามาแลกกับอาหารชนิดอื่น ตลาดจึงเติบโตขึ้นจากชีวิตจริงของผู้คน มิใช่จากการวางแผนทางธุรกิจเพียงอย่างเดียว\n\nยามเช้ามืดเป็นช่วงเวลาที่ทำให้เห็นความขยันของผู้ค้าได้ชัดเจนที่สุด ก่อนที่ลูกค้าคนแรกจะเดินเข้าตลาด หลายร้านได้ผ่านการทำงานมาแล้วหลายชั่วโมง คนขายข้าวแกงต้องตื่นขึ้นมาหั่นผัก โขลกเครื่องแกง และตั้งหม้อบนเตา คนขายขนมต้องเตรียมแป้ง ขูดมะพร้าว และนึ่งขนมให้ทันเวลา ส่วนผู้ขายผักอาจเพิ่งกลับจากแปลงปลูกพร้อมตะกร้าที่เต็มไปด้วยผลผลิตสดใหม่ เมื่อมาถึงตลาด ทุกคนต้องจัดโต๊ะ เช็ดแผง เรียงสินค้า และเตรียมเงินทอน ภาพเหล่านี้เตือนให้เรารู้ว่า อาหารเช้าราคาธรรมดาหนึ่งห่อประกอบขึ้นจากแรงกาย เวลา และความตั้งใจของคนหลายคน ไม่ใช่เพียงวัตถุดิบที่มองเห็นอยู่ตรงหน้า\n\nเมื่อฟ้าเริ่มสว่าง ตลาดก็มีชีวิตชีวามากขึ้น เสียงรถจักรยานยนต์ดังสลับกับเสียงพูดคุย ลูกค้าบางคนเดินมาอย่างรีบเร่งเพราะต้องไปทำงาน ขณะที่บางคนค่อย ๆ เลือกของโดยไม่เร่งรีบ เด็กนักเรียนถือเงินที่ผู้ปกครองให้มาเพื่อซื้ออาหารเช้า ผู้สูงอายุเดินดูผักและแวะสนทนากับคนรู้จัก แม่ค้าบางร้านเรียกลูกค้าด้วยน้ำเสียงสดใส ส่วนบางร้านไม่จำเป็นต้องเรียก เพราะมีลูกค้าประจำมารออยู่แล้ว กลิ่นข้าวเหนียวนึ่งร้อน ๆ ผสมกับกลิ่นหมูปิ้ง กาแฟ และอาหารปรุงใหม่ ทำให้บรรยากาศธรรมดาในตลาดกลายเป็นความทรงจำที่หลายคนยังนึกถึงแม้จะย้ายไปอยู่ที่อื่นนานหลายปี\n\nสีสันของตลาดมักปรากฏชัดที่สุดบนแผงผัก พริกสีแดงวางอยู่ข้างมะเขือสีเขียว ฟักทองสีเหลืองอยู่ไม่ไกลจากผักใบเข้ม และแตงกวาเรียงเป็นกองเล็ก ๆ รอให้คนเลือกซื้อ ผักบางชนิดเป็นพืชที่พบได้ทั่วไป แต่บางชนิดมีชื่อเรียกเฉพาะถิ่นและมีวิธีปรุงที่คนภายนอกอาจไม่คุ้นเคย แม่ค้าจึงไม่ได้ทำหน้าที่ขายเพียงอย่างเดียว หากยังบอกด้วยว่าผักชนิดใดเหมาะสำหรับแกง ผักชนิดใดควรลวกก่อนรับประทาน และผักชนิดใดนำไปกินกับน้ำพริกได้อร่อย ความรู้เหล่านี้ถ่ายทอดผ่านบทสนทนาสั้น ๆ ระหว่างการซื้อขาย เป็นความรู้จากประสบการณ์ที่มีคุณค่าไม่แพ้สิ่งที่บันทึกไว้ในตำรา\n\nสินค้าที่วางขายยังเปลี่ยนไปตามฤดูกาล ทำให้ตลาดเป็นเสมือนปฏิทินธรรมชาติของหมู่บ้าน ช่วงหน้าฝนอาจมีหน่อไม้ เห็ด และผักพื้นบ้านออกมามาก ส่วนฤดูร้อนอาจเต็มไปด้วยมะม่วง แตงโม หรือผลไม้ชนิดอื่นตามสภาพพื้นที่ เมื่ออากาศเย็นลง พืชบางอย่างก็เติบโตได้ดีขึ้นและมีรสชาติที่ผู้คนรอคอย การเปลี่ยนแปลงเหล่านี้ทำให้ชาวบ้านรับรู้ถึงจังหวะของธรรมชาติผ่านสิ่งที่กินในแต่ละวัน ขณะเดียวกันก็ทำให้เห็นว่าผลผลิตไม่ได้เกิดขึ้นอย่างง่ายดาย หากฝนแล้ง น้ำท่วม หรือเกิดโรคพืช แผงขายของย่อมได้รับผลกระทบไปด้วย ตลาดจึงเชื่อมโยงชีวิตประจำวันเข้ากับดิน น้ำ อากาศ และความไม่แน่นอนที่เกษตรกรต้องเผชิญ\n\nในด้านเศรษฐกิจ ตลาดในหมู่บ้านเป็นช่องทางสร้างรายได้ที่สำคัญสำหรับคนจำนวนมาก ผู้ขายบางคนประกอบอาชีพค้าขายเป็นหลัก ขณะที่บางคนนำผลผลิตส่วนเกินจากครัวเรือนมาขายเพื่อหารายได้เสริม เงินที่ได้อาจไม่มากในแต่ละวัน แต่ช่วยจ่ายค่าอาหาร ค่าเดินทาง ค่าอุปกรณ์การเรียน และค่าใช้จ่ายจำเป็นอื่น ๆ สำหรับครอบครัวเล็ก ๆ รายได้วันละเล็กละน้อยอาจเป็นสิ่งที่ทำให้ชีวิตดำเนินต่อไปได้อย่างมั่นคงขึ้น ตลาดจึงเปิดโอกาสให้คนที่มีทุนไม่มากสามารถเริ่มต้นประกอบอาชีพ โดยใช้ทักษะ ความขยัน และทรัพยากรที่ตนเองมีอยู่เป็นพื้นฐาน\n\nการซื้อสินค้าจากคนในหมู่บ้านยังช่วยให้เงินหมุนเวียนอยู่ภายในชุมชน เมื่อครอบครัวหนึ่งซื้อผักจากเพื่อนบ้าน ผู้ขายผักก็นำรายได้ไปซื้อข้าวสาร จ่ายค่าซ",
+            "type": "output_text"
+          }
+        ],
+        "id": "msg_0cc0bce6874999b7016ae599f0937c87d29843180ef3b0782d",
+        "phase": "final_answer",
+        "role": "assistant",
+        "status": "incomplete",
+        "type": "message"
+      }
+    ],
+    "parallel_tool_calls": true,
+    "presence_penalty": 0.0,
+    "previous_response_id": null,
+    "prompt_cache_key": null,
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "context": "all_turns",
+      "effort": "low",
+      "mode": "standard",
+      "summary": null
+    },
+    "safety_identifier": null,
+    "service_tier": "default",
+    "status": "incomplete",
+    "store": false,
+    "temperature": 1.0,
+    "text": {
+      "format": {
+        "type": "text"
+      },
+      "verbosity": "medium"
+    },
+    "tool_choice": "auto",
+    "tool_usage": {
+      "image_gen": {
+        "input_tokens": 0,
+        "input_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "image_tokens": 0,
+          "text_tokens": 0
+        },
+        "total_tokens": 0
+      },
+      "web_search": {
+        "num_requests": 0
+      }
+    },
+    "tools": [],
+    "top_logprobs": 0,
+    "top_p": 0.98,
+    "truncation": "disabled",
+    "usage": {
+      "input_tokens": 53,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 2053,
+      "output_tokens_details": {
+        "reasoning_tokens": 210
+      },
+      "total_tokens": 2106
+    },
+    "user": null
+  }
+}
