@@ -3,7 +3,7 @@
 How to set up and run one IconMarket instance. It is for the operator: the person who runs the server and edits the config file. Requirement IDs refer to [SRS.md](SRS.md).
 
 - [Part 1: Set up a new instance](#part-1-set-up-a-new-instance), in order. Each step needs the one before it.
-- [Part 2: Run it](#part-2-run-it): admins, config changes, deploys, backups, restores and troubleshooting.
+- [Part 2: Run it](#part-2-run-it): admins, config changes, deploys, backups, restores, troubleshooting and monitoring.
 
 Replace these placeholders wherever they appear:
 
@@ -357,6 +357,7 @@ First set up backups: do [§16.1](#161-nightly-dump) and [§16.2](#162-copy-off-
 - [ ] Your rich menu has the admin tab.
 - [ ] `https://<host>/` opens your OA, not another one.
 - [ ] Backups run, and a copy reached the second computer ([§16](#16-backup-and-restore)).
+- [ ] An uptime monitor checks `/health`, and its alert has reached you in a test ([§19](#19-monitoring)).
 - [ ] **A restore has been tested and timed** against the 4-hour target (NFR-REL-07). Do this before villagers join: rent a temporary server for a few hours, point `<host>` at it, and follow the new-server steps in [§16.4](#164-restore). Check that it works, then point `<host>` back and delete the temporary server. Finally, on the second computer, run `ssh-keygen -R <host>` and `copy.sh` once by hand, or the scheduled copies will stop on the changed host key.
 
 Then share the QR code or the `@<oa-id>` ID with the village (A-04): the page at `https://<host>/` shows a QR code, and OA Manager has the account's own. Posters and the village's existing chat groups work well. Set `village.joinCode` first if only residents should register, and give them the code the same way.
@@ -644,3 +645,32 @@ Start with `docker ps -a` and `docker logs --tail 50 iconmarket`. A container sh
 | The first restart after adding an admin shows `"admins_granted":0`, or there's no admin tab | The ID is mistyped or from another LINE provider, or the rich menus failed | Compare it with the `#myid` reply from this OA. Check for `rich-menu provisioning failed`. `เมนู` still works |
 | `iconmarket-start` fails at `docker pull` with `manifest unknown` or `no matching manifest` | The version doesn't exist, or the server is ARM | Check the [tags](https://github.com/two-net/iconmarket/tags). The running app is untouched |
 | Backups stopped, or the disk is full | Dumps failing, or old images and logs piling up | `df -h`, then run `sudo -u postgres iconmarket-backup` and read the error. To free space: `docker image prune -a` and `journalctl --vacuum-size=1G` |
+
+## 19. Monitoring
+
+The target is 99.0 % availability a month, not counting planned maintenance (NFR-REL-04). In a 30-day month that allows about 7 hours 12 minutes of unplanned downtime.
+
+**Set it up once.** Create a free account with an external uptime monitor, such as UptimeRobot, StatusCake or HetrixTools. Free plans change, so check when you sign up that the current terms allow your use. No paid plan is needed (NFR-COST-03). Then add one monitor:
+
+| Setting | Value |
+| --- | --- |
+| Type | HTTPS, with a keyword check if offered |
+| URL | `https://<host>/health` |
+| Keyword | `"status":"ok"` |
+| Interval | 5 minutes |
+| Alert | Your email, and a phone notification if the service has an app |
+
+It has to run outside the server, because a check on the server can't report the server being gone. The second computer won't do either, as it may be off.
+
+**Test the alert.** Do this before villagers join. On the server, stop the app, wait for the alert, then start it again and wait for the recovery notice:
+
+```sh
+docker stop iconmarket
+docker start iconmarket
+```
+
+**What it can't see.** `/health` shows that the app answers through HTTPS and can reach PostgreSQL (NFR-MNT-04). It doesn't show that messages are being handled. So after a deploy, or when a villager says the bot has gone quiet, send the OA a message yourself.
+
+**Each month.** Read the month's uptime percentage in the monitor's report. Leave out your deploys and other planned work, which the target excludes. If it's still under 99.0 %, find the cause in [§18](#18-troubleshooting) before it happens again. A 5-minute check can miss a shorter outage, which is fine for a budget of hours.
+
+When an alert fires, start with [§18](#18-troubleshooting).
