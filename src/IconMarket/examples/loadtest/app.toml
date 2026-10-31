@@ -1,0 +1,32 @@
+# The app's config file for a load test: throwaway values only, for a throwaway database. The
+# fake LINE runs beside the load generator, outside the box under test.
+
+[app]
+baseUrl = "https://market.example.com"
+listenPort = 8080
+
+[village]
+name = "หมู่บ้านทดสอบ"
+
+[line]
+channelSecret = "loadtest-channel-secret"
+channelAccessToken = "loadtest-access-token"
+apiBaseUrl = "http://host.docker.internal:9001"
+dataBaseUrl = "http://host.docker.internal:9002"
+
+[ai]
+enabled = false
+
+[database]
+host = "postgres"
+name = "iconmarket"
+user = "iconmarket"
+password = "iconmarket"
+sslMode = "disable"
+
+[privacy]
+noticeVersion = "1"
+noticeText = "ข้อความทดสอบ"
+
+[admin]
+lineUserIds = ["Ua0000000000000000000000000000000"]

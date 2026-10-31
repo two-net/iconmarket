@@ -9,7 +9,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::json;
-use tracing::debug;
+use tracing::{debug, warn};
 use url::Url;
 
 use super::error::Error;
@@ -103,10 +103,17 @@ pub struct Content {
 
 impl Client {
     pub fn new(config: &LineConfig) -> anyhow::Result<Self> {
+        if config.api_base_url.is_some() || config.data_base_url.is_some() {
+            warn!("line.apiBaseUrl or line.dataBaseUrl is set: LINE calls go there, not to LINE");
+        }
+        let host = |base: &Option<Url>, own: &str| match base {
+            Some(base) => Ok(base.clone()),
+            None => Url::parse(own),
+        };
         Self::build(
             &config.channel_access_token,
-            Url::parse(API)?,
-            Url::parse(DATA)?,
+            host(&config.api_base_url, API)?,
+            host(&config.data_base_url, DATA)?,
             TIMEOUT,
             BACKOFF,
             CONTENT_POLL_INTERVAL,
@@ -327,6 +334,32 @@ mod tests {
         assert_eq!(
             join(&base, &["v2", "bot", "profile", "U1/../x"]).as_str(),
             "https://api.line.me/v2/bot/profile/U1%2F..%2Fx"
+        );
+    }
+
+    #[test]
+    fn lines_own_hosts_are_called_unless_the_config_names_others() {
+        let mut config = crate::config::sample().line;
+        let client = Client::new(&config).unwrap();
+        assert_eq!(
+            client.api_url(&["v2", "bot", "info"]).as_str(),
+            "https://api.line.me/v2/bot/info"
+        );
+        assert_eq!(
+            client.data_url(&["v2", "bot", "message", "1"]).as_str(),
+            "https://api-data.line.me/v2/bot/message/1"
+        );
+
+        config.api_base_url = Some(Url::parse("http://127.0.0.1:9001").unwrap());
+        config.data_base_url = Some(Url::parse("http://127.0.0.1:9002").unwrap());
+        let client = Client::new(&config).unwrap();
+        assert_eq!(
+            client.api_url(&["v2", "bot", "info"]).as_str(),
+            "http://127.0.0.1:9001/v2/bot/info"
+        );
+        assert_eq!(
+            client.data_url(&["v2", "bot", "message", "1"]).as_str(),
+            "http://127.0.0.1:9002/v2/bot/message/1"
         );
     }
 }

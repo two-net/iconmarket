@@ -40,6 +40,10 @@ channelAccessToken = "change-me"
 # admin (admin.lineUserIds) types #groupid there to get it, even while
 # notification.groupDigest is off. Required when notification.groupDigest is true
 villageGroupId = ""
+# Hosts to call instead of LINE's own, for a load test against a fake LINE. The access token goes
+# there too, so leave them empty on a real service
+apiBaseUrl = ""
+dataBaseUrl = ""
 
 [line.richMenu]
 # Create or update rich menus at startup. When false, the IconMarket menus already at LINE are

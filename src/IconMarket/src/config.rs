@@ -93,6 +93,10 @@ pub struct LineConfig {
     pub channel_access_token: Secret,
     pub rich_menu: RichMenuConfig,
     pub village_group_id: Option<String>,
+    /// The API host to call instead of LINE's own, as a load test does; the access token goes there
+    pub api_base_url: Option<Url>,
+    /// The content host to call instead of LINE's own
+    pub data_base_url: Option<Url>,
 }
 
 #[derive(Debug)]
@@ -562,11 +566,15 @@ fn line(r: &mut Reader) -> Option<LineConfig> {
     let channel_access_token = r.required("line.channelAccessToken", secret);
     let auto_provision = r.optional("line.richMenu.autoProvision", true, boolean);
     let village_group_id = r.maybe("line.villageGroupId", line_id('C', "group"));
+    let api_base_url = r.maybe("line.apiBaseUrl", web_url);
+    let data_base_url = r.maybe("line.dataBaseUrl", web_url);
     Some(LineConfig {
         channel_secret: channel_secret?,
         channel_access_token: channel_access_token?,
         rich_menu: RichMenuConfig { auto_provision },
         village_group_id,
+        api_base_url,
+        data_base_url,
     })
 }
 

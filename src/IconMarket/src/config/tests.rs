@@ -101,6 +101,8 @@ fn defaults_follow_the_srs() {
 
     assert!(config.line.rich_menu.auto_provision);
     assert_eq!(config.line.village_group_id, None);
+    assert_eq!(config.line.api_base_url, None);
+    assert_eq!(config.line.data_base_url, None);
 
     let ai = &config.ai;
     let primary = ai.primary.as_ref().unwrap();
@@ -165,6 +167,29 @@ fn defaults_follow_the_srs() {
     assert_eq!(retention.slip_days, 90);
     assert_eq!(retention.deleted_image_days, 30);
     assert_eq!(retention.audit_log_days, 365);
+}
+
+#[test]
+fn lines_hosts_must_be_web_urls() {
+    let text = MINIMAL.replace(
+        "[ai]",
+        "apiBaseUrl = \"http://127.0.0.1:9001\"\ndataBaseUrl = \"ftp://127.0.0.1\"\n\n[ai]",
+    );
+    assert_eq!(
+        problems(&text),
+        ["line.dataBaseUrl: must be an http:// or https:// URL"]
+    );
+
+    let text = text.replace("ftp://127.0.0.1", "http://127.0.0.1:9002");
+    let line = valid(&text).config.line;
+    assert_eq!(
+        line.api_base_url.unwrap().as_str(),
+        "http://127.0.0.1:9001/"
+    );
+    assert_eq!(
+        line.data_base_url.unwrap().as_str(),
+        "http://127.0.0.1:9002/"
+    );
 }
 
 /// AC-09
