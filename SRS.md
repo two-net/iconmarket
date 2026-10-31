@@ -673,6 +673,8 @@ Key names are normative; dots denote nesting. ✔ = required.
 | `line.channelAccessToken` | string | ✔ |  | Messaging API access token |
 | `line.richMenu.autoProvision` | boolean |  | `true` | Create/update rich menus at startup |
 | `line.villageGroupId` | string |  | empty | Group for the daily digest (FR-NOT-07) |
+| `line.apiBaseUrl` | URL |  | LINE's own | Host to call for the Messaging API instead of LINE's, for a load test against a fake LINE; the access token goes there too |
+| `line.dataBaseUrl` | URL |  | LINE's own | Host to call for content instead of LINE's, likewise |
 
 **AI**
 

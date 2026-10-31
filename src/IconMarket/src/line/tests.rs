@@ -1153,6 +1153,8 @@ async fn the_token_is_never_shown() {
             auto_provision: true,
         },
         village_group_id: None,
+        api_base_url: None,
+        data_base_url: None,
     };
     let client = Client::new(&config).unwrap();
     assert!(!format!("{client:?}").contains(TOKEN));
