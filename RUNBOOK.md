@@ -10,9 +10,9 @@ Replace these placeholders wherever they appear:
 | Placeholder | Meaning | Example |
 | --- | --- | --- |
 | `<host>` | Public domain name of the server | `market.example.com` |
-| `<version>` | Release to run: the newest of the [tags](https://github.com/two-net/iconmarket/tags). Always pinned, never `latest` | `v0.2.0` |
+| `<version>` | Release to run: the newest of the [tags](https://github.com/two-net/iconmarket/tags). Always pinned, never `latest` | `v0.2.1` |
 | `<oa-id>` | Your OA's basic ID, without the `@` ([§2.2](#22-copy-the-two-credentials)) | `123abcde` |
-| `<running-version>`, `<previous-version>` | The release running now, and the one before it ([§15.1](#151-deploy-a-new-version)) | `v0.2.0` |
+| `<running-version>`, `<previous-version>` | The release running now, and the one before it ([§15.1](#151-deploy-a-new-version)) | `v0.2.1` |
 | `<date>` | The date and time in a backup's file name | `20261031-020000` |
 | `<user_id>` | A number from a log line ([§16.5](#165-what-a-restore-loses)) | `42` |
 
