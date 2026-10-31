@@ -129,7 +129,18 @@ impl Setup {
         now: DateTimeUtc,
         handle: impl AsyncFnOnce(&Turn<'_>) -> Result<Vec<Message>, DbErr>,
     ) -> (Vec<Message>, bool) {
-        let txn = self.db.begin().await.unwrap();
+        self.handle_on(&self.db, user_id, now, handle).await
+    }
+
+    /// As [`Setup::handle_at`], on `db`, which may be a pool of its own.
+    async fn handle_on(
+        &self,
+        db: &DatabaseConnection,
+        user_id: i64,
+        now: DateTimeUtc,
+        handle: impl AsyncFnOnce(&Turn<'_>) -> Result<Vec<Message>, DbErr>,
+    ) -> (Vec<Message>, bool) {
+        let txn = db.begin().await.unwrap();
         let actor = Actor::load(&txn, user_id).await.unwrap().expect("a user");
         let turn = Turn::new(&txn, &self.templates, &SESSION, actor, now)
             .await
@@ -1291,6 +1302,52 @@ async fn the_last_one_goes_to_exactly_one_of_two_buyers() {
     );
     assert!(!lost.1);
     assert_eq!(s.stock(s.eggs).await, Some(0));
+}
+
+/// AC-03, DR-07, NFR-MNT-07: six buyers confirm 2 each of the last 5 at the same moment, each
+/// on connections of their own, as the worker's events are: 2 orders are placed, and the 1 left
+/// is neither sold nor lost.
+#[tokio::test]
+async fn buyers_racing_for_the_last_units_never_oversell() {
+    let s = setup().await;
+    s.set_stock(s.eggs, Some(5)).await;
+    let mut buyers = vec![s.buyer, s.other_buyer];
+    for line_user_id in ["U-racer-1", "U-racer-2", "U-racer-3", "U-racer-4"] {
+        let buyer = housed(testing::new_user(line_user_id));
+        buyers.push(buyer.insert(&s.db).await.unwrap().id);
+    }
+    let mut ready = Vec::new();
+    for buyer in buyers {
+        s.put(buyer, s.eggs, 2).await;
+        let confirm = s.summary(buyer).await;
+        let db = orm(testing::pool(&s._container).await);
+        ready.push((buyer, confirm, db));
+    }
+    let confirm = async |i: usize| {
+        let (buyer, data, db) = &ready[i];
+        let postback = Postback::parse(data).unwrap();
+        s.handle_on(db, *buyer, t0(), async |turn| {
+            pending::tapped(turn, &postback).await
+        })
+        .await
+    };
+
+    let placed = tokio::join!(
+        confirm(0),
+        confirm(1),
+        confirm(2),
+        confirm(3),
+        confirm(4),
+        confirm(5),
+    );
+    let placed = [placed.0, placed.1, placed.2, placed.3, placed.4, placed.5]
+        .iter()
+        .filter(|(_, essential)| *essential)
+        .count();
+
+    assert_eq!(placed, 2);
+    assert_eq!(s.orders().await.len(), 2);
+    assert_eq!(s.stock(s.eggs).await, Some(1));
 }
 
 /// FR-CART-06, DR-07: checkouts of the same last products, put in their carts in opposite

@@ -32,8 +32,8 @@ use crate::notifications::{Kind, Outbox, RichMenus, To, templates};
 use crate::orders::cart;
 use crate::persistence::entity::user::MenuRoles;
 use crate::persistence::entity::{
-    ai_message, audit_log, category, image, join_attempt, line_group, order, pending_action,
-    product, push_log, report, session, shop, user,
+    ai_call_log, ai_message, audit_log, category, image, join_attempt, line_group, order,
+    pending_action, product, push_log, report, session, shop, user,
 };
 use crate::persistence::{orm, random_id, testing};
 use crate::thai::{Label, Money};
@@ -2793,6 +2793,191 @@ async fn an_order_placed_is_pushed_when_its_reply_fails() {
         ),
         ("reply", push_log::Status::Sent, ALICE)
     );
+}
+
+/// Conversations through the worker, each event answered before the next, and each tap on what
+/// a message offered.
+struct Chat<'a> {
+    s: &'a Setup,
+    running: &'a Running,
+    events: usize,
+}
+
+impl Chat<'_> {
+    async fn send(&mut self, event: impl FnOnce(&str) -> Value) -> Value {
+        self.events += 1;
+        let id = format!("j{}", self.events);
+        reply_to(self.s, self.running, event(&id), self.events).await
+    }
+
+    async fn says(&mut self, from: &str, text: &str) -> Value {
+        self.send(|id| said(id, from, text)).await
+    }
+
+    async fn taps(&mut self, from: &str, data: &str) -> Value {
+        self.send(|id| tapped(id, from, data)).await
+    }
+
+    /// `from` taps `label` on `messages`, sent to them.
+    async fn presses(&mut self, from: &str, messages: &Value, label: &str) -> Value {
+        let action = offered(messages, label);
+        self.send(|id| pressed(id, from, &action)).await
+    }
+
+    /// `from` adds the OA and accepts the privacy notice, so is a villager with no address.
+    async fn registers(&mut self, from: &str) {
+        let follow = json!({ "follow": { "isUnblocked": false } });
+        let notice = self
+            .send(|id| event(id, "follow", user(from), follow))
+            .await;
+        self.presses(from, &notice, "ยอมรับ").await;
+    }
+
+    /// `from` answers the steps of a first address: where they live, skipping the landmark
+    /// note, phone and location. The reply to the last.
+    async fn gives_address(&mut self, from: &str, zone: &str, house_number: &str) -> Value {
+        self.says(from, zone).await;
+        self.says(from, house_number).await;
+        self.says(from, "ข้าม").await;
+        self.says(from, "ข้าม").await;
+        self.says(from, "ข้าม").await
+    }
+}
+
+/// The last push to `to`, once there are `n` of them.
+async fn pushed_to(s: &Setup, to: &str, n: usize) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let pushed: Vec<_> = pushes(s).into_iter().filter(|(who, _)| who == to).collect();
+        if pushed.len() >= n {
+            return pushed[n - 1].1.clone();
+        }
+        assert!(Instant::now() < deadline, "only {:?}", pushes(s));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// AC-06, FR-AI-10, NFR-REL-06, as one journey, with `ai.enabled` false: two villagers add the
+/// OA; one opens a shop, which an admin approves, and lists a product with its photo; the other
+/// finds it from the menu and orders it, giving their address on the way; and the seller
+/// completes the order. Everything goes through menus and buttons, except the names, prices and
+/// addresses that only typing can give (FR-UI-02), and the AI is never called.
+#[tokio::test]
+async fn with_the_ai_off_a_new_seller_and_buyer_complete_an_order_end_to_end() {
+    const CAROL: &str = "Ue5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5";
+    let s = setup().await;
+    let admin = user::ActiveModel {
+        id: Set(onboarded(&s.db, CAROL).await),
+        is_admin: Set(true),
+        ..Default::default()
+    };
+    admin.update(&s.db).await.unwrap();
+    testing::new_category("ไข่/นม").insert(&s.db).await.unwrap();
+    let jpeg = include_bytes!("../../ai/provider/fixtures/media/slip.jpg");
+    s.line.script(
+        "/v2/bot/message/p1/content",
+        [Answer::bytes("image/jpeg", jpeg)],
+    );
+    for (from, name) in [(ALICE, "ป้าแดง"), (BOB, "สมชาย")] {
+        s.line.script(
+            &format!("/v2/bot/profile/{from}"),
+            [Answer::json(200, json!({ "displayName": name }))],
+        );
+    }
+    // Faster than anyone types, so the rate limit stays out of it
+    let running = s.run_on(&s.pool, 200, 2);
+    let mut chat = Chat {
+        s: &s,
+        running: &running,
+        events: 0,
+    };
+
+    // A villager opens a shop, giving their home address first
+    chat.registers(ALICE).await;
+    chat.taps(ALICE, "my_shop").await;
+    chat.gives_address(ALICE, "ซอย 3", "45/2").await;
+    let answers = [
+        "ร้านป้าแดง",
+        "ไข่ไก่ ผักสวนครัว",
+        "ข้าม",
+        "ใช้ที่อยู่บ้าน",
+        "ข้าม",
+        "081-234-5678",
+        "ได้ทั้งสองแบบ",
+        "10",
+        "ไม่มีขั้นต่ำ",
+        "ข้าม",
+    ];
+    let mut reply = Value::Null;
+    for answer in answers {
+        reply = chat.says(ALICE, answer).await;
+    }
+    chat.presses(ALICE, &reply, "ส่งคำขอ").await;
+
+    // The admin approves it from their push
+    let application = pushed_to(&s, CAROL, 1).await;
+    chat.presses(CAROL, &application, "อนุมัติ").await;
+    let approved = pushed_to(&s, ALICE, 1).await;
+
+    // The seller lists a product with a photo
+    chat.presses(ALICE, &approved, "เพิ่มสินค้า").await;
+    let photo = json!({ "id": "p1", "type": "image", "contentProvider": { "type": "line" } });
+    chat.send(|id| sent(id, ALICE, photo)).await;
+    for answer in ["ถัดไป", "ไข่ไก่เบอร์ 2", "110", "แผง", "ไข่/นม", "30"]
+    {
+        chat.says(ALICE, answer).await;
+    }
+    let preview = chat.says(ALICE, "ข้าม").await;
+    chat.presses(ALICE, &preview, "ยืนยันลงขาย").await;
+
+    // Another villager finds it from the menu and orders it, giving their address on the way
+    chat.registers(BOB).await;
+    let categories = chat.taps(BOB, "buy").await;
+    let products = chat.presses(BOB, &categories, "ไข่/นม").await;
+    let quantity = chat.presses(BOB, &products, "ใส่ตะกร้า").await;
+    let added = chat.presses(BOB, &quantity, "2").await;
+    chat.presses(BOB, &added, "สั่งซื้อเลย").await;
+    let how = chat.gives_address(BOB, "ซอย 5", "12").await;
+    let address = chat.presses(BOB, &how, "ให้ไปส่ง +฿10").await;
+    let note = chat.presses(BOB, &address, "ใช่").await;
+    let summary = chat.presses(BOB, &note, "ไม่มี").await;
+    chat.presses(BOB, &summary, "ยืนยันสั่งซื้อ").await;
+
+    // The seller takes it from their push to completed and paid
+    let new_order = pushed_to(&s, ALICE, 2).await;
+    let accepted = chat.presses(ALICE, &new_order, "รับออเดอร์").await;
+    let delivering = chat.presses(ALICE, &accepted, "กำลังไปส่ง").await;
+    let delivered = chat.presses(ALICE, &delivering, "ส่งมอบแล้ว").await;
+    chat.presses(ALICE, &delivered, "ได้รับเงินแล้ว").await;
+    running.stop().await;
+
+    let shop = shop::Entity::find().one(&s.db).await.unwrap().unwrap();
+    assert_eq!(shop.status, shop::Status::Approved);
+    let listed = product::Entity::find().one(&s.db).await.unwrap().unwrap();
+    assert_eq!(
+        (listed.status, listed.stock),
+        (product::Status::Active, Some(28))
+    );
+    assert_eq!(image::Entity::find().count(&s.db).await.unwrap(), 1);
+    let orders = order::Entity::find().all(&s.db).await.unwrap();
+    let [order] = &orders[..] else {
+        panic!("one order: {orders:?}");
+    };
+    assert_eq!(
+        (
+            order.buyer_id,
+            order.total,
+            order.status,
+            order.payment_status
+        ),
+        (
+            s.user(BOB).await.id,
+            Money::from_baht(230),
+            order::Status::Completed,
+            order::PaymentStatus::Paid
+        )
+    );
+    assert_eq!(ai_call_log::Entity::find().count(&s.db).await.unwrap(), 0);
 }
 
 /// The texts of the card `messages` holds, headline first.

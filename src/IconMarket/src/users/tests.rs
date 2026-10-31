@@ -281,7 +281,8 @@ async fn a_suspended_shop_keeps_its_orders_but_not_its_catalog() {
     assert_eq!(check(&db, seller, Action::Buy).await, Ok(()));
 }
 
-/// §2.3: a seller owns an approved shop; nothing else makes one.
+/// §2.3, FR-PROD-09: a seller owns an approved shop, or one held for review, which they still
+/// run; nothing else makes one.
 #[tokio::test]
 async fn only_an_approved_shop_makes_a_seller() {
     let (_container, db) = database().await;
@@ -290,6 +291,7 @@ async fn only_an_approved_shop_makes_a_seller() {
 
     let cases = [
         (shop::Status::Approved, true, Ok(())),
+        (shop::Status::Held, true, Ok(())),
         (shop::Status::Pending, false, Err(Denied::NotAllowed)),
         (shop::Status::Rejected, false, Err(Denied::NotAllowed)),
         (shop::Status::Suspended, false, Err(Denied::ShopSuspended)),
@@ -378,6 +380,21 @@ async fn deleted_and_unknown_users_cannot_act() {
 
     assert_eq!(Actor::load(&db, user.id).await.unwrap(), None);
     assert_eq!(Actor::load(&db, user.id + 1).await.unwrap(), None);
+}
+
+/// An account deleted while its event was being handled is refused everything, even what's
+/// open to suspended users.
+#[tokio::test]
+async fn an_account_deleted_since_it_was_loaded_can_do_nothing() {
+    let (_container, db) = database().await;
+    let market = market(&db).await;
+    let mut actor = Actor::load(&db, market.buyer.id).await.unwrap().unwrap();
+    actor.user.status = user::Status::Deleted;
+
+    for action in [Action::Help, Action::Browse, Action::MyData, Action::Buy] {
+        let decision = authorize(&db, &actor, action).await.unwrap();
+        assert_eq!(decision, Err(Denied::NotAllowed), "{action:?}");
+    }
 }
 
 /// FR-ADM-01: a listed user who follows after startup gets the admin role then.
