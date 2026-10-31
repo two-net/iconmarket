@@ -65,7 +65,7 @@ The first start creates the tables and default categories. Then, from another te
 
 ```sh
 curl localhost:8080/health
-# {"status":"ok","version":"0.2.0","database":"up"}
+# {"status":"ok","version":"0.2.1","database":"up"}
 ```
 
 The sample config starts as it is, which is enough for work that doesn't need LINE. Its LINE token is a placeholder, so the log shows `rich-menu provisioning failed, continuing`, and its AI key won't work either.
